@@ -1,2 +1,5 @@
+run:
+    cargo run -p serpentine -- --pipeline ci/main.snek
+
 test:
-    cargo run -p serpentine
+    cargo test
