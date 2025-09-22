@@ -14,13 +14,15 @@
 //! !'export RESULT;
 //! ```
 
-pub mod ast;
-pub mod parser;
+mod ast;
+mod compiler;
+mod parser;
 pub mod span;
-pub mod tokenizer;
+mod tokenizer;
 
 use std::path::Path;
 
+pub use compiler::CompileResult;
 use miette::Diagnostic;
 use span::Span;
 use thiserror::Error;
@@ -29,13 +31,13 @@ use thiserror::Error;
 #[derive(Debug, Error, Diagnostic)]
 pub enum ParsingError {
     /// The tokenizer encountered a value it didnt know what to do with
-    #[error("unknown characther {char:?} encountered in source code")]
+    #[error("unknown character {char:?} encountered in source code")]
     #[diagnostic(code(parsing::unknown_char))]
-    UnknownCharacther {
-        /// The location of the characther
-        #[label("This characther was not understood by the lexer")]
+    UnknownCharacter {
+        /// The location of the character
+        #[label("This character was not understood by the lexer")]
         location: Span,
-        /// The characther
+        /// The character
         char: char,
     },
 
@@ -54,12 +56,72 @@ pub enum ParsingError {
 
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
-    #[diagnostic(code(parsing::internal_error))]
+    #[diagnostic(code(internal_error))]
     InternalError(String),
 }
 
 impl ParsingError {
     /// Create a `ParsingError::InternalError`, but panic in debug mode instead
+    fn internal(msg: impl Into<String>) -> Self {
+        let msg = msg.into();
+        debug_assert!(false, "{msg}");
+        Self::InternalError(msg)
+    }
+}
+
+/// An error occurred while building the graph.
+#[derive(Debug, Error, Diagnostic)]
+pub enum CompileError {
+    /// Mismatched type Error
+    #[error("Expected `{expected}` got `{got}`")]
+    #[diagnostic(code(compiler::type_mismatch))]
+    TypeMismatch {
+        /// The expected type
+        expected: String,
+        /// The type we got
+        got: String,
+        /// The location of the offending type in the source code
+        #[label("Has type `{got}`")]
+        location: Span,
+    },
+
+    /// Argument mismatch
+    #[error("Expected {expected} arguments got {got}")]
+    #[diagnostic(code(compiler::argument_count))]
+    #[diagnostic(help(
+        "Remember that chaining counts as a argument, `... > Foo(1, 2)` has 3 arguments passed for example."
+    ))]
+    ArgumentCountMismatch {
+        /// The expected number of arguments
+        expected: usize,
+        /// The number of arguments we got
+        got: usize,
+        /// The location of the node in the source code
+        #[label("This node expects {expected} arguments")]
+        location: Span,
+    },
+
+    /// A name wasn't found in scope
+    #[error("{kind} '{ident}' not found in scope")]
+    #[diagnostic(code(compiler::item_not_found))]
+    ItemNotFound {
+        /// Node/Value
+        kind: &'static str,
+        /// The name that wasn't found
+        ident: String,
+        /// The location of the name
+        #[label("Item with this name not found")]
+        location: Span,
+    },
+
+    /// Unhandled internal error.
+    #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
+    #[diagnostic(code(internal_error))]
+    InternalError(String),
+}
+
+impl CompileError {
+    /// Create a `CompileError::InternalError`, but panic in debug mode instead
     fn internal(msg: impl Into<String>) -> Self {
         let msg = msg.into();
         debug_assert!(false, "{msg}");
@@ -74,25 +136,27 @@ pub fn parse(code: &str) -> Result<ast::File<'_>, Vec<ParsingError>> {
 }
 
 /// Parse and process the given file into a full node graph
-pub fn process_file(file: &Path) -> Result<(), crate::SerpentineError> {
-    let code = std::fs::read_to_string(file).map_err(|io_error| {
-        crate::SerpentineError::FileReadingError {
+pub fn process_file(file: &Path) -> Result<compiler::CompileResult, crate::SerpentineError> {
+    let code =
+        std::fs::read_to_string(file).map_err(|io_error| crate::SerpentineError::FileReading {
             file: file.to_owned(),
             inner: io_error,
-        }
-    })?;
+        })?;
 
     let ast = match parse(&code) {
         Ok(ast) => ast,
         Err(parse_errors) => {
-            return Err(crate::SerpentineError::ParsingError {
+            return Err(crate::SerpentineError::Parsing {
                 source_code: miette::NamedSource::new(file.to_string_lossy(), code),
                 error: parse_errors,
             });
         }
     };
 
-    Ok(())
+    compiler::compile_file(ast).map_err(|compile_err| crate::SerpentineError::Compile {
+        source_code: miette::NamedSource::new(file.to_string_lossy(), code),
+        error: vec![compile_err],
+    })
 }
 
 #[cfg(test)]

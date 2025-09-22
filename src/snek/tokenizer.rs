@@ -6,7 +6,7 @@ use crate::snek::span::{Span, Spanned};
 /// a token is a small unit of the input stream.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Token<'src> {
-    /// A identifer
+    /// A identifier
     Ident(&'src str),
     /// A string,
     String(&'src str),
@@ -41,7 +41,7 @@ impl Token<'_> {
 pub struct Tokenizer<'src> {
     /// The code to parse into tokens
     code: &'src str,
-    /// Curent byte we are on
+    /// Current byte we are on
     byte: usize,
 }
 
@@ -72,11 +72,11 @@ impl<'src> Tokenizer<'src> {
     fn read_next_token(&mut self) -> Result<Option<Spanned<Token<'src>>>, super::ParsingError> {
         self.advance_while(char::is_whitespace)?;
 
-        let Some(characther) = self.advance()? else {
+        let Some(character) = self.advance()? else {
             return Ok(None);
         };
 
-        Ok(Some(match characther {
+        Ok(Some(match character {
             '(' => self.span(1).with(Token::OpenParen),
             ')' => self.span(1).with(Token::ClosingParen),
             ';' => self.span(1).with(Token::SemiColon),
@@ -90,17 +90,17 @@ impl<'src> Tokenizer<'src> {
                 let content = content_span.index_str(self.code)?;
                 string_span.with(Token::String(content))
             }
-            characther if characther.is_alphanumeric() => {
+            character if character.is_alphanumeric() => {
                 let consumed = self.advance_while(char::is_alphanumeric)?;
 
-                let span = self.span(consumed.saturating_add(characther.len_utf8()));
+                let span = self.span(consumed.saturating_add(character.len_utf8()));
                 let token = Token::Ident(span.index_str(self.code)?);
                 span.with(token)
             }
-            characther => {
-                return Err(super::ParsingError::UnknownCharacther {
+            character => {
+                return Err(super::ParsingError::UnknownCharacter {
                     location: self.span(1),
-                    char: characther,
+                    char: character,
                 });
             }
         }))
@@ -112,32 +112,32 @@ impl<'src> Tokenizer<'src> {
         predicate: impl Fn(char) -> bool,
     ) -> Result<usize, super::ParsingError> {
         let mut consumed: usize = 0;
-        while let Some(next_characther) = self.peek()?
-            && predicate(next_characther)
+        while let Some(next_character) = self.peek()?
+            && predicate(next_character)
         {
             self.advance()?;
-            consumed = consumed.saturating_add(next_characther.len_utf8());
+            consumed = consumed.saturating_add(next_character.len_utf8());
         }
 
         Ok(consumed)
     }
 
-    /// Peek at the next characther in the code,
+    /// Peek at the next character in the code,
     /// returns None at eof
     fn peek(&self) -> Result<Option<char>, super::ParsingError> {
         match self.code.get(self.byte..) {
             Some(slice) => Ok(slice.chars().next()),
             None => Err(super::ParsingError::internal(
-                "tokenizer byte offset didnt land on characther boundry",
+                "tokenizer byte offset didnt land on character boundary",
             )),
         }
     }
 
-    /// Return the next characther in the string and output `self.byte`
+    /// Return the next character in the string and output `self.byte`
     fn advance(&mut self) -> Result<Option<char>, super::ParsingError> {
         let result = self.peek()?;
-        if let Some(next_characther) = result {
-            self.byte = self.byte.saturating_add(next_characther.len_utf8());
+        if let Some(next_character) = result {
+            self.byte = self.byte.saturating_add(next_character.len_utf8());
         }
         Ok(result)
     }

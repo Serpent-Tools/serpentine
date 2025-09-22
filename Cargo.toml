@@ -12,7 +12,10 @@ categories = ["command-line-utilities", "compilers", "development-tools::build-u
 clap = { version = "4.5.47", features = ["derive"] }
 log = { version = "0.4.28", features = ["kv"] }
 miette = { version = "7.6.0", features = ["fancy"] }
+smallvec = { version = "1.15.1", features = ["union"] }
 thiserror = "2.0.16"
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros"] }
+tokio-scoped = "0.2.0"
 
 [dev-dependencies]
 proptest = "1.7.0"
@@ -50,7 +53,6 @@ arithmetic_side_effects = "deny"
 exit = "deny"
 string_slice = "deny"
 undocumented_unsafe_blocks = "deny"
-
 missing_docs_in_private_items = "warn"
 panic = { level = "deny", priority = 0 }
 

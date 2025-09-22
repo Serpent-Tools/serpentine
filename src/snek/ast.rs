@@ -3,7 +3,7 @@
 use super::span::{Span, Spanned};
 
 /// A type that might not contain a span already, but can construct one from its parts.
-/// This is used to avoid calculating spans until a error has actually occured that requires one.
+/// This is used to avoid calculating spans until a error has actually occurred that requires one.
 pub trait Spannable {
     /// Calculate the effective span of this value
     fn calc_span(&self) -> Span;
