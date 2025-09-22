@@ -7,17 +7,18 @@ use clap::Parser;
 use miette::{Diagnostic, NamedSource};
 use thiserror::Error;
 
+mod engine;
 mod snek;
 
 /// Serpentine is a build system and programming language.
 #[derive(clap::Parser)]
-struct Commands {
+struct Cli {
     /// The pipeline to use, defaults to `./main.snek`
     #[arg(short, long)]
     pipeline: Option<PathBuf>,
 }
 
-impl Commands {
+impl Cli {
     /// Get the pipeline, or fallback to defaults.
     fn pipeline(&self) -> Cow<'_, Path> {
         match self.pipeline.as_ref() {
@@ -32,7 +33,7 @@ impl Commands {
 enum SerpentineError {
     /// We failed to parse the file.
     #[error("Parsing error")]
-    ParsingError {
+    Parsing {
         /// The source code that produced the parsing error
         #[source_code]
         source_code: NamedSource<String>,
@@ -41,10 +42,25 @@ enum SerpentineError {
         error: Vec<snek::ParsingError>,
     },
 
+    /// We failed to compile the file.
+    #[error("Compile Error")]
+    Compile {
+        /// The source code that produced the compile error
+        #[source_code]
+        source_code: NamedSource<String>,
+        /// The compile Error
+        #[related]
+        error: Vec<snek::CompileError>,
+    },
+
+    /// Something failed at runtime.
+    #[error(transparent)]
+    Runtime(engine::RuntimeError),
+
     /// Couldnt read a file needed to compile the code
     #[error("Could not read file {file}")]
     #[diagnostic(code(file_error))]
-    FileReadingError {
+    FileReading {
         /// The file that couldnt be read
         file: PathBuf,
         /// The io error that caused it
@@ -54,9 +70,10 @@ enum SerpentineError {
 }
 
 fn main() -> miette::Result<()> {
-    let command = Commands::parse();
+    let command = Cli::parse();
 
-    snek::process_file(&command.pipeline())?;
+    let result = snek::process_file(&command.pipeline())?;
+    engine::run(result)?;
 
     Ok(())
 }

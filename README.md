@@ -9,7 +9,7 @@ Serpentine is a workflow runner with a huge focus on simplicity and developer er
 It uses its own custom DSL called snek which lets you define a graph of steps to execute.
 
 Serpentine does **not** have the concept of jobs, pipelines, etc. it has the concept of the node, and which nodes depend on which, the end.
-This makes it trivally easy to share setup logic, parallize workflows, etc.
+This makes it trivially easy to share setup logic, parallelize workflows, etc.
 
 ```snek
 Image("rust:latest") > Copy(".", "/app") > Workdir("/app") = base;
