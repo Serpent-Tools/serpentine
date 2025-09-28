@@ -61,6 +61,8 @@ pub struct Chain<'src> {
 pub struct Node<'src> {
     /// The name of this node
     pub name: Ident<'src>,
+    /// Arguments for the node
+    pub arguments: Box<[Expression<'src>]>,
 }
 
 impl Spannable for Node<'_> {
