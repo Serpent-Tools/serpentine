@@ -72,6 +72,19 @@ impl<'src> Parser<'src> {
 
     /// Parse a statement from the current token stream.
     fn parse_statement(&mut self) -> Result<ast::Statement<'src>, ParsingError> {
+        match self.peek()? {
+            Token::Return => {
+                self.next()?;
+                let expression = self.parse_expression()?;
+                self.expect(Token::SemiColon)?;
+                Ok(ast::Statement::Return(expression))
+            }
+            _ => self.parse_expression_statement(),
+        }
+    }
+
+    /// Parse a expression statement from the current token stream.
+    fn parse_expression_statement(&mut self) -> Result<ast::Statement<'src>, ParsingError> {
         let expression = self.parse_expression()?;
 
         let label = if self.peek()? == Token::Eq {

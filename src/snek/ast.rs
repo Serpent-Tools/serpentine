@@ -14,6 +14,8 @@ pub struct File<'src>(pub Box<[Statement<'src>]>);
 
 /// A statement
 pub enum Statement<'src> {
+    /// A return statement
+    Return(Expression<'src>),
     /// A expression statement
     Expression {
         /// Expression of the statement
@@ -26,6 +28,7 @@ pub enum Statement<'src> {
 impl Spannable for Statement<'_> {
     fn calc_span(&self) -> Span {
         match self {
+            Self::Return(value) => value.calc_span(),
             Self::Expression { expression, label } => {
                 if let Some(label) = label {
                     expression.calc_span().join(label.calc_span())

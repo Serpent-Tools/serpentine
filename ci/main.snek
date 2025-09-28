@@ -1,4 +1,6 @@
 Sleep(0, 5) = foo;
 !foo Sleep(0, 5) = bar;
 
-Sleep(0, 5) > !(foo, bar) Add(5) > End();
+Sleep(0, 5) > !(foo, bar) Add(5) = result;
+
+return result;
