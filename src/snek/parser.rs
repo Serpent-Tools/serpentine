@@ -107,7 +107,7 @@ impl<'src> Parser<'src> {
                 let span = self.next()?.span();
                 ast::Expression::String(span.with(value))
             }
-            _ => {
+            Token::Ident(_) => {
                 let ident = self.expect_ident()?;
                 if self.peek()? == Token::OpenParen {
                     ast::Expression::Node(self.parse_node(Some(ident))?)
@@ -115,6 +115,7 @@ impl<'src> Parser<'src> {
                     ast::Expression::Label(ident)
                 }
             }
+            _ => ast::Expression::Node(self.parse_node(None)?),
         })
     }
 
@@ -141,13 +142,34 @@ impl<'src> Parser<'src> {
     /// realized it was a node.
     fn parse_node(
         &mut self,
-        name: Option<ast::Ident<'src>>,
+        pre_parsed_name: Option<ast::Ident<'src>>,
     ) -> Result<ast::Node<'src>, ParsingError> {
-        let name = if let Some(name) = name {
-            name
+        let name;
+        let mut phantom_inputs = Vec::new();
+
+        if let Some(pre_parsed_name) = pre_parsed_name {
+            name = pre_parsed_name;
         } else {
-            self.expect_ident()?
-        };
+            if self.peek()? == Token::Wait {
+                self.next()?;
+
+                if self.peek()? == Token::OpenParen {
+                    self.next()?;
+                    while self.peek()? != Token::ClosingParen {
+                        phantom_inputs.push(self.expect_ident()?);
+
+                        if self.peek()? != Token::ClosingParen {
+                            self.expect(Token::Comma)?;
+                        }
+                    }
+                    self.next()?;
+                } else {
+                    phantom_inputs.push(self.expect_ident()?);
+                }
+            }
+
+            name = self.expect_ident()?;
+        }
 
         self.expect(Token::OpenParen)?;
         let mut arguments = Vec::new();
@@ -158,11 +180,12 @@ impl<'src> Parser<'src> {
                 self.expect(Token::Comma)?;
             }
         }
-        self.expect(Token::ClosingParen)?;
+        self.next()?;
 
         Ok(ast::Node {
             name,
             arguments: arguments.into_boxed_slice(),
+            phantom_inputs: phantom_inputs.into_boxed_slice(),
         })
     }
 

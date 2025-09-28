@@ -24,6 +24,8 @@ pub enum Token<'src> {
     Comma,
     /// `=`
     Eq,
+    /// `!`
+    Wait,
     /// End of file
     Eof,
 }
@@ -41,6 +43,7 @@ impl Token<'_> {
             Self::Pipe => ">".to_owned(),
             Self::Comma => ",".to_owned(),
             Self::Eq => "=".to_owned(),
+            Self::Wait => "!".to_owned(),
             Self::Eof => "end of file".to_owned(),
         }
     }
@@ -92,6 +95,7 @@ impl<'src> Tokenizer<'src> {
             '>' => self.span(1).with(Token::Pipe),
             ',' => self.span(1).with(Token::Comma),
             '=' => self.span(1).with(Token::Eq),
+            '!' => self.span(1).with(Token::Wait),
             '"' => {
                 let consumed = self.advance_while(|next_char| next_char != '"')?;
                 let content_span = self.span(consumed);

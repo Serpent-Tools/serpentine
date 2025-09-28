@@ -7,15 +7,16 @@ description = "Node based build system written in rust."
 license = "MIT"
 keywords = ["docker", "containers", "build-system", "testing", "CI"]
 categories = ["command-line-utilities", "compilers", "development-tools::build-utils", "development-tools::testing", "virtualization"]
+repository = "https://github.com/Serpent-Tools/serpentine"
 
 [dependencies]
 clap = { version = "4.5.47", features = ["derive"] }
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 log = { version = "0.4.28", features = ["kv"] }
 miette = { version = "7.6.0", features = ["fancy"] }
 smallvec = { version = "1.15.1", features = ["union"] }
 thiserror = "2.0.16"
-tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros"] }
-tokio-scoped = "0.2.0"
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "time"] }
 
 [dev-dependencies]
 proptest = "1.7.0"
@@ -63,7 +64,6 @@ cfg_not_test = "warn"
 clone_on_ref_ptr = "warn"
 empty_drop = "deny"
 empty_enum_variants_with_brackets = "warn"
-empty_struct_with_brackets = "warn"
 field_scoped_visibility_modifiers = "warn"
 filetype_is_file = "warn"
 float_cmp_const = "warn"
