@@ -16,8 +16,10 @@ pub enum Token<'src> {
     ClosingParen,
     /// `;`
     SemiColon,
-    /// '>'
+    /// `>`
     Pipe,
+    /// `,`
+    Comma,
     /// End of file
     Eof,
 }
@@ -32,6 +34,7 @@ impl Token<'_> {
             Self::ClosingParen => ")".to_owned(),
             Self::SemiColon => ";".to_owned(),
             Self::Pipe => ">".to_owned(),
+            Self::Comma => ",".to_owned(),
             Self::Eof => "end of file".to_owned(),
         }
     }
@@ -81,6 +84,7 @@ impl<'src> Tokenizer<'src> {
             ')' => self.span(1).with(Token::ClosingParen),
             ';' => self.span(1).with(Token::SemiColon),
             '>' => self.span(1).with(Token::Pipe),
+            ',' => self.span(1).with(Token::Comma),
             '"' => {
                 let consumed = self.advance_while(|next_char| next_char != '"')?;
                 let content_span = self.span(consumed);

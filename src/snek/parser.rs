@@ -108,9 +108,22 @@ impl<'src> Parser<'src> {
     /// Parse a node, `Ident()`
     fn parse_node(&mut self) -> Result<ast::Node<'src>, ParsingError> {
         let name = self.expect_ident()?;
+
         self.expect(Token::OpenParen)?;
+        let mut arguments = Vec::new();
+        while self.peek()? != Token::ClosingParen {
+            arguments.push(self.parse_expression()?);
+
+            if self.peek()? != Token::ClosingParen {
+                self.expect(Token::Comma)?;
+            }
+        }
         self.expect(Token::ClosingParen)?;
-        Ok(ast::Node { name })
+
+        Ok(ast::Node {
+            name,
+            arguments: arguments.into_boxed_slice(),
+        })
     }
 
     /// If the next token is the given token return its span, otherwise return a error

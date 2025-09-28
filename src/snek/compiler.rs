@@ -73,7 +73,7 @@ struct Value {
     /// The type of the value.
     type_: DataType,
     /// The span of where the value is from
-    location: Span,
+    span: Span,
 }
 
 /// Compile a file into its result.
@@ -141,13 +141,20 @@ fn compile_node(
     scope: &Scope,
 ) -> Result<Value, CompileError> {
     let kind = scope.node(node.name.0)?;
+    let span = node.calc_span();
 
     let mut argument_nodes = Vec::new();
     let mut argument_types = Vec::new();
 
     if let Some(previous) = previous {
         argument_nodes.push(previous.node);
-        argument_types.push(previous.location.with(previous.type_));
+        argument_types.push(previous.span.with(previous.type_));
+    }
+
+    for argument in node.arguments {
+        let result = compile_expression(argument, result, scope)?;
+        argument_nodes.push(result.node);
+        argument_types.push(result.span.with(result.type_));
     }
 
     let node_impl = result
@@ -169,6 +176,6 @@ fn compile_node(
     Ok(Value {
         node: node_id,
         type_: return_type,
-        location: node.calc_span(),
+        span,
     })
 }
