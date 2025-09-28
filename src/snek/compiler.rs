@@ -2,7 +2,17 @@
 
 use std::collections::HashMap;
 
-use crate::engine::data_model::{DataType, Graph, Node, NodeInstanceId, NodeKindId, NodeStorage};
+use smallvec::SmallVec;
+
+use crate::engine::data_model::{
+    Data,
+    DataType,
+    Graph,
+    Node,
+    NodeInstanceId,
+    NodeKindId,
+    NodeStorage,
+};
 use crate::engine::nodes;
 use crate::snek::ast::Spannable;
 use crate::snek::span::{Span, Spanned};
@@ -114,10 +124,27 @@ fn compile_expression(
     result: &mut CompileResult,
     scope: &Scope,
 ) -> Result<Value, CompileError> {
-    match expression {
-        ast::Expression::Node(node) => compile_node(node, None, result, scope),
-        ast::Expression::Chain(chain) => compile_chain(chain, result, scope),
-    }
+    let (data, type_, span) = match expression {
+        ast::Expression::Node(node) => return compile_node(node, None, result, scope),
+        ast::Expression::Chain(chain) => return compile_chain(chain, result, scope),
+        ast::Expression::Number(value) => (Data::Int(*value), DataType::Int, value.span()),
+        ast::Expression::String(value) => (
+            Data::String((**value).into()),
+            DataType::String,
+            value.span(),
+        ),
+    };
+
+    let kind = result.nodes.push(Box::new(nodes::LiteralNode(data)));
+    let id = result.graph.push(Node {
+        kind,
+        inputs: SmallVec::new(),
+    });
+    Ok(Value {
+        node: id,
+        type_,
+        span,
+    })
 }
 
 /// Compile a node chain

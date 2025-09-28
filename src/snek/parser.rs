@@ -79,13 +79,28 @@ impl<'src> Parser<'src> {
 
     /// Parse a expression
     fn parse_expression(&mut self) -> Result<ast::Expression<'src>, ParsingError> {
-        let node = ast::Expression::Node(self.parse_node()?);
+        let value = self.parse_atom()?;
 
         if self.peek()? == Token::Pipe {
-            Ok(ast::Expression::Chain(self.parse_chain(node)?))
+            Ok(ast::Expression::Chain(self.parse_chain(value)?))
         } else {
-            Ok(node)
+            Ok(value)
         }
+    }
+
+    /// Parse a simple expression (literal, var, node)
+    fn parse_atom(&mut self) -> Result<ast::Expression<'src>, ParsingError> {
+        Ok(match self.peek()? {
+            Token::Numeric(value) => {
+                let span = self.next()?.span();
+                ast::Expression::Number(span.with(value))
+            }
+            Token::String(value) => {
+                let span = self.next()?.span();
+                ast::Expression::String(span.with(value))
+            }
+            _ => ast::Expression::Node(self.parse_node()?),
+        })
     }
 
     /// Parse a chain of nodes, `expression > Node > Node = ident`

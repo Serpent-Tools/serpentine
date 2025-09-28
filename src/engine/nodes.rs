@@ -248,23 +248,45 @@ impl NodeImpl for Noop {
     }
 }
 
+/// A node the just returns the given value
+pub struct LiteralNode(pub Data);
+
+impl NodeImpl for LiteralNode {
+    fn return_type(
+        &self,
+        _arguments: &[Spanned<DataType>],
+        _node_span: Span,
+    ) -> Result<DataType, CompileError> {
+        // This node is directly constructed by the compiler and shouldnt end up in the type check
+        // flow.
+        Err(CompileError::internal("return_type called on literal node"))
+    }
+
+    fn execute<'scheduler>(
+        &'scheduler self,
+        _scheduler: &'scheduler Scheduler,
+        _inputs: &'scheduler [NodeInstanceId],
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+}
+
 /// Return the list of prelude nodes
 pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     let mut nodes: HashMap<&'static str, Box<dyn NodeImpl>> = HashMap::new();
 
     nodes.insert("End", Box::new(Noop));
     nodes.insert("Noop", Box::new(Noop));
-    nodes.insert("A", Box::new(Wrap::<_, ()>::new(async || Ok(10_i128))));
     nodes.insert(
-        "B",
-        Box::new(Wrap::<_, i128>::new(
-            async |x: i128| Ok(x.saturating_add(5)),
-        )),
-    );
-    nodes.insert(
-        "C",
+        "Add",
         Box::new(Wrap::<_, (i128, i128)>::new(async |x: i128, y: i128| {
             Ok(x.saturating_add(y))
+        })),
+    );
+    nodes.insert(
+        "Len",
+        Box::new(Wrap::<_, Box<str>>::new(async |x: Box<str>| {
+            Ok(x.len() as i128)
         })),
     );
     nodes
