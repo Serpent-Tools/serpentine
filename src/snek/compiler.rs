@@ -33,6 +33,8 @@ pub struct CompileResult {
 struct Scope<'parent> {
     /// The node names in the local scope
     nodes: HashMap<Box<str>, NodeKindId>,
+    /// Labels for node values
+    labels: HashMap<Box<str>, Value>,
     /// The values in the parent scope.
     parent: Option<&'parent Scope<'parent>>,
 }
@@ -46,6 +48,7 @@ impl Scope<'static> {
             .collect();
         Self {
             nodes,
+            labels: HashMap::new(),
             parent: None,
         }
     }
@@ -56,6 +59,7 @@ impl Scope<'_> {
     fn child(&self) -> Scope<'_> {
         Scope {
             nodes: HashMap::new(),
+            labels: HashMap::new(),
             parent: Some(self),
         }
     }
@@ -74,9 +78,30 @@ impl Scope<'_> {
             })
         }
     }
+
+    /// Lookup a label in this scope
+    fn label(&self, name: Spanned<&str>) -> Result<&Value, CompileError> {
+        if let Some(node) = self.labels.get(&**name) {
+            Ok(node)
+        } else if let Some(parent) = self.parent {
+            parent.label(name)
+        } else {
+            Err(CompileError::ItemNotFound {
+                kind: "Label",
+                ident: name.to_string(),
+                location: name.span(),
+            })
+        }
+    }
+
+    /// Define a new label in this scope
+    fn define_label(&mut self, name: Box<str>, value: Value) {
+        self.labels.insert(name, value);
+    }
 }
 
 /// A value in the compiler step
+#[derive(Clone)]
 struct Value {
     /// The node the value is from
     node: NodeInstanceId,
@@ -110,8 +135,11 @@ fn compile_statement(
     scope: &mut Scope,
 ) -> Result<(), CompileError> {
     match statement {
-        ast::Statement::Expression(expression) => {
-            compile_expression(expression, result, scope)?;
+        ast::Statement::Expression { expression, label } => {
+            let value = compile_expression(expression, result, scope)?;
+            if let Some(label) = label {
+                scope.define_label((**label.0).into(), value);
+            }
         }
     }
 
@@ -127,6 +155,11 @@ fn compile_expression(
     let (data, type_, span) = match expression {
         ast::Expression::Node(node) => return compile_node(node, None, result, scope),
         ast::Expression::Chain(chain) => return compile_chain(chain, result, scope),
+        ast::Expression::Label(label) => {
+            return scope
+                .label(label.calc_span().with((**label.0).into()))
+                .cloned();
+        }
         ast::Expression::Number(value) => (Data::Int(*value), DataType::Int, value.span()),
         ast::Expression::String(value) => (
             Data::String((**value).into()),

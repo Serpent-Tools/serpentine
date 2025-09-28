@@ -15,13 +15,24 @@ pub struct File<'src>(pub Box<[Statement<'src>]>);
 /// A statement
 pub enum Statement<'src> {
     /// A expression statement
-    Expression(Expression<'src>),
+    Expression {
+        /// Expression of the statement
+        expression: Expression<'src>,
+        /// A optional label to store the value at.
+        label: Option<Ident<'src>>,
+    },
 }
 
 impl Spannable for Statement<'_> {
     fn calc_span(&self) -> Span {
         match self {
-            Self::Expression(expression) => expression.calc_span(),
+            Self::Expression { expression, label } => {
+                if let Some(label) = label {
+                    expression.calc_span().join(label.calc_span())
+                } else {
+                    expression.calc_span()
+                }
+            }
         }
     }
 }
@@ -38,6 +49,8 @@ pub enum Expression<'src> {
     Number(Spanned<i128>),
     /// A string
     String(Spanned<&'src str>),
+    /// A node label
+    Label(Ident<'src>),
     /// The value is the result of this no input node
     Node(Node<'src>),
     /// A chain of nodes
@@ -49,6 +62,7 @@ impl Spannable for Expression<'_> {
         match self {
             Self::Number(number) => number.span(),
             Self::String(string) => string.span(),
+            Self::Label(label) => label.calc_span(),
             Self::Node(node) => node.calc_span(),
             Self::Chain(chain) => chain.calc_span(),
         }

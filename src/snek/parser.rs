@@ -73,8 +73,16 @@ impl<'src> Parser<'src> {
     /// Parse a statement from the current token stream.
     fn parse_statement(&mut self) -> Result<ast::Statement<'src>, ParsingError> {
         let expression = self.parse_expression()?;
+
+        let label = if self.peek()? == Token::Eq {
+            self.next()?;
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
         self.expect(Token::SemiColon)?;
-        Ok(ast::Statement::Expression(expression))
+        Ok(ast::Statement::Expression { expression, label })
     }
 
     /// Parse a expression
@@ -99,11 +107,18 @@ impl<'src> Parser<'src> {
                 let span = self.next()?.span();
                 ast::Expression::String(span.with(value))
             }
-            _ => ast::Expression::Node(self.parse_node()?),
+            _ => {
+                let ident = self.expect_ident()?;
+                if self.peek()? == Token::OpenParen {
+                    ast::Expression::Node(self.parse_node(Some(ident))?)
+                } else {
+                    ast::Expression::Label(ident)
+                }
+            }
         })
     }
 
-    /// Parse a chain of nodes, `expression > Node > Node = ident`
+    /// Parse a chain of nodes, `expression > Node > Node`
     fn parse_chain(
         &mut self,
         start: ast::Expression<'src>,
@@ -111,7 +126,7 @@ impl<'src> Parser<'src> {
         let mut nodes = Vec::new();
         while self.peek()? == Token::Pipe {
             self.next()?;
-            nodes.push(self.parse_node()?);
+            nodes.push(self.parse_node(None)?);
         }
 
         Ok(ast::Chain {
@@ -120,9 +135,19 @@ impl<'src> Parser<'src> {
         })
     }
 
-    /// Parse a node, `Ident()`
-    fn parse_node(&mut self) -> Result<ast::Node<'src>, ParsingError> {
-        let name = self.expect_ident()?;
+    /// Parse a node
+    ///
+    /// If `name` is passed its assumed a previous parser attempted to grab a ident, but then
+    /// realized it was a node.
+    fn parse_node(
+        &mut self,
+        name: Option<ast::Ident<'src>>,
+    ) -> Result<ast::Node<'src>, ParsingError> {
+        let name = if let Some(name) = name {
+            name
+        } else {
+            self.expect_ident()?
+        };
 
         self.expect(Token::OpenParen)?;
         let mut arguments = Vec::new();

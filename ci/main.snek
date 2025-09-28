@@ -1,1 +1,4 @@
-100 > Add(Len("Hello")) > End();
+5 = five;
+Add(2, 3) > Add(five) > Sleep(5) = ten;
+
+Add(ten, ten) > Add(ten) > End();
