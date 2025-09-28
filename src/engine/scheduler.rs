@@ -34,6 +34,12 @@ impl Scheduler {
 
         cell.get_or_try_init(async || {
             let node = self.graph.get(node)?;
+
+            futures_util::future::try_join_all(
+                node.phantom_inputs.iter().map(|id| self.get_output(*id)),
+            )
+            .await?;
+
             let node_impl = self
                 .nodes
                 .get(node.kind)

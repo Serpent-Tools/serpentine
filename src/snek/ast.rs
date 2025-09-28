@@ -83,6 +83,8 @@ pub struct Node<'src> {
     pub name: Ident<'src>,
     /// Arguments for the node
     pub arguments: Box<[Expression<'src>]>,
+    /// Phantom inputs the block the rest of the node from running.
+    pub phantom_inputs: Box<[Ident<'src>]>,
 }
 
 impl Spannable for Node<'_> {

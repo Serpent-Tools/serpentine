@@ -172,6 +172,7 @@ fn compile_expression(
     let id = result.graph.push(Node {
         kind,
         inputs: SmallVec::new(),
+        phantom_inputs: SmallVec::new(),
     });
     Ok(Value {
         node: id,
@@ -223,9 +224,19 @@ fn compile_node(
         .ok_or_else(|| CompileError::internal("NodeKindID out of bounds"))?;
     let return_type = node_impl.return_type(&argument_types, node.name.calc_span())?;
 
+    let mut phantom_inputs = Vec::new();
+    for input in node.phantom_inputs {
+        phantom_inputs.push(
+            scope
+                .label(input.calc_span().with((**input.0).into()))?
+                .node,
+        );
+    }
+
     let graph_node = Node {
         kind,
         inputs: argument_nodes.into(),
+        phantom_inputs: phantom_inputs.into(),
     };
     let node_id = result.graph.push(graph_node);
 

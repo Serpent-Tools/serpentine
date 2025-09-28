@@ -91,6 +91,8 @@ pub struct Node {
     pub kind: NodeKindId,
     /// The node ids for this inputs
     pub inputs: SmallVec<[NodeInstanceId; 2]>, // 2 usize / usize
+    /// Phantom inputs to this node, these will be resolved before the nodes actual logic runs.
+    pub phantom_inputs: SmallVec<[NodeInstanceId; 2]>,
 }
 
 /// Contains the graph
