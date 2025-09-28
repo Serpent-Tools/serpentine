@@ -119,7 +119,7 @@ impl<'src> Tokenizer<'src> {
                 let content = content_span.index_str(self.code)?;
                 string_span.with(Token::String(content))
             }
-            character if character == '-' || character.is_numeric() => {
+            character if character.is_numeric() => {
                 let consumed = self.advance_while(char::is_numeric)?;
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
                 let number = span.index_str(self.code)?;
@@ -129,7 +129,9 @@ impl<'src> Tokenizer<'src> {
                 span.with(Token::Numeric(number))
             }
             character if character.is_alphabetic() => {
-                let consumed = self.advance_while(char::is_alphanumeric)?;
+                let consumed = self.advance_while(|characther| {
+                    characther.is_alphanumeric() || characther == '-' || characther == '_'
+                })?;
 
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
                 let text = span.index_str(self.code)?;

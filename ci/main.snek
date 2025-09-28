@@ -2,5 +2,5 @@ def SleepFive(input) {
     return input > Sleep(5);
 }
 
-Sleep(0, 5) > sleep_five;
-return 10 > !sleep-five SleepFive();
+Sleep(0, 5) = sleep_five;
+return 10 > !sleep_five SleepFive();
