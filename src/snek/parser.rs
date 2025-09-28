@@ -18,56 +18,22 @@ impl<'src> Parser<'src> {
     /// Parse the given tokens as a complete snek file
     pub fn parse_file(
         tokens: Box<[Spanned<Token<'src>>]>,
-    ) -> Result<ast::File<'src>, Vec<ParsingError>> {
+    ) -> Result<ast::File<'src>, ParsingError> {
         let mut parser = Self {
             tokens: tokens.into_iter().peekable(),
         };
 
         let mut statements = Vec::new();
-        let mut errors = Vec::new();
 
         while parser
             .tokens
             .peek()
             .is_some_and(|token| !matches!(**token, Token::Eof))
         {
-            match parser.parse_statement() {
-                Ok(stmt) => statements.push(stmt),
-                Err(parsing_error) => {
-                    errors.push(parsing_error);
-                    if let Err(err) = parser.error_recovery() {
-                        errors.push(err);
-                    }
-                }
-            }
+            statements.push(parser.parse_statement()?);
         }
 
-        if errors.is_empty() {
-            Ok(ast::File(statements.into_boxed_slice()))
-        } else {
-            Err(errors)
-        }
-    }
-
-    /// Eat tokens until we consume a Eof or Semicolon.
-    fn error_recovery(&mut self) -> Result<(), ParsingError> {
-        if self.tokens.peek().is_none() {
-            return Ok(());
-        }
-
-        loop {
-            match self.peek()? {
-                Token::Eof => break,
-                Token::SemiColon => {
-                    self.next()?;
-                    break;
-                }
-                _ => {
-                    self.next()?;
-                }
-            }
-        }
-        Ok(())
+        Ok(ast::File(statements.into_boxed_slice()))
     }
 
     /// Parse a statement from the current token stream.
@@ -78,6 +44,24 @@ impl<'src> Parser<'src> {
                 let expression = self.parse_expression()?;
                 self.expect(Token::SemiColon)?;
                 Ok(ast::Statement::Return(expression))
+            }
+            Token::Def => {
+                self.next()?;
+                let name = self.expect_ident()?;
+
+                self.expect(Token::OpenParen)?;
+                let paramaters =
+                    self.parse_list(Token::ClosingParen, Some(Token::Comma), Self::expect_ident)?;
+
+                self.expect(Token::OpenBracket)?;
+                let statements =
+                    self.parse_list(Token::ClosingBracket, None, Self::parse_statement)?;
+
+                Ok(ast::Statement::Function {
+                    name,
+                    paramters: paramaters.into_boxed_slice(),
+                    statements: statements.into_boxed_slice(),
+                })
             }
             _ => self.parse_expression_statement(),
         }
@@ -168,16 +152,13 @@ impl<'src> Parser<'src> {
 
                 if self.peek()? == Token::OpenParen {
                     self.next()?;
-                    while self.peek()? != Token::ClosingParen {
-                        phantom_inputs.push(self.expect_ident()?);
-
-                        if self.peek()? != Token::ClosingParen {
-                            self.expect(Token::Comma)?;
-                        }
-                    }
-                    self.next()?;
+                    phantom_inputs = self.parse_list(
+                        Token::ClosingParen,
+                        Some(Token::Comma),
+                        Self::expect_ident,
+                    )?;
                 } else {
-                    phantom_inputs.push(self.expect_ident()?);
+                    phantom_inputs = vec![self.expect_ident()?];
                 }
             }
 
@@ -185,21 +166,40 @@ impl<'src> Parser<'src> {
         }
 
         self.expect(Token::OpenParen)?;
-        let mut arguments = Vec::new();
-        while self.peek()? != Token::ClosingParen {
-            arguments.push(self.parse_expression()?);
-
-            if self.peek()? != Token::ClosingParen {
-                self.expect(Token::Comma)?;
-            }
-        }
-        self.next()?;
+        let arguments = self.parse_list(
+            Token::ClosingParen,
+            Some(Token::Comma),
+            Self::parse_expression,
+        )?;
 
         Ok(ast::Node {
             name,
             arguments: arguments.into_boxed_slice(),
             phantom_inputs: phantom_inputs.into_boxed_slice(),
         })
+    }
+
+    /// Parse a list of items from the token stream.
+    /// Will stop once hits `closing`.
+    /// If provided will consume `seperator` between calls to `parser`.
+    fn parse_list<T>(
+        &mut self,
+        closing: Token,
+        seperator: Option<Token>,
+        parser: impl Fn(&mut Self) -> Result<T, ParsingError>,
+    ) -> Result<Vec<T>, ParsingError> {
+        let mut result = Vec::new();
+        while self.peek()? != closing {
+            result.push(parser(self)?);
+
+            if let Some(seperator) = seperator
+                && self.peek()? == seperator
+            {
+                self.next()?;
+            }
+        }
+        self.next()?;
+        Ok(result)
     }
 
     /// If the next token is the given token return its span, otherwise return a error

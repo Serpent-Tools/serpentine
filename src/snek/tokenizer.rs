@@ -16,6 +16,10 @@ pub enum Token<'src> {
     OpenParen,
     /// `)`
     ClosingParen,
+    /// `{`
+    OpenBracket,
+    /// `}`
+    ClosingBracket,
     /// `;`
     SemiColon,
     /// `>`
@@ -28,6 +32,8 @@ pub enum Token<'src> {
     Wait,
     /// `return`
     Return,
+    /// `def`
+    Def,
     /// End of file
     Eof,
 }
@@ -41,12 +47,15 @@ impl Token<'_> {
             Self::Numeric(value) => format!("{value:?}"),
             Self::OpenParen => "(".to_owned(),
             Self::ClosingParen => ")".to_owned(),
+            Self::OpenBracket => "{".to_owned(),
+            Self::ClosingBracket => "}".to_owned(),
             Self::SemiColon => ";".to_owned(),
             Self::Pipe => ">".to_owned(),
             Self::Comma => ",".to_owned(),
             Self::Eq => "=".to_owned(),
             Self::Wait => "!".to_owned(),
             Self::Return => "return".to_owned(),
+            Self::Def => "def".to_owned(),
             Self::Eof => "end of file".to_owned(),
         }
     }
@@ -94,6 +103,8 @@ impl<'src> Tokenizer<'src> {
         Ok(Some(match character {
             '(' => self.span(1).with(Token::OpenParen),
             ')' => self.span(1).with(Token::ClosingParen),
+            '{' => self.span(1).with(Token::OpenBracket),
+            '}' => self.span(1).with(Token::ClosingBracket),
             ';' => self.span(1).with(Token::SemiColon),
             '>' => self.span(1).with(Token::Pipe),
             ',' => self.span(1).with(Token::Comma),
@@ -124,6 +135,7 @@ impl<'src> Tokenizer<'src> {
                 let text = span.index_str(self.code)?;
                 let token = match text {
                     "return" => Token::Return,
+                    "def" => Token::Def,
                     _ => Token::Ident(text),
                 };
                 span.with(token)

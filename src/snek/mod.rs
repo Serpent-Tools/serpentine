@@ -114,6 +114,26 @@ pub enum CompileError {
         location: Span,
     },
 
+    /// A return was missing.
+    #[error("No return found.")]
+    #[diagnostic(code(compiler::no_return))]
+    ReturnNotFound {
+        /// In what kind of context was a return missing (file/function)
+        in_what: &'static str,
+        /// A logical place to point for the error.
+        #[label("In this {in_what}.")]
+        location: Span,
+    },
+
+    /// Two returns were found.
+    #[error("Multiple returns")]
+    #[diagnostic(code(compiler::double_return))]
+    DoubleReturn {
+        /// Where was the second return found.
+        #[label("Second return after exsisting return.")]
+        location: Span,
+    },
+
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
     #[diagnostic(code(internal_error))]
@@ -132,7 +152,7 @@ impl CompileError {
 /// Parse the given string into a ast
 pub fn parse(code: &str) -> Result<ast::File<'_>, Vec<ParsingError>> {
     let tokens = tokenizer::Tokenizer::tokenize(code)?;
-    parser::Parser::parse_file(tokens)
+    parser::Parser::parse_file(tokens).map_err(|err| vec![err])
 }
 
 /// Parse and process the given file into a full node graph
@@ -153,7 +173,7 @@ pub fn process_file(file: &Path) -> Result<compiler::CompileResult, crate::Serpe
         }
     };
 
-    compiler::compile_file(ast).map_err(|compile_err| crate::SerpentineError::Compile {
+    compiler::Compiler::compile_file(&ast).map_err(|compile_err| crate::SerpentineError::Compile {
         source_code: miette::NamedSource::new(file.to_string_lossy(), code),
         error: vec![compile_err],
     })

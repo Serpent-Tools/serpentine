@@ -12,11 +12,6 @@ use crate::snek::CompileResult;
 /// An error encountered while running the source code
 #[derive(Debug, Error, Diagnostic)]
 pub enum RuntimeError {
-    /// The graph has return
-    #[error("No return in graph top-level")]
-    #[diagnostic(code(runtime::no_end))]
-    NoReturn,
-
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
     #[diagnostic(code(internal_error))]
@@ -34,9 +29,7 @@ impl RuntimeError {
 
 /// Run the given compilation result
 pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> {
-    let start_node = compile_result
-        .start_node
-        .ok_or(crate::SerpentineError::Runtime(RuntimeError::NoReturn))?;
+    let start_node = compile_result.start_node;
 
     let scheduler = scheduler::Scheduler::new(compile_result.nodes, compile_result.graph);
     let result = tokio::runtime::Builder::new_current_thread()
