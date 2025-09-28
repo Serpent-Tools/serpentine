@@ -34,6 +34,10 @@ impl Spannable for Chain<'_> {
 
 /// A value
 pub enum Expression<'src> {
+    /// A number
+    Number(Spanned<i128>),
+    /// A string
+    String(Spanned<&'src str>),
     /// The value is the result of this no input node
     Node(Node<'src>),
     /// A chain of nodes
@@ -43,6 +47,8 @@ pub enum Expression<'src> {
 impl Spannable for Expression<'_> {
     fn calc_span(&self) -> Span {
         match self {
+            Self::Number(number) => number.span(),
+            Self::String(string) => string.span(),
             Self::Node(node) => node.calc_span(),
             Self::Chain(chain) => chain.calc_span(),
         }

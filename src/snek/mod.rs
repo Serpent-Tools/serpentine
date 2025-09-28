@@ -122,7 +122,7 @@ pub enum CompileError {
 
 impl CompileError {
     /// Create a `CompileError::InternalError`, but panic in debug mode instead
-    fn internal(msg: impl Into<String>) -> Self {
+    pub fn internal(msg: impl Into<String>) -> Self {
         let msg = msg.into();
         debug_assert!(false, "{msg}");
         Self::InternalError(msg)

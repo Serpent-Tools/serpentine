@@ -10,6 +10,8 @@ pub enum Token<'src> {
     Ident(&'src str),
     /// A string,
     String(&'src str),
+    /// A number
+    Numeric(i128),
     /// `(`
     OpenParen,
     /// `)`
@@ -30,6 +32,7 @@ impl Token<'_> {
         match self {
             Self::Ident(value) => format!("identifier ({value:?})"),
             Self::String(value) => format!("{value:?}"),
+            Self::Numeric(value) => format!("{value:?}"),
             Self::OpenParen => "(".to_owned(),
             Self::ClosingParen => ")".to_owned(),
             Self::SemiColon => ";".to_owned(),
@@ -94,7 +97,16 @@ impl<'src> Tokenizer<'src> {
                 let content = content_span.index_str(self.code)?;
                 string_span.with(Token::String(content))
             }
-            character if character.is_alphanumeric() => {
+            character if character == '-' || character.is_numeric() => {
+                let consumed = self.advance_while(char::is_numeric)?;
+                let span = self.span(consumed.saturating_add(character.len_utf8()));
+                let number = span.index_str(self.code)?;
+                let number = number
+                    .parse::<i128>()
+                    .map_err(|err| ParsingError::internal(err.to_string()))?;
+                span.with(Token::Numeric(number))
+            }
+            character if character.is_alphabetic() => {
                 let consumed = self.advance_while(char::is_alphanumeric)?;
 
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
