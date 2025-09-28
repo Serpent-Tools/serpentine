@@ -1,5 +1,6 @@
-def SleepLen(input, string) {
-    return input > Sleep(Len(string));
+def SleepFive(input) {
+    return input > Sleep(5);
 }
 
-return 10 > SleepLen("Hello");
+Sleep(0, 5) > sleep_five;
+return 10 > !sleep-five SleepFive();

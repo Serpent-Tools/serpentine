@@ -359,11 +359,20 @@ impl Compiler {
                     function_scope.define_label(name.clone(), value);
                 }
 
-                let Some(return_value) = self.compile_statements(body, &mut function_scope)? else {
-                    return Err(CompileError::ReturnNotFound {
-                        in_what: "function",
-                        location: *source,
-                    });
+                let return_value = match self.compile_statements(body, &mut function_scope) {
+                    Ok(Some(return_value)) => return_value,
+                    Ok(None) => {
+                        return Err(CompileError::ReturnNotFound {
+                            in_what: "function",
+                            location: *source,
+                        });
+                    }
+                    Err(err) => {
+                        return Err(CompileError::InlineError {
+                            error: Box::new(err),
+                            call: span,
+                        });
+                    }
                 };
 
                 let phantom_node = self.graph.push(Node {

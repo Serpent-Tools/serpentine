@@ -134,6 +134,7 @@ where F: Fn($($arg),*) -> Fut,
                                 expected: $arg::data_type().describe().to_owned(),
                                 got: argument.describe().to_owned(),
                                 location: argument.span(),
+                                node: node_span,
                             })
                         }
                     }

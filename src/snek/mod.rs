@@ -83,6 +83,9 @@ pub enum CompileError {
         /// The location of the offending type in the source code
         #[label("Has type `{got}`")]
         location: Span,
+        /// The node it was arugments for
+        #[label("In call to this node")]
+        node: Span,
     },
 
     /// Argument mismatch
@@ -132,6 +135,17 @@ pub enum CompileError {
         /// Where was the second return found.
         #[label("Second return after exsisting return.")]
         location: Span,
+    },
+
+    /// A error occurred while inling function
+    #[error("Inlining function failed")]
+    InlineError {
+        /// The error in the function
+        #[diagnostic_source]
+        error: Box<dyn Diagnostic + Send + Sync>,
+        /// Where the function call was
+        #[label("In this call")]
+        call: Span,
     },
 
     /// Unhandled internal error.
