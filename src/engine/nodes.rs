@@ -263,14 +263,8 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     );
     nodes.insert(
         "C",
-        Box::new(Wrap::<_, i128>::new(async |x: i128| {
-            Ok(x.saturating_mul(10))
-        })),
-    );
-    nodes.insert(
-        "D",
-        Box::new(Wrap::<_, Box<str>>::new(async |x: Box<str>| {
-            Ok(x.len() as i128)
+        Box::new(Wrap::<_, (i128, i128)>::new(async |x: i128, y: i128| {
+            Ok(x.saturating_add(y))
         })),
     );
     nodes

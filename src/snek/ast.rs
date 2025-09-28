@@ -14,24 +14,16 @@ pub struct File<'src>(pub Box<[Statement<'src>]>);
 
 /// A statement
 pub enum Statement<'src> {
-    /// A chain statement
-    Chain(Chain<'src>),
+    /// A expression statement
+    Expression(Expression<'src>),
 }
 
 impl Spannable for Statement<'_> {
     fn calc_span(&self) -> Span {
         match self {
-            Self::Chain(chain) => chain.calc_span(),
+            Self::Expression(expression) => expression.calc_span(),
         }
     }
-}
-
-/// A chain of nodes.
-pub struct Chain<'src> {
-    /// An expression to the start the chain.
-    pub start: Expression<'src>,
-    /// The chain of nodes to apply to the start expression
-    pub nodes: Box<[Node<'src>]>,
 }
 
 impl Spannable for Chain<'_> {
@@ -44,14 +36,25 @@ impl Spannable for Chain<'_> {
 pub enum Expression<'src> {
     /// The value is the result of this no input node
     Node(Node<'src>),
+    /// A chain of nodes
+    Chain(Chain<'src>),
 }
 
 impl Spannable for Expression<'_> {
     fn calc_span(&self) -> Span {
         match self {
             Self::Node(node) => node.calc_span(),
+            Self::Chain(chain) => chain.calc_span(),
         }
     }
+}
+
+/// A chain of nodes.?
+pub struct Chain<'src> {
+    /// An expression to the start the chain.
+    pub start: Box<Expression<'src>>,
+    /// The chain of nodes to apply to the start expression
+    pub nodes: Box<[Node<'src>]>,
 }
 
 /// A node declaration.

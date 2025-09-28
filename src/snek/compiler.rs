@@ -100,20 +100,11 @@ fn compile_statement(
     scope: &mut Scope,
 ) -> Result<(), CompileError> {
     match statement {
-        ast::Statement::Chain(chain) => compile_chain(chain, result, scope),
+        ast::Statement::Expression(expression) => {
+            compile_expression(expression, result, scope)?;
+        }
     }
-}
 
-/// Compile a node chain
-fn compile_chain(
-    chain: ast::Chain,
-    result: &mut CompileResult,
-    scope: &Scope<'_>,
-) -> Result<(), CompileError> {
-    let mut current_node = compile_expression(chain.start, result, scope)?;
-    for node in chain.nodes {
-        current_node = compile_node(node, Some(current_node), result, scope)?;
-    }
     Ok(())
 }
 
@@ -125,7 +116,21 @@ fn compile_expression(
 ) -> Result<Value, CompileError> {
     match expression {
         ast::Expression::Node(node) => compile_node(node, None, result, scope),
+        ast::Expression::Chain(chain) => compile_chain(chain, result, scope),
     }
+}
+
+/// Compile a node chain
+fn compile_chain(
+    chain: ast::Chain,
+    result: &mut CompileResult,
+    scope: &Scope<'_>,
+) -> Result<Value, CompileError> {
+    let mut current_value = compile_expression(*chain.start, result, scope)?;
+    for node in chain.nodes {
+        current_value = compile_node(node, Some(current_value), result, scope)?;
+    }
+    Ok(current_value)
 }
 
 /// Compile a node returning its value
