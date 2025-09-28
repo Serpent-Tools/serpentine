@@ -72,15 +72,27 @@ impl<'src> Parser<'src> {
 
     /// Parse a statement from the current token stream.
     fn parse_statement(&mut self) -> Result<ast::Statement<'src>, ParsingError> {
-        let chain = self.parse_chain()?;
+        let expression = self.parse_expression()?;
         self.expect(Token::SemiColon)?;
-        Ok(ast::Statement::Chain(chain))
+        Ok(ast::Statement::Expression(expression))
+    }
+
+    /// Parse a expression
+    fn parse_expression(&mut self) -> Result<ast::Expression<'src>, ParsingError> {
+        let node = ast::Expression::Node(self.parse_node()?);
+
+        if self.peek()? == Token::Pipe {
+            Ok(ast::Expression::Chain(self.parse_chain(node)?))
+        } else {
+            Ok(node)
+        }
     }
 
     /// Parse a chain of nodes, `expression > Node > Node = ident`
-    fn parse_chain(&mut self) -> Result<ast::Chain<'src>, ParsingError> {
-        let start = self.parse_expression()?;
-
+    fn parse_chain(
+        &mut self,
+        start: ast::Expression<'src>,
+    ) -> Result<ast::Chain<'src>, ParsingError> {
         let mut nodes = Vec::new();
         while self.peek()? == Token::Pipe {
             self.next()?;
@@ -88,14 +100,9 @@ impl<'src> Parser<'src> {
         }
 
         Ok(ast::Chain {
-            start,
+            start: Box::new(start),
             nodes: nodes.into_boxed_slice(),
         })
-    }
-
-    /// Parse a expression
-    fn parse_expression(&mut self) -> Result<ast::Expression<'src>, ParsingError> {
-        Ok(ast::Expression::Node(self.parse_node()?))
     }
 
     /// Parse a node, `Ident()`
