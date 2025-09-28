@@ -12,10 +12,10 @@ use crate::snek::CompileResult;
 /// An error encountered while running the source code
 #[derive(Debug, Error, Diagnostic)]
 pub enum RuntimeError {
-    /// The graph has no end node
-    #[error("No end node in graph")]
+    /// The graph has return
+    #[error("No return in graph top-level")]
     #[diagnostic(code(runtime::no_end))]
-    NoEnd,
+    NoReturn,
 
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
@@ -34,9 +34,9 @@ impl RuntimeError {
 
 /// Run the given compilation result
 pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> {
-    let end_node = compile_result
-        .end_node
-        .ok_or(crate::SerpentineError::Runtime(RuntimeError::NoEnd))?;
+    let start_node = compile_result
+        .start_node
+        .ok_or(crate::SerpentineError::Runtime(RuntimeError::NoReturn))?;
 
     let scheduler = scheduler::Scheduler::new(compile_result.nodes, compile_result.graph);
     let result = tokio::runtime::Builder::new_current_thread()
@@ -47,7 +47,7 @@ pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> 
                 "Failed to start tokio {err}"
             )))
         })?
-        .block_on(scheduler.get_output(end_node))
+        .block_on(scheduler.get_output(start_node))
         .map_err(crate::SerpentineError::Runtime)?;
 
     println!("{}", result.describe());

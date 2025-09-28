@@ -26,7 +26,7 @@ pub struct CompileResult {
     /// The nodes produces
     pub nodes: NodeStorage,
     /// The end node id
-    pub end_node: Option<NodeInstanceId>,
+    pub start_node: Option<NodeInstanceId>,
 }
 
 /// A scope
@@ -116,7 +116,7 @@ pub fn compile_file(file: ast::File) -> Result<CompileResult, CompileError> {
     let mut result = CompileResult {
         graph: Graph::new(),
         nodes: NodeStorage::new(),
-        end_node: None,
+        start_node: None,
     };
     let prelude = Scope::prelude(&mut result);
     let mut scope = prelude.child();
@@ -140,6 +140,10 @@ fn compile_statement(
             if let Some(label) = label {
                 scope.define_label((**label.0).into(), value);
             }
+        }
+        ast::Statement::Return(expression) => {
+            let value = compile_expression(expression, result, scope)?;
+            result.start_node = Some(value.node);
         }
     }
 
@@ -239,10 +243,6 @@ fn compile_node(
         phantom_inputs: phantom_inputs.into(),
     };
     let node_id = result.graph.push(graph_node);
-
-    if *node.name.0 == "End" {
-        result.end_node = Some(node_id);
-    }
 
     Ok(Value {
         node: node_id,

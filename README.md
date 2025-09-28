@@ -17,7 +17,8 @@ Image("rust:latest") > Copy(".", "/app") > Workdir("/app") = base;
 base > Exec("cargo test") = test;
 base > Exec("cargo clippy") = clippy;
 
-base > !(test, clippy) Exec("Cargo build") > Output();
+base > !(test, clippy) Exec("Cargo build") > build;
+return build;
 ```
 
 This represents the following graph:

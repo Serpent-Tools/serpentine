@@ -275,7 +275,6 @@ impl NodeImpl for LiteralNode {
 pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     let mut nodes: HashMap<&'static str, Box<dyn NodeImpl>> = HashMap::new();
 
-    nodes.insert("End", Box::new(Noop));
     nodes.insert("Noop", Box::new(Noop));
     nodes.insert(
         "Add",

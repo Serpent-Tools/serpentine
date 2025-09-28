@@ -26,6 +26,8 @@ pub enum Token<'src> {
     Eq,
     /// `!`
     Wait,
+    /// `return`
+    Return,
     /// End of file
     Eof,
 }
@@ -44,6 +46,7 @@ impl Token<'_> {
             Self::Comma => ",".to_owned(),
             Self::Eq => "=".to_owned(),
             Self::Wait => "!".to_owned(),
+            Self::Return => "return".to_owned(),
             Self::Eof => "end of file".to_owned(),
         }
     }
@@ -118,7 +121,11 @@ impl<'src> Tokenizer<'src> {
                 let consumed = self.advance_while(char::is_alphanumeric)?;
 
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
-                let token = Token::Ident(span.index_str(self.code)?);
+                let text = span.index_str(self.code)?;
+                let token = match text {
+                    "return" => Token::Return,
+                    _ => Token::Ident(text),
+                };
                 span.with(token)
             }
             character => {
