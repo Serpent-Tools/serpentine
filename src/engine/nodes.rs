@@ -289,5 +289,17 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
             Ok(x.len() as i128)
         })),
     );
+    nodes.insert(
+        "Sleep",
+        Box::new(Wrap::<_, (i128, i128)>::new(
+            async |value: i128, seconds: i128| {
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    seconds.try_into().unwrap_or(u64::MAX),
+                ))
+                .await;
+                Ok(value)
+            },
+        )),
+    );
     nodes
 }
