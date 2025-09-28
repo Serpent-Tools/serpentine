@@ -13,9 +13,11 @@ pub trait Spannable {
 pub struct File<'src>(pub Box<[Statement<'src>]>);
 
 /// A statement
+#[derive(Clone)]
 pub enum Statement<'src> {
     /// A return statement
     Return(Expression<'src>),
+
     /// A expression statement
     Expression {
         /// Expression of the statement
@@ -23,21 +25,16 @@ pub enum Statement<'src> {
         /// A optional label to store the value at.
         label: Option<Ident<'src>>,
     },
-}
 
-impl Spannable for Statement<'_> {
-    fn calc_span(&self) -> Span {
-        match self {
-            Self::Return(value) => value.calc_span(),
-            Self::Expression { expression, label } => {
-                if let Some(label) = label {
-                    expression.calc_span().join(label.calc_span())
-                } else {
-                    expression.calc_span()
-                }
-            }
-        }
-    }
+    /// Function definition
+    Function {
+        /// Name of the Function
+        name: Ident<'src>,
+        /// Paramaters to the Function
+        paramters: Box<[Ident<'src>]>,
+        /// The list of the statements in this function.
+        statements: Box<[Statement<'src>]>,
+    },
 }
 
 impl Spannable for Chain<'_> {
@@ -47,6 +44,7 @@ impl Spannable for Chain<'_> {
 }
 
 /// A value
+#[derive(Clone)]
 pub enum Expression<'src> {
     /// A number
     Number(Spanned<i128>),
@@ -73,6 +71,7 @@ impl Spannable for Expression<'_> {
 }
 
 /// A chain of nodes.?
+#[derive(Clone)]
 pub struct Chain<'src> {
     /// An expression to the start the chain.
     pub start: Box<Expression<'src>>,
@@ -81,6 +80,7 @@ pub struct Chain<'src> {
 }
 
 /// A node declaration.
+#[derive(Clone)]
 pub struct Node<'src> {
     /// The name of this node
     pub name: Ident<'src>,
@@ -97,6 +97,7 @@ impl Spannable for Node<'_> {
 }
 
 /// A identifier
+#[derive(Clone)]
 pub struct Ident<'src>(pub Spanned<&'src str>);
 
 impl Spannable for Ident<'_> {
