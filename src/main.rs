@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use miette::{Diagnostic, NamedSource};
+use miette::Diagnostic;
 use thiserror::Error;
 
 mod engine;
@@ -31,23 +31,12 @@ impl Cli {
 /// An error produced by serpentine
 #[derive(Debug, Error, Diagnostic)]
 enum SerpentineError {
-    /// We failed to parse the file.
-    #[error("Parsing error")]
-    Parsing {
-        /// The source code that produced the parsing error
-        #[source_code]
-        source_code: NamedSource<String>,
-        /// The inner Error
-        #[related]
-        error: Vec<snek::ParsingError>,
-    },
-
     /// We failed to compile the file.
     #[error("Compile Error")]
     Compile {
         /// The source code that produced the compile error
         #[source_code]
-        source_code: NamedSource<String>,
+        source_code: snek::span::VirtualFile,
         /// The compile Error
         #[related]
         error: Vec<snek::CompileError>,
@@ -56,23 +45,12 @@ enum SerpentineError {
     /// Something failed at runtime.
     #[error(transparent)]
     Runtime(engine::RuntimeError),
-
-    /// Couldnt read a file needed to compile the code
-    #[error("Could not read file {file}")]
-    #[diagnostic(code(file_error))]
-    FileReading {
-        /// The file that couldnt be read
-        file: PathBuf,
-        /// The io error that caused it
-        #[source]
-        inner: std::io::Error,
-    },
 }
 
 fn main() -> miette::Result<()> {
     let command = Cli::parse();
 
-    let result = snek::process_file(&command.pipeline())?;
+    let result = snek::compile_graph(&command.pipeline())?;
     engine::run(result)?;
 
     Ok(())

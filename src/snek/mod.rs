@@ -20,16 +20,27 @@ mod parser;
 pub mod span;
 mod tokenizer;
 
-use std::path::Path;
+use std::path::PathBuf;
 
-pub use compiler::CompileResult;
+pub use compiler::{CompileResult, compile_graph};
 use miette::Diagnostic;
 use span::Span;
 use thiserror::Error;
 
-/// An error encountered while parsing the source code
+/// An error occurred while building the graph.
 #[derive(Debug, Error, Diagnostic)]
-pub enum ParsingError {
+pub enum CompileError {
+    /// Couldnt read a file needed to compile the code
+    #[error("Could not read file {file}")]
+    #[diagnostic(code(file_error))]
+    FileReading {
+        /// The file that couldnt be read
+        file: PathBuf,
+        /// The io error that caused it
+        #[source]
+        inner: std::io::Error,
+    },
+
     /// The tokenizer encountered a value it didnt know what to do with
     #[error("unknown character {char:?} encountered in source code")]
     #[diagnostic(code(parsing::unknown_char))]
@@ -54,24 +65,6 @@ pub enum ParsingError {
         location: Span,
     },
 
-    /// Unhandled internal error.
-    #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
-    #[diagnostic(code(internal_error))]
-    InternalError(String),
-}
-
-impl ParsingError {
-    /// Create a `ParsingError::InternalError`, but panic in debug mode instead
-    fn internal(msg: impl Into<String>) -> Self {
-        let msg = msg.into();
-        debug_assert!(false, "{msg}");
-        Self::InternalError(msg)
-    }
-}
-
-/// An error occurred while building the graph.
-#[derive(Debug, Error, Diagnostic)]
-pub enum CompileError {
     /// Mismatched type Error
     #[error("Expected `{expected}` got `{got}`")]
     #[diagnostic(code(compiler::type_mismatch))]
@@ -105,11 +98,9 @@ pub enum CompileError {
     },
 
     /// A name wasn't found in scope
-    #[error("{kind} '{ident}' not found in scope")]
+    #[error("'{ident}' not found in scope")]
     #[diagnostic(code(compiler::item_not_found))]
     ItemNotFound {
-        /// Node/Value
-        kind: &'static str,
         /// The name that wasn't found
         ident: String,
         /// The location of the name
@@ -117,14 +108,42 @@ pub enum CompileError {
         location: Span,
     },
 
+    /// A name was found in scope but wasnt the expected kind
+    /// (e.g. a node was found when a label was expected)
+    #[error("Expected a {expected}")]
+    #[diagnostic(code(compiler::wrong_item_kind))]
+    WrongItemKind {
+        /// The expected kind
+        expected: &'static str,
+        /// The actual kind
+        got: &'static str,
+        /// The location of the name
+        #[label("This is a '{got}'")]
+        location: Span,
+    },
+
+    /// Statement found in unexpected context.
+    #[error("{stmt} not allowed in {context}")]
+    #[diagnostic(code(compiler::invalid_statement))]
+    #[diagnostic(help("Maybe you meant to use a `{maybe}` statement?"))]
+    InvalidStatement {
+        /// The statement that was invalid
+        stmt: &'static str,
+        /// The context it was found in
+        context: &'static str,
+        /// A possible alternative statement
+        maybe: &'static str,
+        /// The location of the statement
+        #[label("This statement is not allowed here")]
+        location: Span,
+    },
+
     /// A return was missing.
     #[error("No return found.")]
     #[diagnostic(code(compiler::no_return))]
     ReturnNotFound {
-        /// In what kind of context was a return missing (file/function)
-        in_what: &'static str,
-        /// A logical place to point for the error.
-        #[label("In this {in_what}.")]
+        /// The function that was missing a return
+        #[label("In this function.")]
         location: Span,
     },
 
@@ -148,6 +167,20 @@ pub enum CompileError {
         call: Span,
     },
 
+    /// A scope item was overwritten
+    #[error("Item '{ident}' already defined in this scope")]
+    #[diagnostic(code(compiler::item_already_defined))]
+    #[diagnostic(help(
+        "Snek sementically speaking does not have a specified exeuction order, so shadowing is not allowed."
+    ))]
+    ShadowedName {
+        /// The name that was shadowed
+        ident: String,
+        /// The location of the name
+        #[label("This name is already defined in this scope")]
+        location: Span,
+    },
+
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
     #[diagnostic(code(internal_error))]
@@ -160,57 +193,5 @@ impl CompileError {
         let msg = msg.into();
         debug_assert!(false, "{msg}");
         Self::InternalError(msg)
-    }
-}
-
-/// Parse the given string into a ast
-pub fn parse(code: &str) -> Result<ast::File<'_>, Vec<ParsingError>> {
-    let tokens = tokenizer::Tokenizer::tokenize(code)?;
-    parser::Parser::parse_file(tokens).map_err(|err| vec![err])
-}
-
-/// Parse and process the given file into a full node graph
-pub fn process_file(file: &Path) -> Result<compiler::CompileResult, crate::SerpentineError> {
-    let code =
-        std::fs::read_to_string(file).map_err(|io_error| crate::SerpentineError::FileReading {
-            file: file.to_owned(),
-            inner: io_error,
-        })?;
-
-    let ast = match parse(&code) {
-        Ok(ast) => ast,
-        Err(parse_errors) => {
-            return Err(crate::SerpentineError::Parsing {
-                source_code: miette::NamedSource::new(file.to_string_lossy(), code),
-                error: parse_errors,
-            });
-        }
-    };
-
-    compiler::Compiler::compile_file(&ast).map_err(|compile_err| crate::SerpentineError::Compile {
-        source_code: miette::NamedSource::new(file.to_string_lossy(), code),
-        error: vec![compile_err],
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::*;
-
-    proptest::proptest! {
-        #[test]
-        fn parser_doesnt_crash(code: String) {
-            let _ = parse(&code);
-        }
-    }
-
-    #[test]
-    fn can_parse_own_workflow() {
-        let our_workflow = PathBuf::from("./ci/main.snek");
-        let result = process_file(&our_workflow);
-
-        assert!(result.is_ok(), "{result:?}");
     }
 }

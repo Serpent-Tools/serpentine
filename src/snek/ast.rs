@@ -2,106 +2,118 @@
 
 use super::span::{Span, Spanned};
 
-/// A type that might not contain a span already, but can construct one from its parts.
-/// This is used to avoid calculating spans until a error has actually occurred that requires one.
-pub trait Spannable {
-    /// Calculate the effective span of this value
-    fn calc_span(&self) -> Span;
-}
-
 /// A `.snek` file
-pub struct File<'src>(pub Box<[Statement<'src>]>);
+pub struct File(pub Box<[Statement]>);
 
 /// A statement
-#[derive(Clone)]
-pub enum Statement<'src> {
+#[derive(Debug, Clone)]
+pub enum Statement {
     /// A return statement
-    Return(Expression<'src>),
+    Return {
+        /// The span of the `return` keyword
+        return_kw: Span,
+        /// The expression being returned
+        expression: Expression,
+    },
 
+    // /// A import statement
+    // Import {
+    //     /// The span of the `import` keyword
+    //     import_kw: Span,
+    //     /// The relative path to the file to import
+    //     path: Spanned<Box<str>>,
+    //     /// The span of the `as` keyword
+    //     as_kw: Span,
+    //     /// The name to put the module under.
+    //     name: Ident,
+    // },
     /// A expression statement
     Expression {
         /// Expression of the statement
-        expression: Expression<'src>,
+        expression: Expression,
         /// A optional label to store the value at.
-        label: Option<Ident<'src>>,
+        label: Option<Ident>,
     },
 
     /// Function definition
     Function {
         /// Name of the Function
-        name: Ident<'src>,
+        name: Ident,
         /// Paramaters to the Function
-        paramters: Box<[Ident<'src>]>,
+        paramters: Box<[Ident]>,
         /// The list of the statements in this function.
-        statements: Box<[Statement<'src>]>,
+        statements: Box<[Statement]>,
     },
 }
 
-impl Spannable for Chain<'_> {
-    fn calc_span(&self) -> Span {
-        self.start.calc_span()
-    }
-}
-
 /// A value
-#[derive(Clone)]
-pub enum Expression<'src> {
+#[derive(Debug, Clone)]
+pub enum Expression {
     /// A number
     Number(Spanned<i128>),
     /// A string
-    String(Spanned<&'src str>),
+    String(Spanned<Box<str>>),
     /// A node label
-    Label(Ident<'src>),
+    Label(Spanned<ItemPath>),
     /// The value is the result of this no input node
-    Node(Node<'src>),
+    Node(Spanned<Node>),
     /// A chain of nodes
-    Chain(Chain<'src>),
+    Chain(Spanned<Chain>),
 }
 
-impl Spannable for Expression<'_> {
-    fn calc_span(&self) -> Span {
-        match self {
-            Self::Number(number) => number.span(),
-            Self::String(string) => string.span(),
-            Self::Label(label) => label.calc_span(),
-            Self::Node(node) => node.calc_span(),
-            Self::Chain(chain) => chain.calc_span(),
+/// A chain of nodes
+#[derive(Debug, Clone)]
+pub struct Chain {
+    /// An expression to the start the chain.
+    pub start: Box<Expression>,
+    /// The chain of nodes to apply to the start expression
+    pub nodes: Box<[Spanned<Node>]>,
+}
+
+/// A node declaration.
+#[derive(Debug, Clone)]
+pub struct Node {
+    /// The name of this node
+    pub name: Spanned<ItemPath>,
+    /// Arguments for the node
+    pub arguments: Box<[Expression]>,
+    /// Phantom inputs the block the rest of the node from running.
+    pub phantom_inputs: Box<[Spanned<ItemPath>]>,
+}
+
+/// A path for a item
+#[derive(Debug, Clone)]
+pub struct ItemPath {
+    /// The start of the path
+    pub base: Ident,
+    /// The rest of the path
+    pub rest: Box<[Ident]>,
+}
+
+impl ItemPath {
+    /// Get the span of this item path
+    pub fn span(&self) -> Span {
+        if let Some(last) = self.rest.last() {
+            self.base.0.span().join(last.0.span())
+        } else {
+            self.base.0.span()
         }
     }
 }
 
-/// A chain of nodes.?
-#[derive(Clone)]
-pub struct Chain<'src> {
-    /// An expression to the start the chain.
-    pub start: Box<Expression<'src>>,
-    /// The chain of nodes to apply to the start expression
-    pub nodes: Box<[Node<'src>]>,
-}
-
-/// A node declaration.
-#[derive(Clone)]
-pub struct Node<'src> {
-    /// The name of this node
-    pub name: Ident<'src>,
-    /// Arguments for the node
-    pub arguments: Box<[Expression<'src>]>,
-    /// Phantom inputs the block the rest of the node from running.
-    pub phantom_inputs: Box<[Ident<'src>]>,
-}
-
-impl Spannable for Node<'_> {
-    fn calc_span(&self) -> Span {
-        self.name.calc_span()
-    }
-}
-
 /// A identifier
-#[derive(Clone)]
-pub struct Ident<'src>(pub Spanned<&'src str>);
+#[derive(Debug, Clone)]
+pub struct Ident(pub Spanned<Box<str>>);
 
-impl Spannable for Ident<'_> {
-    fn calc_span(&self) -> Span {
-        self.0.span()
+impl Expression {
+    /// Get the span of this expression
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Number(number) => number.span(),
+            Self::String(string) => string.span(),
+            Self::Label(label) => label.span(),
+            Self::Node(node) => node.span(),
+            Self::Chain(chain) => chain.span(),
+        }
     }
 }

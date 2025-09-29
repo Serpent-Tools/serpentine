@@ -1,24 +1,28 @@
 //! Parses tokens into a ast
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "While yes Token is technically not Copy and expensive to Clone in some variants, all the tokens we pass by value are cheap to clone"
+)]
 
 use std::iter::Peekable;
 
 use super::ast;
 use super::span::Spanned;
 use super::tokenizer::Token;
-use crate::snek::ParsingError;
+use crate::snek::CompileError;
 use crate::snek::span::Span;
 
 /// A parser for keeping track of the parsing state.
-pub struct Parser<'src> {
+pub struct Parser {
     /// A peekable iterator over the tokens to parse
-    tokens: Peekable<std::vec::IntoIter<Spanned<Token<'src>>>>,
+    tokens: Peekable<std::vec::IntoIter<Spanned<Token>>>,
 }
 
-impl<'src> Parser<'src> {
+impl Parser {
     /// Parse the given tokens as a complete snek file
     pub fn parse_file(
-        tokens: Box<[Spanned<Token<'src>>]>,
-    ) -> Result<ast::File<'src>, ParsingError> {
+        tokens: std::boxed::Box<[Spanned<Token>]>,
+    ) -> Result<ast::File, CompileError> {
         let mut parser = Self {
             tokens: tokens.into_iter().peekable(),
         };
@@ -37,16 +41,31 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse a statement from the current token stream.
-    fn parse_statement(&mut self) -> Result<ast::Statement<'src>, ParsingError> {
+    fn parse_statement(&mut self) -> Result<ast::Statement, CompileError> {
         match self.peek()? {
             Token::Return => {
-                self.next()?;
+                let return_kw = self.next()?.span();
                 let expression = self.parse_expression()?;
                 self.expect(Token::SemiColon)?;
-                Ok(ast::Statement::Return(expression))
+                Ok(ast::Statement::Return {
+                    return_kw,
+                    expression,
+                })
             }
+            // Token::Import => {
+            //     let import_kw = self.next()?.span();
+            //     let path = self.expect_str()?;
+            //     let as_kw = self.expect(Token::As)?;
+            //     let name = self.expect_ident()?;
+            //     self.expect(Token::SemiColon)?;
+            //     Ok(ast::Statement::Import {
+            //         import_kw,
+            //         path,
+            //         as_kw,
+            //         name,
+            //     })
+            // }
             Token::Def => {
-                self.next()?;
                 let name = self.expect_ident()?;
 
                 self.expect(Token::OpenParen)?;
@@ -68,7 +87,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse a expression statement from the current token stream.
-    fn parse_expression_statement(&mut self) -> Result<ast::Statement<'src>, ParsingError> {
+    fn parse_expression_statement(&mut self) -> Result<ast::Statement, CompileError> {
         let expression = self.parse_expression()?;
 
         let label = if self.peek()? == Token::Eq {
@@ -83,18 +102,25 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse a expression
-    fn parse_expression(&mut self) -> Result<ast::Expression<'src>, ParsingError> {
+    fn parse_expression(&mut self) -> Result<ast::Expression, CompileError> {
         let value = self.parse_atom()?;
 
         if self.peek()? == Token::Pipe {
-            Ok(ast::Expression::Chain(self.parse_chain(value)?))
+            let chain = self.parse_chain(value)?;
+            let span = if let Some(last) = chain.nodes.last() {
+                chain.start.span().join(last.span())
+            } else {
+                chain.start.span()
+            };
+
+            Ok(ast::Expression::Chain(span.with(chain)))
         } else {
             Ok(value)
         }
     }
 
     /// Parse a simple expression (literal, var, node)
-    fn parse_atom(&mut self) -> Result<ast::Expression<'src>, ParsingError> {
+    fn parse_atom(&mut self) -> Result<ast::Expression, CompileError> {
         Ok(match self.peek()? {
             Token::Numeric(value) => {
                 let span = self.next()?.span();
@@ -105,11 +131,12 @@ impl<'src> Parser<'src> {
                 ast::Expression::String(span.with(value))
             }
             Token::Ident(_) => {
-                let ident = self.expect_ident()?;
+                let item = self.parse_item_path()?;
+                let item_span = item.span();
                 if self.peek()? == Token::OpenParen {
-                    ast::Expression::Node(self.parse_node(Some(ident))?)
+                    ast::Expression::Node(self.parse_node(Some(item))?)
                 } else {
-                    ast::Expression::Label(ident)
+                    ast::Expression::Label(item_span.with(item))
                 }
             }
             _ => ast::Expression::Node(self.parse_node(None)?),
@@ -117,10 +144,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse a chain of nodes, `expression > Node > Node`
-    fn parse_chain(
-        &mut self,
-        start: ast::Expression<'src>,
-    ) -> Result<ast::Chain<'src>, ParsingError> {
+    fn parse_chain(&mut self, start: ast::Expression) -> Result<ast::Chain, CompileError> {
         let mut nodes = Vec::new();
         while self.peek()? == Token::Pipe {
             self.next()?;
@@ -139,30 +163,50 @@ impl<'src> Parser<'src> {
     /// realized it was a node.
     fn parse_node(
         &mut self,
-        pre_parsed_name: Option<ast::Ident<'src>>,
-    ) -> Result<ast::Node<'src>, ParsingError> {
+        pre_parsed_name: Option<ast::ItemPath>,
+    ) -> Result<Spanned<ast::Node>, CompileError> {
         let name;
         let mut phantom_inputs = Vec::new();
+        let start_span;
 
         if let Some(pre_parsed_name) = pre_parsed_name {
-            name = pre_parsed_name;
+            start_span = pre_parsed_name.span();
+            name = start_span.with(pre_parsed_name);
         } else {
+            // REFACTOR: Create a `.next_if` method
             if self.peek()? == Token::Wait {
-                self.next()?;
+                start_span = self.next()?.span();
 
                 if self.peek()? == Token::OpenParen {
                     self.next()?;
-                    phantom_inputs = self.parse_list(
-                        Token::ClosingParen,
-                        Some(Token::Comma),
-                        Self::expect_ident,
-                    )?;
+                    phantom_inputs = self
+                        .parse_list(
+                            Token::ClosingParen,
+                            Some(Token::Comma),
+                            Self::parse_item_path,
+                        )?
+                        .into_iter()
+                        .map(|path| {
+                            let span = path.span();
+                            span.with(path)
+                        })
+                        .collect();
                 } else {
-                    phantom_inputs = vec![self.expect_ident()?];
+                    let path = self.parse_item_path()?;
+                    let span = path.span();
+                    phantom_inputs = vec![span.with(path)];
                 }
+            } else {
+                start_span = self
+                    .tokens
+                    .peek()
+                    .ok_or_else(|| CompileError::internal("Hit end of token list"))?
+                    .span();
             }
 
-            name = self.expect_ident()?;
+            let path = self.parse_item_path()?;
+            let span = path.span();
+            name = span.with(path);
         }
 
         self.expect(Token::OpenParen)?;
@@ -171,12 +215,15 @@ impl<'src> Parser<'src> {
             Some(Token::Comma),
             Self::parse_expression,
         )?;
+        let end_span = self.tokens.peek().map_or(start_span, Spanned::span);
 
-        Ok(ast::Node {
+        let node = ast::Node {
             name,
             arguments: arguments.into_boxed_slice(),
             phantom_inputs: phantom_inputs.into_boxed_slice(),
-        })
+        };
+
+        Ok(start_span.join(end_span).with(node))
     }
 
     /// Parse a list of items from the token stream.
@@ -186,14 +233,15 @@ impl<'src> Parser<'src> {
         &mut self,
         closing: Token,
         seperator: Option<Token>,
-        parser: impl Fn(&mut Self) -> Result<T, ParsingError>,
-    ) -> Result<Vec<T>, ParsingError> {
+        parser: impl Fn(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<Vec<T>, CompileError> {
+        let seperator = seperator.as_ref();
         let mut result = Vec::new();
         while self.peek()? != closing {
             result.push(parser(self)?);
 
             if let Some(seperator) = seperator
-                && self.peek()? == seperator
+                && self.peek()? == *seperator
             {
                 self.next()?;
             }
@@ -202,13 +250,28 @@ impl<'src> Parser<'src> {
         Ok(result)
     }
 
+    /// Parse a item path
+    fn parse_item_path(&mut self) -> Result<ast::ItemPath, CompileError> {
+        let base = self.expect_ident()?;
+        let mut rest = Vec::new();
+        while self.peek()? == Token::Path {
+            self.next()?;
+            rest.push(self.expect_ident()?);
+        }
+
+        Ok(ast::ItemPath {
+            base,
+            rest: rest.into_boxed_slice(),
+        })
+    }
+
     /// If the next token is the given token return its span, otherwise return a error
-    fn expect(&mut self, expected_token: Token) -> Result<Span, ParsingError> {
+    fn expect(&mut self, expected_token: Token) -> Result<Span, CompileError> {
         let token = self.next()?;
         if *token == expected_token {
             Ok(token.span())
         } else {
-            Err(ParsingError::UnexpectedToken {
+            Err(CompileError::UnexpectedToken {
                 expected: expected_token.describe(),
                 got: token.describe(),
                 location: token.span(),
@@ -217,12 +280,12 @@ impl<'src> Parser<'src> {
     }
 
     /// If the next token is a identifier return it, otherwiser return a error.
-    fn expect_ident(&mut self) -> Result<ast::Ident<'src>, ParsingError> {
+    fn expect_ident(&mut self) -> Result<ast::Ident, CompileError> {
         let token = self.next()?;
-        if let Token::Ident(ident) = *token {
+        if let Token::Ident(ident) = (*token).clone() {
             Ok(ast::Ident(token.span().with(ident)))
         } else {
-            Err(ParsingError::UnexpectedToken {
+            Err(CompileError::UnexpectedToken {
                 expected: "identifier".to_owned(),
                 got: token.describe(),
                 location: token.span(),
@@ -230,21 +293,35 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// If the next token is a string return it, otherwiser return a error.
+    fn expect_str(&mut self) -> Result<Spanned<Box<str>>, CompileError> {
+        let token = self.next()?;
+        if let Token::String(value) = (*token).clone() {
+            Ok(token.span().with(value))
+        } else {
+            Err(CompileError::UnexpectedToken {
+                expected: "string".to_owned(),
+                got: token.describe(),
+                location: token.span(),
+            })
+        }
+    }
+
     /// Return the next value in the token stream
-    fn peek(&mut self) -> Result<Token<'src>, ParsingError> {
+    fn peek(&mut self) -> Result<Token, CompileError> {
         match self.tokens.peek() {
-            Some(token) => Ok(**token),
-            None => Err(ParsingError::internal(
+            Some(token) => Ok((**token).clone()),
+            None => Err(CompileError::internal(
                 "Hit end of token list before hitting EOF token.",
             )),
         }
     }
 
     /// Return the next value in the token stream and advance it.
-    fn next(&mut self) -> Result<Spanned<Token<'src>>, ParsingError> {
+    fn next(&mut self) -> Result<Spanned<Token>, CompileError> {
         match self.tokens.next() {
             Some(token) => Ok(token),
-            None => Err(ParsingError::internal(
+            None => Err(CompileError::internal(
                 "Hit end of token list before hitting EOF token.",
             )),
         }
