@@ -1,6 +1,7 @@
 //! Compile a snek ast into a graph
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use smallvec::SmallVec;
 
@@ -14,9 +15,8 @@ use crate::engine::data_model::{
     NodeStorage,
 };
 use crate::engine::nodes;
-use crate::snek::ast::Spannable;
-use crate::snek::span::{Span, Spanned};
-use crate::snek::{CompileError, ast};
+use crate::snek::span::{FileId, Span};
+use crate::snek::{self, CompileError, ast};
 
 /// Result of compiling a ast
 #[derive(Debug)]
@@ -29,7 +29,8 @@ pub struct CompileResult {
     pub start_node: NodeInstanceId,
 }
 
-enum NodeItem<'src> {
+#[derive(Debug, Clone)]
+enum NodeItem {
     /// A direct node kind backed by a async rust function
     BuiltIn(NodeKindId),
     /// A custom user function in snek
@@ -41,99 +42,146 @@ enum NodeItem<'src> {
         /// scope.
         params: Box<[Box<str>]>,
         /// The ast nodes in the body.
-        body: Box<[ast::Statement<'src>]>,
+        body: Box<[ast::Statement]>,
         /// The span of the function name
         source: Span,
     },
 }
 
-/// A scope
-struct Scope<'parent, 'src> {
-    /// The node names in the local scope
-    nodes: HashMap<Box<str>, NodeItem<'src>>,
-    /// Labels for node values
-    labels: HashMap<Box<str>, Value>,
-    /// The values in the parent scope.
-    parent: Option<&'parent Scope<'parent, 'src>>,
+/// A item in a scope
+#[derive(Clone)]
+enum ScopeItem {
+    /// A node in the scoe
+    Node(NodeItem),
+    /// A value in the scope
+    Value(Value),
+    /// A module in the scope
+    Module(FileId),
 }
 
-impl Scope<'static, 'static> {
-    /// Construct a scope of the prelude
-    fn prelude(compiler: &mut Compiler) -> Self {
-        let nodes = nodes::prelude()
-            .into_iter()
-            .map(|(name, node)| (name.into(), NodeItem::BuiltIn(compiler.nodes.push(node))))
-            .collect();
-        Self {
-            nodes,
-            labels: HashMap::new(),
-            parent: None,
+impl ScopeItem {
+    /// Return a string describing this items kind
+    fn kind_str(&self) -> &'static str {
+        match self {
+            ScopeItem::Node(_) => "node",
+            ScopeItem::Value(_) => "value",
+            ScopeItem::Module(_) => "module",
+        }
+    }
+
+    /// Attempt to extract the node item
+    fn node(&self, location: Span) -> Result<&NodeItem, CompileError> {
+        if let ScopeItem::Node(node) = self {
+            Ok(node)
+        } else {
+            Err(CompileError::WrongItemKind {
+                expected: "node",
+                got: self.kind_str(),
+                location,
+            })
+        }
+    }
+
+    /// Attempt to extract the value item
+    fn label(&self, location: Span) -> Result<&Value, CompileError> {
+        if let ScopeItem::Value(value) = self {
+            Ok(value)
+        } else {
+            Err(CompileError::WrongItemKind {
+                expected: "value",
+                got: self.kind_str(),
+                location,
+            })
+        }
+    }
+
+    /// Attempt to extract the module item
+    fn module(&self, location: Span) -> Result<FileId, CompileError> {
+        if let ScopeItem::Module(file_id) = self {
+            Ok(*file_id)
+        } else {
+            Err(CompileError::WrongItemKind {
+                expected: "module",
+                got: self.kind_str(),
+                location,
+            })
         }
     }
 }
 
-impl<'src> Scope<'_, 'src> {
+/// A scope
+#[derive(Clone)]
+struct Scope<'parent> {
+    /// The node names in the local scope
+    items: HashMap<Box<str>, ScopeItem>,
+    /// The values in the parent scope.
+    parent: Option<&'parent Scope<'parent>>,
+}
+
+impl Scope<'static> {
+    /// Create a new scope
+    fn new() -> Self {
+        Self {
+            items: HashMap::new(),
+            parent: None,
+        }
+    }
+
+    /// Get a builtin node.
+    /// This is bound to static as the prelude scope is static.
+    fn builtin(&self, name: &'static str) -> Result<NodeKindId, CompileError> {
+        let Some(item) = self.items.get(name) else {
+            return Err(CompileError::internal("Builtin nodee not found in prelude"));
+        };
+
+        let ScopeItem::Node(NodeItem::BuiltIn(node_id)) = item else {
+            return Err(CompileError::internal("Builtin node not a node"));
+        };
+
+        Ok(*node_id)
+    }
+}
+
+impl Scope<'_> {
     /// Create a sub scope of this one.
-    fn child<'this>(&'this self) -> Scope<'this, 'src> {
+    fn child(&self) -> Scope<'_> {
         Scope {
-            nodes: HashMap::new(),
-            labels: HashMap::new(),
+            items: HashMap::new(),
             parent: Some(self),
         }
     }
 
-    /// Lookup builtin node
-    fn builtin(&self, name: &str) -> Result<NodeKindId, CompileError> {
-        if let Some(parent) = self.parent {
-            parent.builtin(name)
-        } else {
-            let Some(NodeItem::BuiltIn(id)) = self.nodes.get(name) else {
-                return Err(CompileError::internal(format!(
-                    "Requested builtin {name} not found"
-                )));
-            };
-            Ok(*id)
-        }
-    }
-
-    /// Lookup a node in this scope
-    fn node(&self, name: Spanned<&str>) -> Result<&NodeItem<'src>, CompileError> {
-        if let Some(node) = self.nodes.get(&**name) {
-            Ok(node)
+    /// Lookup a value in this scope
+    fn get(&self, name: &ast::Ident) -> Result<&ScopeItem, CompileError> {
+        if let Some(item) = self.items.get(&**name.0) {
+            Ok(item)
         } else if let Some(parent) = self.parent {
-            parent.node(name)
+            parent.get(name)
         } else {
             Err(CompileError::ItemNotFound {
-                kind: "Node",
-                ident: name.to_string(),
-                location: name.span(),
+                ident: name.0.to_string(),
+                location: name.0.span(),
             })
         }
     }
 
     /// Define a new node in this scope
-    fn define_node(&mut self, name: Box<str>, node: NodeItem<'src>) {
-        self.nodes.insert(name, node);
-    }
-
-    /// Lookup a label in this scope
-    fn label(&self, name: Spanned<&str>) -> Result<&Value, CompileError> {
-        if let Some(node) = self.labels.get(&**name) {
-            Ok(node)
-        } else if let Some(parent) = self.parent {
-            parent.label(name)
-        } else {
-            Err(CompileError::ItemNotFound {
-                kind: "Label",
-                ident: name.to_string(),
-                location: name.span(),
-            })
+    fn define(
+        &mut self,
+        name: Box<str>,
+        node: ScopeItem,
+        location: Span,
+    ) -> Result<(), CompileError> {
+        match self.items.entry(name) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(node);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => Err(CompileError::ShadowedName {
+                ident: entry.key().to_string(),
+                location,
+            }),
         }
-    }
-
-    /// Define a new label in this scope
-    fn define_label(&mut self, name: Box<str>, value: Value) {
-        self.labels.insert(name, value);
     }
 }
 
@@ -148,96 +196,226 @@ struct Value {
     span: Span,
 }
 
-pub struct Compiler {
+/// A module is a compiled file, and holds the exported values from it.
+#[derive(Clone)]
+struct Module<'prelude> {
+    /// The items exported from this module.
+    exports: HashSet<Box<str>>,
+    /// The top level scope of the module (used when inlining functions from this module)
+    scope: Scope<'prelude>,
+}
+
+/// A context for compiling statements
+enum StatementContext<'context> {
+    /// This statement is in the top level of a module
+    TopLevel {
+        /// The modules exports, should be populated by `export` statements
+        exports: &'context mut HashSet<Box<str>>,
+    },
+    /// This statemetn is being compiled while inlining a user defined node
+    Function {
+        /// The reutrn value of the function, should be set by a return statement.
+        /// Should be set exactly once.
+        return_value: &'context mut Option<Value>,
+    },
+}
+
+/// Compiler for snek files into a graph
+pub struct Compiler<'prelude> {
     /// The graph
     graph: Graph,
     /// All the node implementations
     nodes: NodeStorage,
+    /// The files we are compiling so far.
+    files: snek::span::VirtualFile,
+    /// The modules
+    modules: HashMap<FileId, Module<'prelude>>,
+    /// The prelude scope
+    prelude: &'prelude Scope<'static>,
 }
 
-impl Compiler {
-    /// Compile a file into its result.
-    pub fn compile_file(file: &ast::File) -> Result<CompileResult, CompileError> {
-        let mut compiler = Self {
-            graph: Graph::new(),
-            nodes: NodeStorage::new(),
-        };
+/// Compile the given file path into a graph
+/// Bootstraps the prelude, and other needed data before passing onto the compilers compile file
+/// method.
+pub fn compile_graph(path: &Path) -> Result<CompileResult, crate::SerpentineError> {
+    let mut prelude = Scope::new();
+    let mut node_storage = NodeStorage::new();
 
-        let prelude = Scope::prelude(&mut compiler);
-        let mut scope = prelude.child();
+    for (name, node) in nodes::prelude() {
+        let node_id = node_storage.push(node);
 
-        let Some(return_value) = compiler.compile_statements(&file.0, &mut scope)? else {
-            return Err(CompileError::ReturnNotFound {
-                in_what: "file",
-                location: Span::new(0, 0),
+        let res = prelude.define(
+            name.into(),
+            ScopeItem::Node(NodeItem::BuiltIn(node_id)),
+            Span::dummy(),
+        );
+        debug_assert!(res.is_ok(), "Prelude node names should not conflict");
+    }
+
+    let mut compiler = Compiler::new(node_storage, &prelude);
+    let file_id = match compiler.compile_file(path) {
+        Ok(id) => id,
+        Err(err) => {
+            return Err(crate::SerpentineError::Compile {
+                source_code: compiler.files,
+                error: vec![err],
             });
-        };
+        }
+    };
 
-        Ok(CompileResult {
-            graph: compiler.graph,
-            nodes: compiler.nodes,
-            start_node: return_value.node,
-        })
+    let Some(module) = compiler.modules.get(&file_id) else {
+        return Err(crate::SerpentineError::Compile {
+            source_code: compiler.files,
+            error: vec![CompileError::internal(
+                "Compiled file but no module was created",
+            )],
+        });
+    };
+
+    let start_value = match module
+        .scope
+        .get(&ast::Ident(Span::dummy().with("DEFAULT".into())))
+    {
+        Ok(item) => item,
+        Err(err) => {
+            return Err(crate::SerpentineError::Compile {
+                source_code: compiler.files,
+                error: vec![err],
+            });
+        }
+    };
+
+    let start_value = match start_value.label(Span::dummy()) {
+        Ok(value) => value,
+        Err(err) => {
+            return Err(crate::SerpentineError::Compile {
+                source_code: compiler.files,
+                error: vec![err],
+            });
+        }
+    };
+
+    Ok(CompileResult {
+        graph: compiler.graph,
+        nodes: compiler.nodes,
+        start_node: start_value.node,
+    })
+}
+
+impl<'prelude> Compiler<'prelude> {
+    /// Create a new compiler instance.
+    fn new(nodes: NodeStorage, prelude: &'prelude Scope<'static>) -> Self {
+        Self {
+            graph: Graph::new(),
+            nodes,
+            files: snek::span::VirtualFile::new(),
+            modules: HashMap::new(),
+            prelude,
+        }
+    }
+
+    /// Compile the given file path and reurn the module id
+    fn compile_file(&mut self, path: &Path) -> Result<FileId, CompileError> {
+        let code = std::fs::read_to_string(path).map_err(|err| CompileError::FileReading {
+            file: path.to_path_buf(),
+            inner: err,
+        })?;
+        let file_id = self.files.push(path.to_path_buf(), &code);
+        if self.modules.contains_key(&file_id) {
+            return Ok(file_id);
+        }
+
+        let tokens = snek::tokenizer::Tokenizer::tokenize(file_id, &code)?;
+        let ast = snek::parser::Parser::parse_file(tokens)?;
+
+        let mut scope = self.prelude.child();
+        let mut exports = HashSet::new();
+
+        self.compile_statements(
+            &ast.0,
+            StatementContext::TopLevel {
+                exports: &mut exports,
+            },
+            &mut scope,
+        )?;
+
+        self.modules.insert(file_id, Module { exports, scope });
+        Ok(file_id)
     }
 
     /// Compile a list of statements, returning the return id
-    fn compile_statements<'src>(
+    fn compile_statements(
         &mut self,
-        statements: &[ast::Statement<'src>],
-        scope: &mut Scope<'_, 'src>,
-    ) -> Result<Option<Value>, CompileError> {
-        let mut return_value = None;
+        statements: &[ast::Statement],
+        mut context: StatementContext<'_>,
+        scope: &mut Scope,
+    ) -> Result<(), CompileError> {
         for stmt in statements {
-            if let Some(value) = self.compile_statement(stmt, scope)? {
-                if return_value.is_some() {
-                    return Err(CompileError::DoubleReturn {
-                        location: value.span,
-                    });
-                }
-
-                return_value = Some(value);
-            }
+            self.compile_statement(stmt, &mut context, scope)?;
         }
-        Ok(return_value)
+
+        Ok(())
     }
 
     /// Compile the given statement, returning if it was a return statement
-    fn compile_statement<'src>(
+    fn compile_statement(
         &mut self,
-        statement: &ast::Statement<'src>,
-        scope: &mut Scope<'_, 'src>,
-    ) -> Result<Option<Value>, CompileError> {
+        statement: &ast::Statement,
+        context: &mut StatementContext<'_>,
+        scope: &mut Scope,
+    ) -> Result<(), CompileError> {
         match statement {
             ast::Statement::Expression { expression, label } => {
                 let value = self.compile_expression(expression, scope)?;
                 if let Some(label) = label {
-                    scope.define_label((**label.0).into(), value);
+                    scope.define((**label.0).into(), ScopeItem::Value(value), label.0.span())?;
                 }
             }
-            ast::Statement::Return(expression) => {
-                let value = self.compile_expression(expression, scope)?;
-                return Ok(Some(value));
-            }
+            ast::Statement::Return {
+                return_kw,
+                expression,
+            } => match context {
+                StatementContext::TopLevel { .. } => {
+                    return Err(CompileError::InvalidStatement {
+                        stmt: "return",
+                        context: "top level",
+                        maybe: "export",
+                        location: *return_kw,
+                    });
+                }
+                StatementContext::Function { return_value } => {
+                    if return_value.is_some() {
+                        return Err(CompileError::DoubleReturn {
+                            location: *return_kw,
+                        });
+                    }
+                    let value = self.compile_expression(expression, scope)?;
+                    **return_value = Some(value);
+                }
+            },
+
             ast::Statement::Function {
                 name,
                 paramters,
                 statements,
+                ..
             } => {
-                scope.define_node(
-                    (*name.0).into(),
-                    NodeItem::Function {
+                scope.define(
+                    (*name.0).clone(),
+                    ScopeItem::Node(NodeItem::Function {
                         params: paramters
                             .into_iter()
-                            .map(|ident| (*ident.0).into())
+                            .map(|ident| (*ident.0).clone())
                             .collect(),
                         body: statements.clone(),
-                        source: name.calc_span(),
-                    },
-                );
+                        source: name.0.span(),
+                    }),
+                    name.0.span(),
+                )?;
             }
         }
 
-        Ok(None)
+        Ok(())
     }
 
     /// Compile a expression, returning the value
@@ -250,13 +428,13 @@ impl Compiler {
             ast::Expression::Node(node) => return self.compile_node(node, None, scope),
             ast::Expression::Chain(chain) => return self.compile_chain(chain, scope),
             ast::Expression::Label(label) => {
-                return scope
-                    .label(label.calc_span().with((**label.0).into()))
-                    .cloned();
+                let item = self.resolve_item_path(scope, &label.0)?;
+                let value = item.label(label.0.span())?;
+                return Ok(value.clone());
             }
             ast::Expression::Number(value) => (Data::Int(**value), DataType::Int, value.span()),
             ast::Expression::String(value) => (
-                Data::String((**value).into()),
+                Data::String((**value).clone()),
                 DataType::String,
                 value.span(),
             ),
@@ -291,46 +469,49 @@ impl Compiler {
         previous: Option<Value>,
         scope: &Scope,
     ) -> Result<Value, CompileError> {
-        let node_item = scope.node(node.name.0)?;
-        let span = node.calc_span();
+        let node_item = self
+            .resolve_item_path(scope, &node.name)?
+            .node(node.name.span())?
+            .clone();
 
-        let mut argument_nodes = Vec::new();
-        let mut argument_types = Vec::new();
         let mut arguments = Vec::new();
 
         if let Some(previous) = previous {
-            arguments.push(previous.clone());
-            argument_nodes.push(previous.node);
-            argument_types.push(previous.span.with(previous.type_));
+            arguments.push(previous);
         }
 
         for argument in &node.arguments {
             let result = self.compile_expression(argument, scope)?;
-            arguments.push(result.clone());
-            argument_nodes.push(result.node);
-            argument_types.push(result.span.with(result.type_));
+            arguments.push(result);
         }
 
         let mut phantom_inputs = Vec::new();
         for input in &node.phantom_inputs {
-            phantom_inputs.push(
-                scope
-                    .label(input.calc_span().with((**input.0).into()))?
-                    .node,
-            );
+            let value = self.resolve_item_path(scope, input)?.label(input.span())?;
+            phantom_inputs.push(value.node);
         }
 
         match node_item {
             NodeItem::BuiltIn(kind) => {
                 let node_impl = self
                     .nodes
-                    .get(*kind)
+                    .get(kind)
                     .ok_or_else(|| CompileError::internal("NodeKindID out of bounds"))?;
-                let return_type = node_impl.return_type(&argument_types, node.name.calc_span())?;
+
+                let types = arguments
+                    .iter()
+                    .map(|arg| arg.span.with(arg.type_))
+                    .collect::<Vec<_>>();
+                let nodes = arguments
+                    .iter()
+                    .map(|arg| arg.node)
+                    .collect::<SmallVec<_>>();
+
+                let return_type = node_impl.return_type(&types, node.name.span())?;
 
                 let graph_node = Node {
-                    kind: *kind,
-                    inputs: argument_nodes.into(),
+                    kind,
+                    inputs: nodes,
                     phantom_inputs: phantom_inputs.into(),
                 };
                 let node_id = self.graph.push(graph_node);
@@ -338,7 +519,7 @@ impl Compiler {
                 Ok(Value {
                     node: node_id,
                     type_: return_type,
-                    span,
+                    span: node.name.span(),
                 })
             }
             NodeItem::Function {
@@ -350,33 +531,35 @@ impl Compiler {
                     return Err(CompileError::ArgumentCountMismatch {
                         expected: params.len(),
                         got: arguments.len(),
-                        location: node.name.calc_span(),
+                        location: node.name.span(),
                     });
                 }
 
-                let mut function_scope = scope.child();
+                let module = self
+                    .modules
+                    .get(&source.file_id)
+                    .ok_or_else(|| CompileError::internal("Module FileId not found"))?
+                    .clone();
+
+                let mut function_scope = module.scope.child();
                 for (name, value) in params.iter().zip(arguments) {
-                    function_scope.define_label(name.clone(), value);
+                    function_scope.define(name.clone(), ScopeItem::Value(value), source)?;
                 }
 
-                let return_value = match self.compile_statements(body, &mut function_scope) {
-                    Ok(Some(return_value)) => return_value,
-                    Ok(None) => {
-                        return Err(CompileError::ReturnNotFound {
-                            in_what: "function",
-                            location: *source,
-                        });
-                    }
-                    Err(err) => {
-                        return Err(CompileError::InlineError {
-                            error: Box::new(err),
-                            call: span,
-                        });
-                    }
+                let mut return_value = None;
+                self.compile_statements(
+                    &body,
+                    StatementContext::Function {
+                        return_value: &mut return_value,
+                    },
+                    &mut function_scope,
+                )?;
+                let Some(return_value) = return_value else {
+                    return Err(CompileError::ReturnNotFound { location: source });
                 };
 
                 let phantom_node = self.graph.push(Node {
-                    kind: scope.builtin("Noop")?,
+                    kind: self.prelude.builtin(nodes::NOOP_NAME)?,
                     inputs: vec![return_value.node].into(),
                     phantom_inputs: phantom_inputs.into(),
                 });
@@ -384,9 +567,45 @@ impl Compiler {
                 Ok(Value {
                     node: phantom_node,
                     type_: return_value.type_,
-                    span,
+                    span: node.name.span(),
                 })
             }
         }
+    }
+
+    /// Resolve an item path in the given scope and item path
+    fn resolve_item_path<'this, 'scope>(
+        &'this self,
+        scope: &'scope Scope,
+        path: &ast::ItemPath,
+    ) -> Result<&'scope ScopeItem, CompileError>
+    where
+        'this: 'scope,
+    {
+        let mut current_scope = scope;
+
+        let mut item = current_scope.get(&path.base)?;
+        let mut item_span = path.base.0.span();
+
+        for ident in &path.rest {
+            let module_id = item.module(item_span)?;
+            let module = self
+                .modules
+                .get(&module_id)
+                .ok_or_else(|| CompileError::internal("Module FileId not found"))?;
+
+            if !module.exports.contains(&**ident.0) {
+                return Err(CompileError::ItemNotFound {
+                    ident: ident.0.to_string(),
+                    location: ident.0.span(),
+                });
+            }
+
+            current_scope = &module.scope;
+            item = current_scope.get(ident)?;
+            item_span = ident.0.span();
+        }
+
+        Ok(item)
     }
 }

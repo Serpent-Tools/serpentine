@@ -272,11 +272,15 @@ impl NodeImpl for LiteralNode {
     }
 }
 
+/// The name of the noop node.
+/// Thsi is is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
+pub const NOOP_NAME: &str = "Noop";
+
 /// Return the list of prelude nodes
 pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     let mut nodes: HashMap<&'static str, Box<dyn NodeImpl>> = HashMap::new();
 
-    nodes.insert("Noop", Box::new(Noop));
+    nodes.insert(NOOP_NAME, Box::new(Noop));
     nodes.insert(
         "Add",
         Box::new(Wrap::<_, (i128, i128)>::new(async |x: i128, y: i128| {
