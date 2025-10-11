@@ -125,14 +125,14 @@ pub enum CompileError {
     /// Statement found in unexpected context.
     #[error("{stmt} not allowed in {context}")]
     #[diagnostic(code(compiler::invalid_statement))]
-    #[diagnostic(help("Maybe you meant to use a `{maybe}` statement?"))]
     InvalidStatement {
         /// The statement that was invalid
         stmt: &'static str,
         /// The context it was found in
         context: &'static str,
         /// A possible alternative statement
-        maybe: &'static str,
+        #[help("Maybe you meant to use a `{maybe}` statement?")]
+        maybe: Option<&'static str>,
         /// The location of the statement
         #[label("This statement is not allowed here")]
         location: Span,
@@ -165,6 +165,15 @@ pub enum CompileError {
         /// Where the function call was
         #[label("In this call")]
         call: Span,
+    },
+
+    /// The entry point label wasnt found
+    #[error("Entry point '{name}' not found")]
+    #[diagnostic(code(compiler::entrypoint_not_found))]
+    #[diagnostic(help("Make sure its exported."))]
+    EntryPointNotFound {
+        /// The name of the entry point
+        name: String,
     },
 
     /// A scope item was overwritten

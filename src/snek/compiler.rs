@@ -1,7 +1,7 @@
 //! Compile a snek ast into a graph
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use smallvec::SmallVec;
 
@@ -185,6 +185,22 @@ impl Scope<'_> {
     }
 }
 
+/// Resolve the given path pair, handling special paths like `@` etc.
+/// `base` should be the path to a *file*, not a directory.
+fn resolve_path(base: &Path, relative: &str) -> PathBuf {
+    let relative = PathBuf::from(relative);
+    let result = base
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(relative);
+
+    if result.extension().is_some() {
+        result
+    } else {
+        result.with_extension("snek")
+    }
+}
+
 /// A value in the compiler step
 #[derive(Clone)]
 struct Value {
@@ -211,6 +227,8 @@ enum StatementContext<'context> {
     TopLevel {
         /// The modules exports, should be populated by `export` statements
         exports: &'context mut HashSet<Box<str>>,
+        /// The path to the file
+        file_path: PathBuf,
     },
     /// This statemetn is being compiled while inlining a user defined node
     Function {
@@ -220,8 +238,26 @@ enum StatementContext<'context> {
     },
 }
 
+impl StatementContext<'_> {
+    /// Define a export in this context
+    fn define_export(&mut self, name: Box<str>, location: Span) -> Result<(), CompileError> {
+        match self {
+            StatementContext::TopLevel { exports, .. } => {
+                exports.insert(name);
+                Ok(())
+            }
+            StatementContext::Function { .. } => Err(CompileError::InvalidStatement {
+                stmt: "export",
+                context: "function body",
+                maybe: Some("return"),
+                location,
+            }),
+        }
+    }
+}
+
 /// Compiler for snek files into a graph
-pub struct Compiler<'prelude> {
+struct Compiler<'prelude> {
     /// The graph
     graph: Graph,
     /// All the node implementations
@@ -238,6 +274,8 @@ pub struct Compiler<'prelude> {
 /// Bootstraps the prelude, and other needed data before passing onto the compilers compile file
 /// method.
 pub fn compile_graph(path: &Path) -> Result<CompileResult, crate::SerpentineError> {
+    let target_value = "DEFAULT";
+
     let mut prelude = Scope::new();
     let mut node_storage = NodeStorage::new();
 
@@ -253,6 +291,9 @@ pub fn compile_graph(path: &Path) -> Result<CompileResult, crate::SerpentineErro
     }
 
     let mut compiler = Compiler::new(node_storage, &prelude);
+    let cli_id = compiler.files.push(PathBuf::from("<cli>"), target_value);
+    let cli_span = Span::new(cli_id, 0, target_value.len());
+
     let file_id = match compiler.compile_file(path) {
         Ok(id) => id,
         Err(err) => {
@@ -263,29 +304,23 @@ pub fn compile_graph(path: &Path) -> Result<CompileResult, crate::SerpentineErro
         }
     };
 
-    let Some(module) = compiler.modules.get(&file_id) else {
-        return Err(crate::SerpentineError::Compile {
-            source_code: compiler.files,
-            error: vec![CompileError::internal(
-                "Compiled file but no module was created",
-            )],
-        });
-    };
+    let start_value =
+        match compiler.get_from_module(file_id, &ast::Ident(cli_span.with(target_value.into()))) {
+            Ok(start_value) => start_value,
+            Err(err) => {
+                return Err(crate::SerpentineError::Compile {
+                    source_code: compiler.files,
+                    error: vec![
+                        CompileError::EntryPointNotFound {
+                            name: target_value.into(),
+                        },
+                        err,
+                    ],
+                });
+            }
+        };
 
-    let start_value = match module
-        .scope
-        .get(&ast::Ident(Span::dummy().with("DEFAULT".into())))
-    {
-        Ok(item) => item,
-        Err(err) => {
-            return Err(crate::SerpentineError::Compile {
-                source_code: compiler.files,
-                error: vec![err],
-            });
-        }
-    };
-
-    let start_value = match start_value.label(Span::dummy()) {
+    let start_value = match start_value.label(cli_span) {
         Ok(value) => value,
         Err(err) => {
             return Err(crate::SerpentineError::Compile {
@@ -295,10 +330,12 @@ pub fn compile_graph(path: &Path) -> Result<CompileResult, crate::SerpentineErro
         }
     };
 
+    let start_node = start_value.node;
+
     Ok(CompileResult {
         graph: compiler.graph,
         nodes: compiler.nodes,
-        start_node: start_value.node,
+        start_node,
     })
 }
 
@@ -335,6 +372,7 @@ impl<'prelude> Compiler<'prelude> {
             &ast.0,
             StatementContext::TopLevel {
                 exports: &mut exports,
+                file_path: path.to_path_buf(),
             },
             &mut scope,
         )?;
@@ -365,10 +403,16 @@ impl<'prelude> Compiler<'prelude> {
         scope: &mut Scope,
     ) -> Result<(), CompileError> {
         match statement {
-            ast::Statement::Expression { expression, label } => {
+            ast::Statement::Label {
+                export,
+                expression,
+                label,
+            } => {
                 let value = self.compile_expression(expression, scope)?;
-                if let Some(label) = label {
-                    scope.define((**label.0).into(), ScopeItem::Value(value), label.0.span())?;
+                scope.define((**label.0).into(), ScopeItem::Value(value), label.0.span())?;
+
+                if let Some(export_span) = export {
+                    context.define_export((**label.0).into(), *export_span)?;
                 }
             }
             ast::Statement::Return {
@@ -379,7 +423,7 @@ impl<'prelude> Compiler<'prelude> {
                     return Err(CompileError::InvalidStatement {
                         stmt: "return",
                         context: "top level",
-                        maybe: "export",
+                        maybe: Some("export"),
                         location: *return_kw,
                     });
                 }
@@ -395,10 +439,10 @@ impl<'prelude> Compiler<'prelude> {
             },
 
             ast::Statement::Function {
+                export,
                 name,
                 paramters,
                 statements,
-                ..
             } => {
                 scope.define(
                     (*name.0).clone(),
@@ -412,6 +456,32 @@ impl<'prelude> Compiler<'prelude> {
                     }),
                     name.0.span(),
                 )?;
+
+                if let Some(export_span) = export {
+                    context.define_export((*name.0).clone(), *export_span)?;
+                }
+            }
+            ast::Statement::Import { export, path, name } => {
+                let StatementContext::TopLevel { file_path, .. } = context else {
+                    return Err(CompileError::InvalidStatement {
+                        stmt: "import",
+                        context: "function body",
+                        maybe: None,
+                        location: name.0.span(),
+                    });
+                };
+
+                let resolved_path = resolve_path(file_path, &path.0);
+                let module_id = self.compile_file(&resolved_path)?;
+                scope.define(
+                    (*name.0).clone(),
+                    ScopeItem::Module(module_id),
+                    name.0.span(),
+                )?;
+
+                if let Some(export_span) = export {
+                    context.define_export((*name.0).clone(), *export_span)?;
+                }
             }
         }
 
@@ -582,30 +652,36 @@ impl<'prelude> Compiler<'prelude> {
     where
         'this: 'scope,
     {
-        let mut current_scope = scope;
-
-        let mut item = current_scope.get(&path.base)?;
+        let mut item = scope.get(&path.base)?;
         let mut item_span = path.base.0.span();
 
         for ident in &path.rest {
             let module_id = item.module(item_span)?;
-            let module = self
-                .modules
-                .get(&module_id)
-                .ok_or_else(|| CompileError::internal("Module FileId not found"))?;
-
-            if !module.exports.contains(&**ident.0) {
-                return Err(CompileError::ItemNotFound {
-                    ident: ident.0.to_string(),
-                    location: ident.0.span(),
-                });
-            }
-
-            current_scope = &module.scope;
-            item = current_scope.get(ident)?;
+            item = self.get_from_module(module_id, ident)?;
             item_span = ident.0.span();
         }
 
         Ok(item)
+    }
+
+    /// Lookup a item in a module, ensuring it is exported
+    fn get_from_module(
+        &self,
+        module_id: FileId,
+        ident: &ast::Ident,
+    ) -> Result<&ScopeItem, CompileError> {
+        let module = self
+            .modules
+            .get(&module_id)
+            .ok_or_else(|| CompileError::internal("Module FileId not found"))?;
+
+        if !module.exports.contains(&**ident.0) {
+            return Err(CompileError::ItemNotFound {
+                ident: ident.0.to_string(),
+                location: ident.0.span(),
+            });
+        }
+
+        module.scope.get(ident)
     }
 }

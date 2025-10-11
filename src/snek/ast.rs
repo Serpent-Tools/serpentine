@@ -16,27 +16,29 @@ pub enum Statement {
         expression: Expression,
     },
 
-    // /// A import statement
-    // Import {
-    //     /// The span of the `import` keyword
-    //     import_kw: Span,
-    //     /// The relative path to the file to import
-    //     path: Spanned<Box<str>>,
-    //     /// The span of the `as` keyword
-    //     as_kw: Span,
-    //     /// The name to put the module under.
-    //     name: Ident,
-    // },
-    /// A expression statement
-    Expression {
+    /// A import statement
+    Import {
+        /// A optional export keyword
+        export: Option<Span>,
+        /// The relative path to the file to import
+        path: Spanned<Box<str>>,
+        /// The name to put the module under.
+        name: Ident,
+    },
+    /// A label statement
+    Label {
+        /// A optional export keyword
+        export: Option<Span>,
         /// Expression of the statement
         expression: Expression,
-        /// A optional label to store the value at.
-        label: Option<Ident>,
+        /// The label to store the value at.
+        label: Ident,
     },
 
     /// Function definition
     Function {
+        /// a optional export keyword
+        export: Option<Span>,
         /// Name of the Function
         name: Ident,
         /// Paramaters to the Function

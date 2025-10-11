@@ -42,63 +42,88 @@ impl Parser {
 
     /// Parse a statement from the current token stream.
     fn parse_statement(&mut self) -> Result<ast::Statement, CompileError> {
-        match self.peek()? {
+        let token = self.next()?;
+        let token_span = token.span();
+        match token.take() {
             Token::Return => {
-                let return_kw = self.next()?.span();
                 let expression = self.parse_expression()?;
                 self.expect(Token::SemiColon)?;
                 Ok(ast::Statement::Return {
-                    return_kw,
+                    return_kw: token_span,
                     expression,
                 })
             }
-            // Token::Import => {
-            //     let import_kw = self.next()?.span();
-            //     let path = self.expect_str()?;
-            //     let as_kw = self.expect(Token::As)?;
-            //     let name = self.expect_ident()?;
-            //     self.expect(Token::SemiColon)?;
-            //     Ok(ast::Statement::Import {
-            //         import_kw,
-            //         path,
-            //         as_kw,
-            //         name,
-            //     })
-            // }
-            Token::Def => {
-                let name = self.expect_ident()?;
-
-                self.expect(Token::OpenParen)?;
-                let paramaters =
-                    self.parse_list(Token::ClosingParen, Some(Token::Comma), Self::expect_ident)?;
-
-                self.expect(Token::OpenBracket)?;
-                let statements =
-                    self.parse_list(Token::ClosingBracket, None, Self::parse_statement)?;
-
-                Ok(ast::Statement::Function {
-                    name,
-                    paramters: paramaters.into_boxed_slice(),
-                    statements: statements.into_boxed_slice(),
-                })
+            Token::Def => self.parse_function_def(None),
+            Token::Ident(ident) => self.parse_label(None, token_span, ident),
+            Token::Import => self.parse_import(None),
+            Token::Export => {
+                let next_token = self.next()?;
+                let next_token_span = next_token.span();
+                match next_token.take() {
+                    Token::Def => self.parse_function_def(Some(token_span)),
+                    Token::Ident(ident) => {
+                        self.parse_label(Some(token_span), next_token_span, ident)
+                    }
+                    Token::Import => self.parse_import(Some(token_span)),
+                    next_token => Err(CompileError::UnexpectedToken {
+                        expected: "def/ident".to_owned(),
+                        got: next_token.describe(),
+                        location: next_token_span,
+                    }),
+                }
             }
-            _ => self.parse_expression_statement(),
+            token => Err(CompileError::UnexpectedToken {
+                expected: "import/export/return/def/ident".to_owned(),
+                got: token.describe(),
+                location: token_span,
+            }),
         }
     }
 
-    /// Parse a expression statement from the current token stream.
-    fn parse_expression_statement(&mut self) -> Result<ast::Statement, CompileError> {
+    /// Parse a label statement
+    fn parse_label(
+        &mut self,
+        export: Option<Span>,
+        token_span: Span,
+        ident: Box<str>,
+    ) -> Result<ast::Statement, CompileError> {
+        let label = ast::Ident(token_span.with(ident));
+        self.expect(Token::Eq)?;
         let expression = self.parse_expression()?;
-
-        let label = if self.peek()? == Token::Eq {
-            self.next()?;
-            Some(self.expect_ident()?)
-        } else {
-            None
-        };
-
         self.expect(Token::SemiColon)?;
-        Ok(ast::Statement::Expression { expression, label })
+        Ok(ast::Statement::Label {
+            export,
+            expression,
+            label,
+        })
+    }
+
+    /// Parse a function definition
+    fn parse_function_def(&mut self, export: Option<Span>) -> Result<ast::Statement, CompileError> {
+        let name = self.expect_ident()?;
+
+        self.expect(Token::OpenParen)?;
+        let paramaters =
+            self.parse_list(Token::ClosingParen, Some(Token::Comma), Self::expect_ident)?;
+
+        self.expect(Token::OpenBracket)?;
+        let statements = self.parse_list(Token::ClosingBracket, None, Self::parse_statement)?;
+
+        Ok(ast::Statement::Function {
+            export,
+            name,
+            paramters: paramaters.into_boxed_slice(),
+            statements: statements.into_boxed_slice(),
+        })
+    }
+
+    /// Parse an import statement
+    fn parse_import(&mut self, export: Option<Span>) -> Result<ast::Statement, CompileError> {
+        let path = self.expect_str()?;
+        self.expect(Token::As)?;
+        let name = self.expect_ident()?;
+        self.expect(Token::SemiColon)?;
+        Ok(ast::Statement::Import { export, path, name })
     }
 
     /// Parse a expression

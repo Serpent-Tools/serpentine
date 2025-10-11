@@ -1,4 +1,3 @@
-import "./other.snek" as other;
+import "./other" as other;
 
-5 > other::Double() = DEFAULT;
-export DEFAULT;
+export DEFAULT = other::value > other::Double();
