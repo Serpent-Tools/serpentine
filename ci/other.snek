@@ -1,3 +1,5 @@
-export def double(x) {
+export def Double(x) {
     return x > Add(x);
 }
+
+export value = Double(20);

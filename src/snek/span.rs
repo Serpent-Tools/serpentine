@@ -50,7 +50,7 @@ impl miette::SourceCode for VirtualFile {
         let mut current_start = 0_usize;
 
         for (name, file) in &self.files {
-            if span.offset() <= current_start.saturating_add(file.len()) {
+            if span.offset() < current_start.saturating_add(file.len()) {
                 let local_span = miette::SourceSpan::from((
                     span.offset().saturating_sub(current_start),
                     span.len(),
