@@ -52,6 +52,15 @@ pub enum CompileError {
         char: char,
     },
 
+    /// A unterminated string literal was found
+    #[error("Unterminated string literal")]
+    #[diagnostic(code(parsing::unterminated_string))]
+    UnterminatedString {
+        /// The location of the string literal
+        #[label("String literal not terminated")]
+        location: Span,
+    },
+
     /// The parser encountered something different from what it expected.
     #[error("Expected `{expected}`")]
     #[diagnostic(code(parsing::unexpected_token))]
@@ -167,6 +176,19 @@ pub enum CompileError {
         call: Span,
     },
 
+    /// A error occured while importing a module
+    #[error("Importing module '{module}' failed")]
+    ImportError {
+        /// The module that failed to import
+        module: String,
+        /// The error that caused the import to fail
+        #[diagnostic_source]
+        error: Box<dyn Diagnostic + Send + Sync>,
+        /// Where the import was
+        #[label("In this import statement")]
+        location: Span,
+    },
+
     /// The entry point label wasnt found
     #[error("Entry point '{name}' not found")]
     #[diagnostic(code(compiler::entrypoint_not_found))]
@@ -202,5 +224,51 @@ impl CompileError {
         let msg = msg.into();
         debug_assert!(false, "{msg}");
         Self::InternalError(msg)
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::panic, reason = "tests")]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    fn compile_positive(#[files("test_cases/positive/**/*.snek")] path: PathBuf) {
+        let res = compiler::compile_graph(&path);
+        match res {
+            Ok(_) => {}
+            Err(err) => {
+                let err = miette::Report::new(err);
+                let err = format!("{err:?}");
+                panic!("Failed to compile {path:?}:\n{err}");
+            }
+        }
+    }
+
+    #[rstest]
+    fn compile_negative(#[files("test_cases/negative/**/*.snek")] path: PathBuf) {
+        let res = compiler::compile_graph(&path);
+        match res {
+            Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),
+            Err(err) => {
+                let _ = miette::set_hook(Box::new(|_| {
+                    let config = miette::GraphicalReportHandler::default();
+                    let config = config
+                        .with_width(usize::MAX)
+                        .with_theme(miette::GraphicalTheme::none());
+                    Box::new(config)
+                }));
+
+                let err = miette::Report::new(err);
+                let err = format!("{err:?}");
+
+                insta::assert_snapshot!(
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    err
+                );
+            }
+        }
     }
 }

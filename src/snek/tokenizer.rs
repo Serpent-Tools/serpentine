@@ -5,6 +5,7 @@ use crate::snek::span::{FileId, Span, Spanned};
 
 /// a token is a small unit of the input stream.
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum Token {
     /// A identifier
     Ident(Box<str>),
@@ -132,14 +133,18 @@ impl<'src> Tokenizer<'src> {
             '"' => {
                 let consumed = self.advance_while(|next_char| next_char != '"')?;
                 let content_span = self.span(consumed);
-                self.advance()?;
+                if self.advance()?.is_none() {
+                    return Err(CompileError::UnterminatedString {
+                        location: content_span,
+                    });
+                }
                 let string_span = self.span(consumed.saturating_add(2));
 
                 let content = content_span.index_str(self.code)?;
                 string_span.with(Token::String(content))
             }
-            character if character.is_numeric() => {
-                let consumed = self.advance_while(char::is_numeric)?;
+            character if character.is_ascii_digit() => {
+                let consumed = self.advance_while(|digit: char| digit.is_ascii_digit())?;
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
                 let number = span.index_str(self.code)?;
                 let number = number
@@ -214,5 +219,37 @@ impl<'src> Tokenizer<'src> {
         let end = self.byte;
         let start = end.saturating_sub(length);
         Span::new(self.file_id, start, end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::property_test;
+    use rstest::rstest;
+
+    use super::*;
+    use crate::snek::span::FileId;
+
+    #[property_test]
+    fn doesnt_panic(code: String) {
+        let _ = Tokenizer::tokenize(FileId(0), &code);
+    }
+
+    #[rstest]
+    #[case::simple_numeber("123")]
+    #[case::string(r#""hello""#)]
+    fn tokenize(#[case] code: String) {
+        let res = Tokenizer::tokenize(FileId(0), &code);
+        assert!(res.is_ok(), "Failed to tokenize {code:?}: {res:?}");
+    }
+
+    #[rstest]
+    #[case::unicode_digit("²")]
+    #[case::unterminated_string(r#""hello"#)]
+    #[case::single_colon(":")]
+    #[case::double_colon_with_whitespace(": :")]
+    fn edge_case_fails(#[case] code: String) {
+        let res = Tokenizer::tokenize(FileId(0), &code);
+        assert!(res.is_err(), "Should fail to tokenize {code:?}: {res:?}");
     }
 }

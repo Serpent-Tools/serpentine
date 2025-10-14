@@ -58,8 +58,8 @@ pub struct NodeStorage {
 }
 
 impl std::fmt::Debug for NodeStorage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list()
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_list()
             .entries(std::iter::repeat_n("*", self.nodes.len()))
             .finish()
     }

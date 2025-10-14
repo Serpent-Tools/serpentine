@@ -1,0 +1,33 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: 
+  x Importing module '/home/viv/coding/serpentine/test_cases/negative/./double_return.snek' failed
+  |->   x Inlining function failed
+  |      ,-[/home/viv/coding/serpentine/test_cases/negative/./double_return.snek:6:18]
+  |    5 |
+  |    6 | export DEFAULT = Double(10);
+  |      :                  ^^^|^^
+  |      :                     `-- In this call
+  |      `----
+  |   
+  `-> compiler::double_return
+      
+        x Multiple returns
+         ,-[/home/viv/coding/serpentine/test_cases/negative/./double_return.snek:3:5]
+       2 |     return Add(value, value);
+       3 |     return Add(value, value);
+         :     ^^^|^^
+         :        `-- Second return after exsisting return.
+       4 | }
+         `----
+      
+   ,-[/home/viv/coding/serpentine/test_cases/negative/error_in_import.snek:1:8]
+ 1 | import "./double_return.snek" as lib;
+   :        ^^^^^^^^^^^|^^^^^^^^^^
+   :                   `-- In this import statement
+ 2 | 
+   `----

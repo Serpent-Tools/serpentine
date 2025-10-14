@@ -1,0 +1,6 @@
+def Double(value) {
+    return Add(value, value);
+}
+
+ten = 10;
+export DEFAULT = !ten Double(ten);

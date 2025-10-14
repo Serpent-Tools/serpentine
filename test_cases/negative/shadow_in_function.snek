@@ -1,0 +1,8 @@
+value = 10;
+
+def Foo(bar) {
+    value = Add(bar, 5);
+    return Add(value, value);
+}
+
+export DEFAULT = Foo(value);

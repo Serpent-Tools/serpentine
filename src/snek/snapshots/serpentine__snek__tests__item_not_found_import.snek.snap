@@ -1,0 +1,15 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::item_not_found
+
+  x 'secret' not found in scope
+   ,-[/home/viv/coding/serpentine/test_cases/negative/item_not_found_import.snek:3:23]
+ 2 | 
+ 3 | export DEFAULT = lib::secret;
+   :                       ^^^|^^
+   :                          `-- Item with this name not found
+   `----

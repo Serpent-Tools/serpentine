@@ -1,0 +1,3 @@
+import "../lib.snek" as lib;
+
+export DEFAULT = lib::ten > lib::Double() > lib::AddTen() > Add(lib::lib2::five);

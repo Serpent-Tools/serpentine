@@ -15,7 +15,7 @@ pub struct VirtualFile {
 
 /// A unique identifier for a file in the virtual file system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FileId(usize);
+pub struct FileId(pub usize);
 
 impl VirtualFile {
     /// Create a new empty virtual file

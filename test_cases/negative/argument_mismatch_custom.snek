@@ -1,0 +1,5 @@
+def Double(value) {
+    return Add(value, value);
+}
+
+export DEFAULT = Double();

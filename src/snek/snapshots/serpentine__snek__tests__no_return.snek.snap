@@ -1,0 +1,15 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::no_return
+
+  x No return found.
+   ,-[/home/viv/coding/serpentine/test_cases/negative/no_return.snek:1:5]
+ 1 | def Double(value) {}
+   :     ^^^|^^
+   :        `-- In this function.
+ 2 | 
+   `----

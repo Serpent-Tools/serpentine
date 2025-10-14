@@ -1,0 +1,19 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::entrypoint_not_found
+
+  x Entry point 'DEFAULT' not found
+  help: Make sure its exported.
+
+Error: compiler::item_not_found
+
+  x 'DEFAULT' not found in scope
+   ,-[<cli>:1:1]
+ 1 | DEFAULT
+   : ^^^|^^^
+   :    `-- Item with this name not found
+   `----

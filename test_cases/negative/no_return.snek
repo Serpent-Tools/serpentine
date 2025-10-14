@@ -1,0 +1,3 @@
+def Double(value) {}
+
+export DEFAULT = Double(10);
