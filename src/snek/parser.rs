@@ -103,7 +103,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         self.expect(Token::OpenParen)?;
-        let paramaters =
+        let parameters =
             self.parse_list(Token::ClosingParen, Some(Token::Comma), Self::expect_ident)?;
 
         self.expect(Token::OpenBracket)?;
@@ -112,7 +112,7 @@ impl Parser {
         Ok(ast::Statement::Function {
             export,
             name,
-            paramters: paramaters.into_boxed_slice(),
+            parameters: parameters.into_boxed_slice(),
             statements: statements.into_boxed_slice(),
         })
     }
@@ -253,20 +253,20 @@ impl Parser {
 
     /// Parse a list of items from the token stream.
     /// Will stop once hits `closing`.
-    /// If provided will consume `seperator` between calls to `parser`.
+    /// If provided will consume `separator` between calls to `parser`.
     fn parse_list<T>(
         &mut self,
         closing: Token,
-        seperator: Option<Token>,
+        separator: Option<Token>,
         parser: impl Fn(&mut Self) -> Result<T, CompileError>,
     ) -> Result<Vec<T>, CompileError> {
-        let seperator = seperator.as_ref();
+        let separator = separator.as_ref();
         let mut result = Vec::new();
         while self.peek()? != closing {
             result.push(parser(self)?);
 
-            if let Some(seperator) = seperator
-                && self.peek()? == *seperator
+            if let Some(separator) = separator
+                && self.peek()? == *separator
             {
                 self.next()?;
             }

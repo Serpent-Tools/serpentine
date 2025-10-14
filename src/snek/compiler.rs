@@ -32,7 +32,7 @@ enum NodeItem {
     /// Currently these are implemented via inlining, as it simplifies generic functions,
     /// wiring up the nodes, etc.
     Function {
-        /// The names of the paramaters, when inlining these will be used to construct a temporary
+        /// The names of the parameters, when inlining these will be used to construct a temporary
         /// scope.
         params: Box<[Box<str>]>,
         /// The ast nodes in the body.
@@ -239,7 +239,7 @@ enum StatementContext<'context> {
     },
     /// This statemetn is being compiled while inlining a user defined node
     Function {
-        /// The reutrn value of the function, should be set by a return statement.
+        /// The return value of the function, should be set by a return statement.
         /// Should be set exactly once.
         return_value: &'context mut Option<Value>,
     },
@@ -358,7 +358,7 @@ impl<'prelude> Compiler<'prelude> {
         }
     }
 
-    /// Compile the given file path and reurn the module id
+    /// Compile the given file path and return the module id
     fn compile_file(&mut self, path: &Path) -> Result<FileId, CompileError> {
         let code = std::fs::read_to_string(path).map_err(|err| CompileError::FileReading {
             file: path.to_path_buf(),
@@ -448,14 +448,14 @@ impl<'prelude> Compiler<'prelude> {
             ast::Statement::Function {
                 export,
                 name,
-                paramters,
+                parameters,
                 statements,
             } => {
                 if let StatementContext::TopLevel { .. } = context {
                     scope.define(
                         (*name.0).clone(),
                         ScopeItem::Node(NodeItem::Function {
-                            params: paramters
+                            params: parameters
                                 .into_iter()
                                 .map(|ident| (*ident.0).clone())
                                 .collect(),

@@ -153,9 +153,8 @@ impl<'src> Tokenizer<'src> {
                 span.with(Token::Numeric(number))
             }
             character if character.is_alphabetic() => {
-                let consumed = self.advance_while(|characther| {
-                    characther.is_alphanumeric() || characther == '-' || characther == '_'
-                })?;
+                let consumed =
+                    self.advance_while(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_')?;
 
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
                 let text = span.index_str(self.code)?;
@@ -236,7 +235,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case::simple_numeber("123")]
+    #[case::simple_number("123")]
     #[case::string(r#""hello""#)]
     fn tokenize(#[case] code: String) {
         let res = Tokenizer::tokenize(FileId(0), &code);

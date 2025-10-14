@@ -85,7 +85,7 @@ pub enum CompileError {
         /// The location of the offending type in the source code
         #[label("Has type `{got}`")]
         location: Span,
-        /// The node it was arugments for
+        /// The node it was arguments for
         #[label("In call to this node")]
         node: Span,
     },
@@ -161,7 +161,7 @@ pub enum CompileError {
     #[diagnostic(code(compiler::double_return))]
     DoubleReturn {
         /// Where was the second return found.
-        #[label("Second return after exsisting return.")]
+        #[label("Second return after existing return.")]
         location: Span,
     },
 
@@ -176,7 +176,7 @@ pub enum CompileError {
         call: Span,
     },
 
-    /// A error occured while importing a module
+    /// A error occurred while importing a module
     #[error("Importing module '{module}' failed")]
     ImportError {
         /// The module that failed to import
@@ -202,7 +202,7 @@ pub enum CompileError {
     #[error("Item '{ident}' already defined in this scope")]
     #[diagnostic(code(compiler::item_already_defined))]
     #[diagnostic(help(
-        "Snek sementically speaking does not have a specified exeuction order, so shadowing is not allowed."
+        "Snek semantically speaking does not have a specified execution order, so shadowing is not allowed."
     ))]
     ShadowedName {
         /// The name that was shadowed

@@ -273,7 +273,7 @@ impl NodeImpl for LiteralNode {
 }
 
 /// The name of the noop node.
-/// Thsi is is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
+/// This is is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
 pub const NOOP_NAME: &str = "Noop";
 
 /// Return the list of prelude nodes
