@@ -125,7 +125,7 @@ impl Scope<'static> {
     /// This is bound to static as the prelude scope is static.
     fn builtin(&self, name: &'static str) -> Result<NodeKindId, CompileError> {
         let Some(item) = self.items.get(name) else {
-            return Err(CompileError::internal("Builtin nodee not found in prelude"));
+            return Err(CompileError::internal("Builtin node not found in prelude"));
         };
 
         let ScopeItem::Node(NodeItem::BuiltIn(node_id)) = item else {
@@ -166,17 +166,6 @@ impl Scope<'_> {
         node: ScopeItem,
         location: Span,
     ) -> Result<(), CompileError> {
-        // match self.items.entry(name) {
-        //     std::collections::hash_map::Entry::Vacant(entry) => {
-        //         entry.insert(node);
-        //         Ok(())
-        //     }
-        //     std::collections::hash_map::Entry::Occupied(entry) => Err(CompileError::ShadowedName {
-        //         ident: entry.key().to_string(),
-        //         location,
-        //     }),
-        // }
-
         if self
             .get(&ast::Ident(Span::dummy().with(name.clone())))
             .is_ok()
@@ -531,7 +520,7 @@ impl<'prelude> Compiler<'prelude> {
             }
             ast::Expression::Number(value) => (Data::Int(**value), DataType::Int, value.span()),
             ast::Expression::String(value) => (
-                Data::String((**value).clone()),
+                Data::String(value.as_ref().into()),
                 DataType::String,
                 value.span(),
             ),
