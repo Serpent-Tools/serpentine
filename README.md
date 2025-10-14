@@ -12,13 +12,12 @@ Serpentine does **not** have the concept of jobs, pipelines, etc. it has the con
 This makes it trivially easy to share setup logic, parallelize workflows, etc.
 
 ```snek
-Image("rust:latest") > Copy(".", "/app") > Workdir("/app") = base;
+base = Image("rust:latest") > Copy(".", "/app") > Workdir("/app");
 
-base > Exec("cargo test") = test;
-base > Exec("cargo clippy") = clippy;
+test = base > Exec("cargo test");
+clippy = base > Exec("cargo clippy");
 
-base > !(test, clippy) Exec("Cargo build") > build;
-return build;
+export DEFAULT = base > !(test, clippy) Exec("Cargo build");
 ```
 
 This represents the following graph:
