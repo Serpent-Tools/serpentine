@@ -21,7 +21,7 @@ Error:
        2 |     return Add(value, value);
        3 |     return Add(value, value);
          :     ^^^|^^
-         :        `-- Second return after exsisting return.
+         :        `-- Second return after existing return.
        4 | }
          `----
       

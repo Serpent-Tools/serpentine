@@ -41,8 +41,8 @@ pub enum Statement {
         export: Option<Span>,
         /// Name of the Function
         name: Ident,
-        /// Paramaters to the Function
-        paramters: Box<[Ident]>,
+        /// Parameters to the Function
+        parameters: Box<[Ident]>,
         /// The list of the statements in this function.
         statements: Box<[Statement]>,
     },

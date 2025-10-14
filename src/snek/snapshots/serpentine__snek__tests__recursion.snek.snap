@@ -15,7 +15,7 @@ Error:
          :      `-- This name is already defined in this scope
        2 |     return Foo(value);
          `----
-        help: Snek sementically speaking does not have a specified exeuction order, so shadowing is not allowed.
+        help: Snek semantically speaking does not have a specified execution order, so shadowing is not allowed.
       
    ,-[/home/viv/coding/serpentine/test_cases/negative/recursion.snek:5:18]
  4 | 
