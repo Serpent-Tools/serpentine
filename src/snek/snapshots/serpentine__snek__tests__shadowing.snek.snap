@@ -1,0 +1,17 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::item_already_defined
+
+  x Item 'value' already defined in this scope
+   ,-[/home/viv/coding/serpentine/test_cases/negative/shadowing.snek:2:1]
+ 1 | value = 10;
+ 2 | value = 20;
+   : ^^|^^
+   :   `-- This name is already defined in this scope
+ 3 | 
+   `----
+  help: Snek sementically speaking does not have a specified exeuction order, so shadowing is not allowed.

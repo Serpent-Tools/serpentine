@@ -1,0 +1,14 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::wrong_item_kind
+
+  x Expected a value
+   ,-[<cli>:1:1]
+ 1 | DEFAULT
+   : ^^^|^^^
+   :    `-- This is a 'node'
+   `----

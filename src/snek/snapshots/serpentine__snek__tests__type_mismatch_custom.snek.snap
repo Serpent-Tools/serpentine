@@ -1,0 +1,29 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: 
+  x Inlining function failed
+  `-> compiler::type_mismatch
+      
+        x Expected `integer` got `string`
+         ,-[/home/viv/coding/serpentine/test_cases/negative/type_mismatch_custom.snek:2:12]
+       1 | def Double(value) {
+       2 |     return Add(value, value);
+         :            ^|^
+         :             `-- In call to this node
+       3 | }
+       4 |
+       5 | export DEFAULT = Double("Hello");
+         :                         ^^^|^^^
+         :                            `-- Has type `string`
+         `----
+      
+   ,-[/home/viv/coding/serpentine/test_cases/negative/type_mismatch_custom.snek:5:18]
+ 4 | 
+ 5 | export DEFAULT = Double("Hello");
+   :                  ^^^|^^
+   :                     `-- In this call
+   `----

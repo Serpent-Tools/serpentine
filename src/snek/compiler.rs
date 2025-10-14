@@ -6,13 +6,7 @@ use std::path::{Path, PathBuf};
 use smallvec::SmallVec;
 
 use crate::engine::data_model::{
-    Data,
-    DataType,
-    Graph,
-    Node,
-    NodeInstanceId,
-    NodeKindId,
-    NodeStorage,
+    Data, DataType, Graph, Node, NodeInstanceId, NodeKindId, NodeStorage,
 };
 use crate::engine::nodes;
 use crate::snek::span::{FileId, Span};
@@ -172,15 +166,28 @@ impl Scope<'_> {
         node: ScopeItem,
         location: Span,
     ) -> Result<(), CompileError> {
-        match self.items.entry(name) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(node);
-                Ok(())
-            }
-            std::collections::hash_map::Entry::Occupied(entry) => Err(CompileError::ShadowedName {
-                ident: entry.key().to_string(),
+        // match self.items.entry(name) {
+        //     std::collections::hash_map::Entry::Vacant(entry) => {
+        //         entry.insert(node);
+        //         Ok(())
+        //     }
+        //     std::collections::hash_map::Entry::Occupied(entry) => Err(CompileError::ShadowedName {
+        //         ident: entry.key().to_string(),
+        //         location,
+        //     }),
+        // }
+
+        if self
+            .get(&ast::Ident(Span::dummy().with(name.clone())))
+            .is_ok()
+        {
+            Err(CompileError::ShadowedName {
+                ident: name.to_string(),
                 location,
-            }),
+            })
+        } else {
+            self.items.insert(name, node);
+            Ok(())
         }
     }
 }
@@ -444,21 +451,30 @@ impl<'prelude> Compiler<'prelude> {
                 paramters,
                 statements,
             } => {
-                scope.define(
-                    (*name.0).clone(),
-                    ScopeItem::Node(NodeItem::Function {
-                        params: paramters
-                            .into_iter()
-                            .map(|ident| (*ident.0).clone())
-                            .collect(),
-                        body: statements.clone(),
-                        source: name.0.span(),
-                    }),
-                    name.0.span(),
-                )?;
+                if let StatementContext::TopLevel { .. } = context {
+                    scope.define(
+                        (*name.0).clone(),
+                        ScopeItem::Node(NodeItem::Function {
+                            params: paramters
+                                .into_iter()
+                                .map(|ident| (*ident.0).clone())
+                                .collect(),
+                            body: statements.clone(),
+                            source: name.0.span(),
+                        }),
+                        name.0.span(),
+                    )?;
 
-                if let Some(export_span) = export {
-                    context.define_export((*name.0).clone(), *export_span)?;
+                    if let Some(export_span) = export {
+                        context.define_export((*name.0).clone(), *export_span)?;
+                    }
+                } else {
+                    return Err(CompileError::InvalidStatement {
+                        stmt: "def",
+                        context: "function body",
+                        maybe: None,
+                        location: name.0.span(),
+                    });
                 }
             }
             ast::Statement::Import { export, path, name } => {
@@ -472,7 +488,18 @@ impl<'prelude> Compiler<'prelude> {
                 };
 
                 let resolved_path = resolve_path(file_path, &path.0);
-                let module_id = self.compile_file(&resolved_path)?;
+
+                let module_id = match self.compile_file(&resolved_path) {
+                    Ok(id) => id,
+                    Err(err) => {
+                        return Err(CompileError::ImportError {
+                            module: resolved_path.display().to_string(),
+                            error: Box::new(err),
+                            location: path.span(),
+                        });
+                    }
+                };
+
                 scope.define(
                     (*name.0).clone(),
                     ScopeItem::Module(module_id),
@@ -605,25 +632,33 @@ impl<'prelude> Compiler<'prelude> {
                     });
                 }
 
-                let module = self
-                    .modules
-                    .get(&source.file_id)
-                    .ok_or_else(|| CompileError::internal("Module FileId not found"))?
-                    .clone();
+                let parent_scope = match self.modules.get(&source.file_id) {
+                    Some(module) => &module.scope.clone(),
+                    None => scope,
+                };
 
-                let mut function_scope = module.scope.child();
+                let mut function_scope = parent_scope.child();
+
                 for (name, value) in params.iter().zip(arguments) {
                     function_scope.define(name.clone(), ScopeItem::Value(value), source)?;
                 }
 
                 let mut return_value = None;
-                self.compile_statements(
+                let res = self.compile_statements(
                     &body,
                     StatementContext::Function {
                         return_value: &mut return_value,
                     },
                     &mut function_scope,
-                )?;
+                );
+
+                if let Err(err) = res {
+                    return Err(CompileError::InlineError {
+                        error: Box::new(err),
+                        call: node.name.span(),
+                    });
+                }
+
                 let Some(return_value) = return_value else {
                     return Err(CompileError::ReturnNotFound { location: source });
                 };

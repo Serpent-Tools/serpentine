@@ -1,0 +1,14 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::wrong_item_kind
+
+  x Expected a value
+   ,-[/home/viv/coding/serpentine/test_cases/negative/item_wrong_kind.snek:1:22]
+ 1 | export DEFAULT = Add(Add, 10);
+   :                      ^|^
+   :                       `-- This is a 'node'
+   `----

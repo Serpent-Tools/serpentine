@@ -1,0 +1,18 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: 
+  x Importing module '/home/viv/coding/serpentine/test_cases/negative/huh.snek' failed
+  |-> file_error
+  |   
+  |     x Could not read file /home/viv/coding/serpentine/test_cases/negative/huh.snek
+  |   
+  `-> No such file or directory (os error 2)
+   ,-[/home/viv/coding/serpentine/test_cases/negative/import_not_found.snek:1:8]
+ 1 | import "huh" as huh;
+   :        ^^|^^
+   :          `-- In this import statement
+   `----

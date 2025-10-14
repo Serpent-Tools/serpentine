@@ -1,0 +1,13 @@
+export import "./lib2.snek" as lib2;
+
+secret = 20;
+
+export ten = 10;
+
+export def Double(value) {
+    return Add(value, value);
+}
+
+export def AddTen(value) {
+    return Add(ten, value);
+}

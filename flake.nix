@@ -8,10 +8,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
-    nur = {
-      url = "github:nix-community/NUR";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -33,20 +29,19 @@
       {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            (fenix.packages.${system}.latest.withComponents [
+            (fenix.packages.${system}.stable.withComponents [
               "cargo"
               "clippy"
               "rustc"
 
               "rust-analyzer"
               "rustfmt"
-
-              "rust-src"
             ])
-            pkgs.nur.repos.dagger.dagger
             just
             bacon
             cargo-edit
+            cargo-nextest
+            cargo-insta
           ];
         };
       }

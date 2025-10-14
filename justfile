@@ -1,5 +1,8 @@
 run:
     cargo run -p serpentine -- --pipeline ci/main.snek
 
+snapshot:
+    cargo insta test --review --unreferenced delete
+
 test:
-    cargo test
+    cargo nextest run

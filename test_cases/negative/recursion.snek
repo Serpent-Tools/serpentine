@@ -1,0 +1,5 @@
+def Foo(value) {
+    return Foo(value);
+}
+
+export DEFAULT = Foo(10);

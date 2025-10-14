@@ -1,0 +1,3 @@
+export def DEFAULT() {
+    return 10;
+}

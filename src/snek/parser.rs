@@ -352,3 +352,22 @@ impl Parser {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::property_test;
+
+    use super::*;
+    use crate::snek::tokenizer;
+
+    #[property_test]
+    fn doesnt_panic(mut code: Vec<tokenizer::Token>) {
+        code.push(tokenizer::Token::Eof);
+        let code = code
+            .into_iter()
+            .map(|token| Span::dummy().with(token))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let _ = Parser::parse_file(code);
+    }
+}
