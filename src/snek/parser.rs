@@ -171,8 +171,7 @@ impl Parser {
     /// Parse a chain of nodes, `expression > Node > Node`
     fn parse_chain(&mut self, start: ast::Expression) -> Result<ast::Chain, CompileError> {
         let mut nodes = Vec::new();
-        while self.peek()? == Token::Pipe {
-            self.next()?;
+        while self.next_if(Token::Pipe)?.is_some() {
             nodes.push(self.parse_node(None)?);
         }
 
@@ -198,12 +197,10 @@ impl Parser {
             start_span = pre_parsed_name.span();
             name = start_span.with(pre_parsed_name);
         } else {
-            // REFACTOR: Create a `.next_if` method
-            if self.peek()? == Token::Wait {
-                start_span = self.next()?.span();
+            if let Some(next_span) = self.next_if(Token::Wait)? {
+                start_span = next_span;
 
-                if self.peek()? == Token::OpenParen {
-                    self.next()?;
+                if self.next_if(Token::OpenParen)?.is_some() {
                     phantom_inputs = self
                         .parse_list(
                             Token::ClosingParen,
@@ -265,10 +262,8 @@ impl Parser {
         while self.peek()? != closing {
             result.push(parser(self)?);
 
-            if let Some(separator) = separator
-                && self.peek()? == *separator
-            {
-                self.next()?;
+            if let Some(separator) = separator {
+                self.next_if(separator.clone())?;
             }
         }
         self.next()?;
@@ -279,8 +274,7 @@ impl Parser {
     fn parse_item_path(&mut self) -> Result<ast::ItemPath, CompileError> {
         let base = self.expect_ident()?;
         let mut rest = Vec::new();
-        while self.peek()? == Token::Path {
-            self.next()?;
+        while self.next_if(Token::Path)?.is_some() {
             rest.push(self.expect_ident()?);
         }
 
@@ -307,8 +301,8 @@ impl Parser {
     /// If the next token is a identifier return it, otherwiser return a error.
     fn expect_ident(&mut self) -> Result<ast::Ident, CompileError> {
         let token = self.next()?;
-        if let Token::Ident(ident) = (*token).clone() {
-            Ok(ast::Ident(token.span().with(ident)))
+        if let Token::Ident(ref ident) = *token {
+            Ok(ast::Ident(token.span().with(ident.clone())))
         } else {
             Err(CompileError::UnexpectedToken {
                 expected: "identifier".to_owned(),
@@ -321,14 +315,23 @@ impl Parser {
     /// If the next token is a string return it, otherwiser return a error.
     fn expect_str(&mut self) -> Result<Spanned<Box<str>>, CompileError> {
         let token = self.next()?;
-        if let Token::String(value) = (*token).clone() {
-            Ok(token.span().with(value))
+        if let Token::String(ref value) = *token {
+            Ok(token.span().with(value.clone()))
         } else {
             Err(CompileError::UnexpectedToken {
                 expected: "string".to_owned(),
                 got: token.describe(),
                 location: token.span(),
             })
+        }
+    }
+
+    /// Return the span of the token if its the indicated token, otherwise return None
+    fn next_if(&mut self, expected_token: Token) -> Result<Option<Span>, CompileError> {
+        if self.peek()? == expected_token {
+            Ok(Some(self.next()?.span()))
+        } else {
+            Ok(None)
         }
     }
 
