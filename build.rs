@@ -1,6 +1,13 @@
 //! Ensure new test cases are picked up without needing to clean the build.
 
 fn main() {
-    #[cfg(test)]
     println!("cargo:rerun-if-changed=test_cases");
+
+    println!("cargo:rustc-check-cfg=cfg(docker_available)");
+    println!("cargo:rerun-if-env-changed=DOCKER_HOST");
+    if std::env::var("DOCKER_HOST").is_ok() {
+        println!("cargo:rustc-cfg=docker_available");
+    } else {
+        println!("cargo:warning=DOCKER_HOST not set, docker related tests will be skipped");
+    }
 }

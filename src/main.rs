@@ -7,6 +7,7 @@ use clap::Parser;
 use miette::Diagnostic;
 use thiserror::Error;
 
+mod docker;
 mod engine;
 mod snek;
 

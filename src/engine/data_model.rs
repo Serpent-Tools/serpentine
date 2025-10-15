@@ -2,6 +2,7 @@
 
 use smallvec::SmallVec;
 
+use crate::docker;
 use crate::engine::RuntimeError;
 use crate::engine::nodes::NodeImpl;
 
@@ -12,6 +13,8 @@ pub enum Data {
     Int(i128),
     /// A string, usually a short literal
     String(Box<str>),
+    /// A docker container (well in reality an image)
+    Container(docker::ContainerState),
 }
 
 /// A companion enum to `Data` denoting the variant/type
@@ -21,16 +24,8 @@ pub enum DataType {
     Int,
     /// A string
     String,
-}
-
-impl Data {
-    /// Return a user friendly description of this value.
-    pub fn describe(&self) -> String {
-        match self {
-            Self::Int(value) => format!("{value}"),
-            Self::String(value) => format!("{value:?}"),
-        }
-    }
+    /// A docker container
+    Container,
 }
 
 impl DataType {
@@ -39,6 +34,7 @@ impl DataType {
         match self {
             Self::Int => "integer",
             Self::String => "string",
+            Self::Container => "container",
         }
     }
 }

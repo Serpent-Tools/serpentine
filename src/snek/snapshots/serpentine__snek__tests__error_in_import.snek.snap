@@ -5,9 +5,9 @@ expression: err
   x Compile Error
 
 Error: 
-  x Importing module '/home/viv/coding/serpentine/test_cases/negative/./double_return.snek' failed
+  x Importing module '<redacted-path>' failed
   |->   x Inlining function failed
-  |      ,-[/home/viv/coding/serpentine/test_cases/negative/./double_return.snek:6:18]
+  |      ,-[<redacted-path>:6:18]
   |    5 |
   |    6 | export DEFAULT = Double(10);
   |      :                  ^^^|^^
@@ -17,7 +17,7 @@ Error:
   `-> compiler::double_return
       
         x Multiple returns
-         ,-[/home/viv/coding/serpentine/test_cases/negative/./double_return.snek:3:5]
+         ,-[<redacted-path>:3:5]
        2 |     return Add(value, value);
        3 |     return Add(value, value);
          :     ^^^|^^
@@ -25,8 +25,8 @@ Error:
        4 | }
          `----
       
-   ,-[/home/viv/coding/serpentine/test_cases/negative/error_in_import.snek:1:8]
- 1 | import "./double_return.snek" as lib;
+   ,-[<redacted-path>:1:8]
+ 1 | import ".<redacted-path>" as lib;
    :        ^^^^^^^^^^^|^^^^^^^^^^
    :                   `-- In this import statement
  2 | 

@@ -7,7 +7,7 @@ expression: err
 Error: compiler::item_not_found
 
   x 'ten' not found in scope
-   ,-[/home/viv/coding/serpentine/test_cases/negative/item_not_found.snek:1:18]
+   ,-[<redacted-path>:1:18]
  1 | export DEFAULT = ten;
    :                  ^|^
    :                   `-- Item with this name not found

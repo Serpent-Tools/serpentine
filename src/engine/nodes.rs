@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::rc::Rc;
 
-use crate::engine::RuntimeError;
+use crate::docker;
 use crate::engine::data_model::{Data, DataType, NodeInstanceId};
 use crate::engine::scheduler::Scheduler;
+use crate::engine::{RuntimeContext, RuntimeError};
 use crate::snek::CompileError;
 use crate::snek::span::{Span, Spanned};
 
@@ -91,6 +93,26 @@ impl IntoData for Box<str> {
     }
 }
 
+impl UnwrappedType for docker::ContainerState {
+    fn data_type() -> DataType {
+        DataType::Container
+    }
+    fn from_data(data: &Data) -> Result<Self, RuntimeError> {
+        if let Data::Container(value) = data {
+            Ok(value.clone())
+        } else {
+            Err(RuntimeError::internal("mismatched types at runtime"))
+        }
+    }
+}
+
+impl IntoData for docker::ContainerState {
+    const RESULT: DataType = DataType::Container;
+    fn into_data(self) -> Data {
+        Data::Container(self)
+    }
+}
+
 /// Wrap a function with phantomdata to allow trait impls to work.
 struct Wrap<F, P>(F, PhantomData<P>);
 
@@ -107,10 +129,10 @@ macro_rules! impl_node_impl {
         #[expect(clippy::allow_attributes, reason="auto generated")]
         #[allow(warnings, reason="auto generated")]
         impl< F, R, Fut, $($arg),*> NodeImpl for Wrap<F, ($($arg),*)>
-where F: Fn($($arg),*) -> Fut,
-        Fut: Future<Output=Result<R, RuntimeError>>,
-        R: IntoData,
-        $($arg: UnwrappedType),*
+        where F: Fn(Rc<RuntimeContext>, $($arg),*) -> Fut,
+            Fut: Future<Output=Result<R, RuntimeError>>,
+            R: IntoData,
+            $($arg: UnwrappedType),*
         {
             fn return_type(&self, arguments: &[Spanned<DataType>], node_span: Span) -> Result<DataType, CompileError> {
                 let count = $({
@@ -165,7 +187,7 @@ where F: Fn($($arg),*) -> Fut,
                     )*
 
                     log::debug!("Executing {}", std::any::type_name::<F>());
-                    Ok((self.0)($($arg),*).await?.into_data())
+                    Ok((self.0)(scheduler.context(), $($arg),*).await?.into_data())
                 })
             }
         }
@@ -174,7 +196,7 @@ where F: Fn($($arg),*) -> Fut,
 
 impl<F, R, Fut> NodeImpl for Wrap<F, ()>
 where
-    F: Fn() -> Fut,
+    F: Fn(Rc<RuntimeContext>) -> Fut,
     Fut: Future<Output = Result<R, RuntimeError>>,
     R: IntoData,
 {
@@ -196,10 +218,10 @@ where
 
     fn execute<'scheduler>(
         &'scheduler self,
-        _scheduler: &'scheduler Scheduler,
+        scheduler: &'scheduler Scheduler,
         _inputs: &'scheduler [NodeInstanceId],
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-        Box::pin(async { Ok((self.0)().await?.into_data()) })
+        Box::pin(async { Ok((self.0)(scheduler.context()).await?.into_data()) })
     }
 }
 
@@ -269,19 +291,101 @@ impl NodeImpl for LiteralNode {
 }
 
 /// The name of the noop node.
-/// This is is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
+/// This is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
 pub const NOOP_NAME: &str = "Noop";
+
+/// Create a docker image
+async fn image(
+    context: Rc<RuntimeContext>,
+    image: Box<str>,
+) -> Result<docker::ContainerState, RuntimeError> {
+    context.docker.pull_image(&image).await
+}
+
+/// Run a shell command in a container
+async fn exec_sh(
+    context: Rc<RuntimeContext>,
+    container: docker::ContainerState,
+    command: Box<str>,
+) -> Result<docker::ContainerState, RuntimeError> {
+    context
+        .docker
+        .exec(&container, &["/bin/sh", "-c", &command])
+        .await
+}
+
+/// Run a command in a container
+async fn exec(
+    context: Rc<RuntimeContext>,
+    container: docker::ContainerState,
+    command: Box<str>,
+) -> Result<docker::ContainerState, RuntimeError> {
+    let command = shell_words::split(&command)?;
+
+    context
+        .docker
+        .exec(
+            &container,
+            &command.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+        )
+        .await
+}
+
+/// Copy the given dir from host into the container at the given path
+async fn with_dir(
+    context: Rc<RuntimeContext>,
+    container: docker::ContainerState,
+    host_path: Box<str>,
+    container_path: Box<str>,
+) -> Result<docker::ContainerState, RuntimeError> {
+    context
+        .docker
+        .copy_dir_into_container(&container, &host_path, &container_path)
+        .await
+}
+
+/// Modify the working directory of the container
+async fn with_working_dir(
+    context: Rc<RuntimeContext>,
+    container: docker::ContainerState,
+    dir: Box<str>,
+) -> Result<docker::ContainerState, RuntimeError> {
+    context.docker.set_working_dir(&container, &dir).await
+}
+
+/// An Add node that adds two integers
+/// Mainly used in tests (I can't be bothered to rewrite the test graphs)
+async fn add(_context: Rc<RuntimeContext>, left: i128, right: i128) -> Result<i128, RuntimeError> {
+    Ok(left.saturating_add(right))
+}
 
 /// Return the list of prelude nodes
 pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     let mut nodes: HashMap<&'static str, Box<dyn NodeImpl>> = HashMap::new();
 
     nodes.insert(NOOP_NAME, Box::new(Noop));
+
+    nodes.insert("Image", Box::new(Wrap::<_, Box<str>>::new(image)));
     nodes.insert(
-        "Add",
-        Box::new(Wrap::<_, (i128, i128)>::new(async |x: i128, y: i128| {
-            Ok(x.saturating_add(y))
-        })),
+        "ExecSh",
+        Box::new(Wrap::<_, (docker::ContainerState, Box<str>)>::new(exec_sh)),
     );
+    nodes.insert(
+        "Exec",
+        Box::new(Wrap::<_, (docker::ContainerState, Box<str>)>::new(exec)),
+    );
+    nodes.insert(
+        "Copy",
+        Box::new(Wrap::<_, (docker::ContainerState, Box<str>, Box<str>)>::new(with_dir)),
+    );
+    nodes.insert(
+        "WorkingDir",
+        Box::new(Wrap::<_, (docker::ContainerState, Box<str>)>::new(
+            with_working_dir,
+        )),
+    );
+
+    nodes.insert("Add", Box::new(Wrap::<_, (i128, i128)>::new(add)));
+
     nodes
 }

@@ -1,7 +1,10 @@
 //! Handles the execution of a graph
 
+use std::rc::Rc;
+
 use tokio::sync::OnceCell;
 
+use super::RuntimeContext;
 use crate::engine::RuntimeError;
 use crate::engine::data_model::{Data, Graph, NodeInstanceId, NodeStorage};
 
@@ -13,16 +16,24 @@ pub struct Scheduler {
     nodes: NodeStorage,
     /// The list of outputs of nodes, indexes by node instance ids
     data: Vec<OnceCell<Data>>,
+    /// The runtime context
+    context: Rc<RuntimeContext>,
 }
 
 impl Scheduler {
     /// Create a new scheduler to run the given graph
-    pub fn new(nodes: NodeStorage, graph: Graph) -> Self {
-        Self {
+    pub fn new(nodes: NodeStorage, graph: Graph) -> Result<Self, RuntimeError> {
+        Ok(Self {
             data: vec![OnceCell::new(); graph.len()],
             nodes,
             graph,
-        }
+            context: Rc::new(RuntimeContext::new()?),
+        })
+    }
+
+    /// Return the runtime context
+    pub fn context(&self) -> Rc<RuntimeContext> {
+        Rc::clone(&self.context)
     }
 
     /// Retrieve a data from a node.
@@ -31,8 +42,6 @@ impl Scheduler {
         let Some(cell) = self.data.get(node.0) else {
             return Err(RuntimeError::internal("NodeInstanceId out of bounds"));
         };
-
-        log::trace!("Getting output of node {node:?}");
 
         let res = cell
             .get_or_try_init(async || {

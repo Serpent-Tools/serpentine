@@ -235,6 +235,7 @@ mod tests {
     use super::*;
 
     #[rstest]
+    #[test_log::test]
     fn compile_positive(#[files("test_cases/positive/**/*.snek")] path: PathBuf) {
         let res = compiler::compile_graph(&path);
         match res {
@@ -248,6 +249,7 @@ mod tests {
     }
 
     #[rstest]
+    #[test_log::test]
     fn compile_negative(#[files("test_cases/negative/**/*.snek")] path: PathBuf) {
         let res = compiler::compile_graph(&path);
         match res {
@@ -264,10 +266,19 @@ mod tests {
                 let err = miette::Report::new(err);
                 let err = format!("{err:?}");
 
+                insta::with_settings! { {
+                    filters => vec![
+                        // Redact file paths
+                        (r#"(/[^/\s:"'\]]+)+"#, "<redacted-path>"),
+                        // Redact OS error messages, they can be different on different systems
+                        (r"(?i)os error \d+: [^\n]+", "OS error <redacted>"),
+                    ],
+                }, {
                 insta::assert_snapshot!(
                     path.file_name().unwrap().to_string_lossy().into_owned(),
                     err
                 );
+                }};
             }
         }
     }

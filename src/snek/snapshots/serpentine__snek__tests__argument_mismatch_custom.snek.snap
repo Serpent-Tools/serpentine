@@ -7,7 +7,7 @@ expression: err
 Error: compiler::argument_count
 
   x Expected 1 arguments got 0
-   ,-[/home/viv/coding/serpentine/test_cases/negative/argument_mismatch_custom.snek:5:18]
+   ,-[<redacted-path>:5:18]
  4 | 
  5 | export DEFAULT = Double();
    :                  ^^^|^^
