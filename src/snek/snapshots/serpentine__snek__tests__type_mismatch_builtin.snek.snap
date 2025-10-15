@@ -7,7 +7,7 @@ expression: err
 Error: compiler::type_mismatch
 
   x Expected `integer` got `string`
-   ,-[/home/viv/coding/serpentine/test_cases/negative/type_mismatch_builtin.snek:1:22]
+   ,-[<redacted-path>:1:22]
  1 | export DEFAULT = 1 > Add("Hello");
    :                      ^|^ ^^^|^^^
    :                       |     `-- Has type `string`

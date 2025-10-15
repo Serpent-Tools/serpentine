@@ -9,7 +9,7 @@ Error:
   `-> compiler::item_already_defined
       
         x Item 'value' already defined in this scope
-         ,-[/home/viv/coding/serpentine/test_cases/negative/recursion.snek:1:5]
+         ,-[<redacted-path>:1:5]
        1 | def Foo(value) {
          :     ^|^
          :      `-- This name is already defined in this scope
@@ -17,7 +17,7 @@ Error:
          `----
         help: Snek semantically speaking does not have a specified execution order, so shadowing is not allowed.
       
-   ,-[/home/viv/coding/serpentine/test_cases/negative/recursion.snek:5:18]
+   ,-[<redacted-path>:5:18]
  4 | 
  5 | export DEFAULT = Foo(10);
    :                  ^|^

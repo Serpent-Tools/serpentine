@@ -7,7 +7,7 @@ expression: err
 Error: compiler::item_already_defined
 
   x Item 'value' already defined in this scope
-   ,-[/home/viv/coding/serpentine/test_cases/negative/shadowing.snek:2:1]
+   ,-[<redacted-path>:2:1]
  1 | value = 10;
  2 | value = 20;
    : ^^|^^

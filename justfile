@@ -1,8 +1,8 @@
 run:
-    RUST_LOG=trace cargo run -p serpentine -- --pipeline ci/main.snek
+    RUST_LOG="serpentine=trace" cargo run -p serpentine -- --pipeline ci/main.snek
 
 snapshot:
     cargo insta test --review --unreferenced delete
 
 test:
-    cargo nextest run
+    RUST_LOG=serpentine=trace cargo nextest run --no-fail-fast

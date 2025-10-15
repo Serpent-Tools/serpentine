@@ -9,7 +9,7 @@ Error:
   `-> compiler::invalid_statement
       
         x export not allowed in function body
-         ,-[/home/viv/coding/serpentine/test_cases/negative/export_in_function.snek:2:5]
+         ,-[<redacted-path>:2:5]
        1 | def Double(value) {
        2 |     export result = Add(value, value);
          :     ^^^|^^
@@ -18,7 +18,7 @@ Error:
          `----
         help: return
       
-   ,-[/home/viv/coding/serpentine/test_cases/negative/export_in_function.snek:5:18]
+   ,-[<redacted-path>:5:18]
  4 | 
  5 | export DEFAULT = Double(10);
    :                  ^^^|^^

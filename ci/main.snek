@@ -1,3 +1,15 @@
-import "./other" as other;
+rust = Image("rust:latest");
+def WithSource(container) {
+    return container > Copy(".", "/app") > WorkingDir("/app");
+}
 
-export DEFAULT = other::value > other::Double();
+clippy = rust
+    > Exec("rustup component add clippy")
+    > WithSource()
+    > Exec("cargo clippy");
+spelling = rust
+    > Exec("cargo install typos-cli")
+    > WithSource()
+    > Exec("typos");
+
+export DEFAULT = !(clippy, spelling) Noop(0);

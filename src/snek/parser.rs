@@ -364,6 +364,7 @@ mod tests {
     use crate::snek::tokenizer;
 
     #[property_test]
+    #[test_log::test]
     fn doesnt_panic(mut code: Vec<tokenizer::Token>) {
         code.push(tokenizer::Token::Eof);
         let code = code

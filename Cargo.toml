@@ -10,20 +10,26 @@ categories = ["command-line-utilities", "compilers", "development-tools::build-u
 repository = "https://github.com/Serpent-Tools/serpentine"
 
 [dependencies]
+bollard = { version = "0.19.3", default-features = false, features = ["http", "pipe"] }
 clap = { version = "4.5.47", features = ["derive"] }
 env_logger = "0.11.8"
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
+ignore = "0.4.23"
 log = "0.4.28"
 miette = { version = "7.6.0", features = ["fancy"] }
+shell-words = "1.1.0"
 smallvec = { version = "1.15.1", features = ["union"] }
+tar = "0.4.44"
 thiserror = "2.0.16"
-tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "time"] }
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "time", "test-util"] }
+uuid = { version = "1.18.1", features = ["v4"] }
 
 [dev-dependencies]
 insta = { version = "1.43.2", features = ["filters"] }
 proptest = { version = "1.8.0", features = ["attr-macro"] }
 proptest-derive = "0.6.0"
 rstest = "0.26.1"
+test-log = "0.2.18"
 
 [features]
 default = []

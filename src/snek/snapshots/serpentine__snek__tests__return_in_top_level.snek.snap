@@ -7,7 +7,7 @@ expression: err
 Error: compiler::invalid_statement
 
   x return not allowed in top level
-   ,-[/home/viv/coding/serpentine/test_cases/negative/return_in_top_level.snek:1:1]
+   ,-[<redacted-path>:1:1]
  1 | return Add(10, 10);
    : ^^^|^^
    :    `-- This statement is not allowed here

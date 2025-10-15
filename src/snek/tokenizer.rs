@@ -177,7 +177,7 @@ impl<'src> Tokenizer<'src> {
         }))
     }
 
-    /// Consume characthers that satifisy the predicate, returning the number of bytes consumed
+    /// Consume characters that satifisy the predicate, returning the number of bytes consumed
     pub fn advance_while(
         &mut self,
         predicate: impl Fn(char) -> bool,
@@ -230,6 +230,7 @@ mod tests {
     use crate::snek::span::FileId;
 
     #[property_test]
+    #[test_log::test]
     fn doesnt_panic(code: String) {
         let _ = Tokenizer::tokenize(FileId(0), &code);
     }
@@ -237,6 +238,7 @@ mod tests {
     #[rstest]
     #[case::simple_number("123")]
     #[case::string(r#""hello""#)]
+    #[test_log::test]
     fn tokenize(#[case] code: String) {
         let res = Tokenizer::tokenize(FileId(0), &code);
         assert!(res.is_ok(), "Failed to tokenize {code:?}: {res:?}");
@@ -247,6 +249,7 @@ mod tests {
     #[case::unterminated_string(r#""hello"#)]
     #[case::single_colon(":")]
     #[case::double_colon_with_whitespace(": :")]
+    #[test_log::test]
     fn edge_case_fails(#[case] code: String) {
         let res = Tokenizer::tokenize(FileId(0), &code);
         assert!(res.is_err(), "Should fail to tokenize {code:?}: {res:?}");

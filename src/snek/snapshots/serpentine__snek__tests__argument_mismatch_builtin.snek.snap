@@ -7,7 +7,7 @@ expression: err
 Error: compiler::argument_count
 
   x Expected 2 arguments got 1
-   ,-[/home/viv/coding/serpentine/test_cases/negative/argument_mismatch_builtin.snek:1:18]
+   ,-[<redacted-path>:1:18]
  1 | export DEFAULT = Add(2);
    :                  ^|^
    :                   `-- This node expects 2 arguments
