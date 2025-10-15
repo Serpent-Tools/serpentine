@@ -31,6 +31,9 @@ impl RuntimeError {
 pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> {
     let start_node = compile_result.start_node;
 
+    log::debug!("Nodes: {}", compile_result.graph.len());
+    log::debug!("Starting execution at node {start_node:?}");
+
     let scheduler = scheduler::Scheduler::new(compile_result.nodes, compile_result.graph);
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()

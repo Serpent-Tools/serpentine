@@ -42,6 +42,7 @@
             cargo-edit
             cargo-nextest
             cargo-insta
+            cargo-watch
           ];
         };
       }

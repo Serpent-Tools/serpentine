@@ -49,8 +49,11 @@ enum SerpentineError {
 
 fn main() -> miette::Result<()> {
     let command = Cli::parse();
+    env_logger::init();
 
+    log::info!("Compiling pipeline: {}", command.pipeline().display());
     let result = snek::compile_graph(&command.pipeline())?;
+    log::info!("Executing pipeline");
     engine::run(result)?;
 
     Ok(())
