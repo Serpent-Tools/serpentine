@@ -32,20 +32,27 @@ impl Scheduler {
             return Err(RuntimeError::internal("NodeInstanceId out of bounds"));
         };
 
-        cell.get_or_try_init(async || {
-            let node = self.graph.get(node)?;
+        log::trace!("Getting output of node {node:?}");
 
-            futures_util::future::try_join_all(
-                node.phantom_inputs.iter().map(|id| self.get_output(*id)),
-            )
-            .await?;
+        let res = cell
+            .get_or_try_init(async || {
+                let node = self.graph.get(node)?;
 
-            let node_impl = self
-                .nodes
-                .get(node.kind)
-                .ok_or_else(|| RuntimeError::internal("NodeKind out of bounds"))?;
-            node_impl.execute(self, &node.inputs).await
-        })
-        .await
+                futures_util::future::try_join_all(
+                    node.phantom_inputs.iter().map(|id| self.get_output(*id)),
+                )
+                .await?;
+
+                let node_impl = self
+                    .nodes
+                    .get(node.kind)
+                    .ok_or_else(|| RuntimeError::internal("NodeKind out of bounds"))?;
+
+                log::debug!("Executing node {node:?}");
+                node_impl.execute(self, &node.inputs).await
+            })
+            .await;
+        log::trace!("Got output of node {node:?}: {res:?}");
+        res
     }
 }

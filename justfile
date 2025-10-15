@@ -1,5 +1,5 @@
 run:
-    cargo run -p serpentine -- --pipeline ci/main.snek
+    RUST_LOG=trace cargo run -p serpentine -- --pipeline ci/main.snek
 
 snapshot:
     cargo insta test --review --unreferenced delete

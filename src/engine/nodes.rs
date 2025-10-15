@@ -164,6 +164,7 @@ where F: Fn($($arg),*) -> Fut,
                         let $arg = $arg::from_data($arg)?;
                     )*
 
+                    log::debug!("Executing {}", std::any::type_name::<F>());
                     Ok((self.0)($($arg),*).await?.into_data())
                 })
             }
@@ -171,8 +172,6 @@ where F: Fn($($arg),*) -> Fut,
     };
 }
 
-#[expect(clippy::allow_attributes, reason = "auto generated")]
-#[allow(warnings, reason = "auto generated")]
 impl<F, R, Fut> NodeImpl for Wrap<F, ()>
 where
     F: Fn() -> Fut,
@@ -197,13 +196,10 @@ where
 
     fn execute<'scheduler>(
         &'scheduler self,
-        scheduler: &'scheduler Scheduler,
-        inputs: &'scheduler [NodeInstanceId],
+        _scheduler: &'scheduler Scheduler,
+        _inputs: &'scheduler [NodeInstanceId],
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-        Box::pin(async {
-            let mut inputs = inputs.iter();
-            Ok((self.0)().await?.into_data())
-        })
+        Box::pin(async { Ok((self.0)().await?.into_data()) })
     }
 }
 

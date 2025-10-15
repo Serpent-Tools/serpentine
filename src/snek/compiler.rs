@@ -349,6 +349,8 @@ impl<'prelude> Compiler<'prelude> {
 
     /// Compile the given file path and return the module id
     fn compile_file(&mut self, path: &Path) -> Result<FileId, CompileError> {
+        log::debug!("Compiling file: {}", path.display());
+
         let code = std::fs::read_to_string(path).map_err(|err| CompileError::FileReading {
             file: path.to_path_buf(),
             inner: err,
