@@ -474,4 +474,29 @@ mod tests {
 
         docker_client.shutdown().await;
     }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn set_working_dir(docker_client: DockerClient) {
+        let image = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let image = docker_client
+            .exec(&image, &["mkdir", "-p", "/foo/bar"])
+            .await
+            .expect("Exec failed");
+        let image = docker_client
+            .set_working_dir(&image, "/foo")
+            .await
+            .expect("Failed to set working dir");
+        docker_client
+            .exec(&image, &["ls", "bar"])
+            .await
+            .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
 }
