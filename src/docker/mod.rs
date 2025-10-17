@@ -3,6 +3,7 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use futures_util::TryStreamExt;
+use tokio::io::AsyncBufReadExt;
 
 use crate::engine::RuntimeError;
 
@@ -178,16 +179,36 @@ impl DockerClient {
                     "Exec detached, this should not happen",
                 ));
             }
-            bollard::exec::StartExecResults::Attached { mut output, .. } => {
-                while let Some(msg) = output.try_next().await? {
-                    match msg {
-                        bollard::container::LogOutput::StdErr { message }
-                        | bollard::container::LogOutput::StdOut { message }
-                        | bollard::container::LogOutput::Console { message } => {
-                            log::trace!("{}", String::from_utf8_lossy(&message));
-                        }
-                        bollard::container::LogOutput::StdIn { .. } => {}
-                    }
+            bollard::exec::StartExecResults::Attached { output, .. } => {
+                let output = tokio_util::io::StreamReader::new(
+                    output
+                        .map_err(|err| {
+                            if let bollard::errors::Error::IOError { err } = err {
+                                err
+                            } else {
+                                std::io::Error::other(err)
+                            }
+                        })
+                        .try_filter_map(|msg| match msg {
+                            bollard::container::LogOutput::StdErr { message }
+                            | bollard::container::LogOutput::StdOut { message }
+                            | bollard::container::LogOutput::Console { message } => {
+                                futures_util::future::ok(Some(message))
+                            }
+                            bollard::container::LogOutput::StdIn { .. } => {
+                                futures_util::future::ok(None)
+                            }
+                        }),
+                );
+                let mut output = tokio::io::BufReader::new(output).lines();
+
+                while let Some(line) = output.next_line().await? {
+                    log::trace!(
+                        "{} ({}): {}",
+                        cmd.first().unwrap_or(&"<unknown>"),
+                        container.0.get(0..12).unwrap_or("<invalid>"),
+                        line
+                    );
                 }
             }
         }
