@@ -86,6 +86,8 @@ impl DockerClient {
             .commit_container(
                 bollard::query_parameters::CommitContainerOptionsBuilder::new()
                     .container(&container.0)
+                    .repo("serpentine-worker-commit")
+                    .tag(uuid::Uuid::new_v4().to_string().as_str())
                     .build(),
                 bollard::secret::ContainerConfig::default(),
             )
@@ -317,6 +319,8 @@ impl DockerClient {
             .commit_container(
                 bollard::query_parameters::CommitContainerOptionsBuilder::new()
                     .container(&container.0)
+                    .repo("serpentine-worker-commit")
+                    .tag(uuid::Uuid::new_v4().to_string().as_str())
                     .build(),
                 bollard::secret::ContainerConfig {
                     working_dir: Some(dir.to_owned()),
