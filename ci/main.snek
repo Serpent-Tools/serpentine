@@ -14,7 +14,7 @@ clippy = base
 spelling = binstall
     > Exec("cargo binstall typos-cli")
     > WithSource()
-    > Exec("typosa");
+    > Exec("typos");
 
 tests = binstall
     > Exec("cargo binstall cargo-nextest")
