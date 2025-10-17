@@ -31,10 +31,15 @@ pub enum RuntimeError {
     #[error("Failed to parse command: {0}")]
     ExecParse(#[from] shell_words::ParseError),
 
-    /// Reading the filesystem into a tarball failed
-    #[error("Failed to read filesystem into tarball: {0}")]
+    /// A filesystem read error
+    #[error("Io error")]
     #[diagnostic(code(filesystem_read_error))]
-    FilesystemRead(#[from] std::io::Error),
+    IoError(#[from] std::io::Error),
+
+    /// Ctrl-C was pressed
+    #[error("Execution interrupted by user (Ctrl-C)")]
+    #[diagnostic(code(execution_interrupted))]
+    CtrlC,
 
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
@@ -90,10 +95,15 @@ pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> 
         })?
         .block_on(async {
             let scheduler = scheduler::Scheduler::new(compile_result.nodes, compile_result.graph)?;
-
-            let res = scheduler.get_output(start_node).await.cloned();
+            let result = tokio::select!(
+                res = scheduler.get_output(start_node) => res.map(|_| ()),
+                _ = tokio::signal::ctrl_c() => {
+                    log::warn!("Execution interrupted by user");
+                    Err(RuntimeError::CtrlC)
+                }
+            );
             scheduler.context().shutdown().await;
-            res
+            result
         })
         .map_err(crate::SerpentineError::Runtime)?;
 
