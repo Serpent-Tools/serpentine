@@ -1,0 +1,12 @@
+ten = /* inline comments */ 10;
+
+/*
+hello world
+this is a longer comment
+isnt it neat.
+*/
+
+// This is a comment
+export DEFAULT = 10
+    // they can be in the middle of expression
+    > Add(20);    

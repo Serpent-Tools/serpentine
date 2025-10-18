@@ -143,6 +143,33 @@ impl<'src> Tokenizer<'src> {
                 let content = content_span.index_str(self.code)?;
                 string_span.with(Token::String(content))
             }
+            '/' if self.peek()? == Some('/') => {
+                // consume until end of line
+                self.advance()?;
+                self.advance_while(|next_char| next_char != '\n')?;
+                // read the next token
+                return self.read_next_token();
+            }
+            '/' if self.peek()? == Some('*') => {
+                // consume until closing */
+                self.advance()?;
+                self.advance()?;
+                loop {
+                    let next_char = self.advance()?;
+                    match next_char {
+                        None => {
+                            break;
+                        }
+                        Some('*') if self.peek()? == Some('/') => {
+                            self.advance()?;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                // read the next token
+                return self.read_next_token();
+            }
             character if character.is_ascii_digit() => {
                 let consumed = self.advance_while(|digit: char| digit.is_ascii_digit())?;
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
