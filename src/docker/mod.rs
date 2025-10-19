@@ -1,7 +1,8 @@
 //! Wrapper around bollard Docker API client
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc};
 
+use bollard::API_DEFAULT_VERSION;
 use futures_util::TryStreamExt;
 use tokio::io::AsyncBufReadExt;
 
@@ -21,7 +22,25 @@ impl DockerClient {
     /// Create a new Docker client
     pub fn new() -> Result<Self, RuntimeError> {
         log::info!("Connecting to Docker daemon");
-        let client = bollard::Docker::connect_with_defaults()?;
+
+        let client = match bollard::Docker::connect_with_defaults() {
+            Ok(client) => client,
+            Err(bollard::errors::Error::SocketNotFoundError(_)) => {
+                // Fallback to podman
+                log::info!("Docker socket not found, trying podman");
+                let podman_socket_output = Command::new("podman")
+                    .args(&["info", "--format", "{{.Host.RemoteSocket.Path}}"])
+                    .output()?;
+
+                let podman_socket_path = String::from_utf8(podman_socket_output.stdout)
+                    .expect("Failed to parse podman socket path")
+                    .trim()
+                    .to_string();
+
+                bollard::Docker::connect_with_socket(&podman_socket_path, 120, API_DEFAULT_VERSION)?
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         Ok(Self {
             client,
