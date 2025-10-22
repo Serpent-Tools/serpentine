@@ -30,7 +30,7 @@ impl DockerClient {
                 log::info!("Docker socket not found, trying podman");
                 return Self::try_podman_connection();
             }
-            Err(e) => return Err(e.into()),
+            Err(err) => return Err(err.into()),
         };
 
         match client.ping().await {
@@ -42,23 +42,28 @@ impl DockerClient {
                     cleanup_list: RefCell::new(Vec::new()),
                 })
             }
-            Err(e) => {
+            Err(err) => {
                 // Connection worked but ping failed (permission denied, daemon down, etc.)
-                log::warn!("Docker ping failed: {}, trying podman", e);
-                return Self::try_podman_connection();
+                log::warn!("Docker ping failed: {err}, trying podman");
+                Self::try_podman_connection()
             }
         }
     }
 
+    /// utility function to find podman socket and connect to it
     fn try_podman_connection() -> Result<Self, RuntimeError> {
         let podman_socket_output = Command::new("podman")
-            .args(&["info", "--format", "{{.Host.RemoteSocket.Path}}"])
+            .args(["info", "--format", "{{.Host.RemoteSocket.Path}}"])
             .output()?;
 
         let podman_socket_path = String::from_utf8(podman_socket_output.stdout)
-            .expect("Failed to parse podman socket path")
+            .map_err(|err| {
+                RuntimeError::internal(
+                    format!("Failed to parse podman socket path: {err}").as_str(),
+                )
+            })?
             .trim()
-            .to_string();
+            .to_owned();
 
         let client =
             bollard::Docker::connect_with_socket(&podman_socket_path, 120, API_DEFAULT_VERSION)?;
