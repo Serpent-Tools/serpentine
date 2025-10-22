@@ -22,12 +22,12 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// Create a new scheduler to run the given graph
-    pub fn new(nodes: NodeStorage, graph: Graph) -> Result<Self, RuntimeError> {
+    pub async fn new(nodes: NodeStorage, graph: Graph) -> Result<Self, RuntimeError> {
         Ok(Self {
             data: vec![OnceCell::new(); graph.len()],
             nodes,
             graph,
-            context: Rc::new(RuntimeContext::new()?),
+            context: Rc::new(RuntimeContext::new().await?),
         })
     }
 
