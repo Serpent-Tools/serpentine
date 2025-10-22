@@ -64,10 +64,10 @@ pub struct RuntimeContext {
 
 impl RuntimeContext {
     /// Create a new runtime context
-    fn new() -> Result<Self, RuntimeError> {
+    async fn new() -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
         Ok(Self {
-            docker: docker::DockerClient::new()?,
+            docker: docker::DockerClient::new().await?,
         })
     }
 
@@ -94,7 +94,8 @@ pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> 
             )))
         })?
         .block_on(async {
-            let scheduler = scheduler::Scheduler::new(compile_result.nodes, compile_result.graph)?;
+            let scheduler =
+                scheduler::Scheduler::new(compile_result.nodes, compile_result.graph).await?;
             let result = tokio::select!(
                 res = scheduler.get_output(start_node) => res.map(|_| ()),
                 _ = tokio::signal::ctrl_c() => {

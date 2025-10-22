@@ -20,27 +20,57 @@ pub struct DockerClient {
 
 impl DockerClient {
     /// Create a new Docker client
-    pub fn new() -> Result<Self, RuntimeError> {
+    pub async fn new() -> Result<Self, RuntimeError> {
         log::info!("Connecting to Docker daemon");
 
+        log::info!("{}", std::env::var("DOCKER_HOST").unwrap());
         let client = match bollard::Docker::connect_with_defaults() {
             Ok(client) => client,
             Err(bollard::errors::Error::SocketNotFoundError(_)) => {
                 // Fallback to podman
                 log::info!("Docker socket not found, trying podman");
-                let podman_socket_output = Command::new("podman")
-                    .args(&["info", "--format", "{{.Host.RemoteSocket.Path}}"])
-                    .output()?;
-
-                let podman_socket_path = String::from_utf8(podman_socket_output.stdout)
-                    .expect("Failed to parse podman socket path")
-                    .trim()
-                    .to_string();
-
-                bollard::Docker::connect_with_socket(&podman_socket_path, 120, API_DEFAULT_VERSION)?
+                return Self::try_podman_connection();
             }
             Err(e) => return Err(e.into()),
         };
+
+        match client.ping().await {
+            Ok(_) => {
+                println!("ping successful");
+                log::info!("Docker connection successful");
+                Ok(Self {
+                    client,
+                    containers: RefCell::new(HashMap::new()),
+                    cleanup_list: RefCell::new(Vec::new()),
+                })
+            }
+            Err(e) => {
+                println!("docker ping failed");
+                // Connection worked but ping failed (permission denied, daemon down, etc.)
+                log::warn!("Docker ping failed: {}, trying podman", e);
+                return Self::try_podman_connection();
+            }
+        }
+
+        // Ok(Self {
+        //     client,
+        //     containers: RefCell::new(HashMap::new()),
+        //     cleanup_list: RefCell::new(Vec::new()),
+        // })
+    }
+
+    fn try_podman_connection() -> Result<Self, RuntimeError> {
+        let podman_socket_output = Command::new("podman")
+            .args(&["info", "--format", "{{.Host.RemoteSocket.Path}}"])
+            .output()?;
+
+        let podman_socket_path = String::from_utf8(podman_socket_output.stdout)
+            .expect("Failed to parse podman socket path")
+            .trim()
+            .to_string();
+
+        let client =
+            bollard::Docker::connect_with_socket(&podman_socket_path, 120, API_DEFAULT_VERSION)?;
 
         Ok(Self {
             client,
@@ -386,23 +416,26 @@ mod tests {
     const TEST_IMAGE: &str = "alpine:latest";
 
     #[fixture]
-    fn docker_client() -> DockerClient {
-        DockerClient::new().expect("Failed to create Docker client")
+    async fn docker_client() -> DockerClient {
+        DockerClient::new()
+            .await
+            .expect("Failed to create Docker client")
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn ping_client(docker_client: DockerClient) {
-        docker_client.client.ping().await.unwrap();
+    async fn ping_client(#[future] docker_client: DockerClient) {
+        docker_client.await.client.ping().await.unwrap();
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn pull_image(docker_client: DockerClient) {
+    async fn pull_image(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
         docker_client
             .pull_image(TEST_IMAGE)
             .await
@@ -414,7 +447,8 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn exec_in_container(docker_client: DockerClient) {
+    async fn exec_in_container(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
         let image = docker_client
             .pull_image(TEST_IMAGE)
             .await
@@ -430,7 +464,8 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn exec_in_container_fail(docker_client: DockerClient) {
+    async fn exec_in_container_fail(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
         let image = docker_client
             .pull_image(TEST_IMAGE)
             .await
@@ -446,7 +481,8 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn chained_exec(docker_client: DockerClient) {
+    async fn chained_exec(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
         let image = docker_client
             .pull_image(TEST_IMAGE)
             .await
@@ -469,7 +505,8 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn forked_image(docker_client: DockerClient) {
+    async fn forked_image(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
         let image = docker_client
             .pull_image(TEST_IMAGE)
             .await
@@ -497,7 +534,8 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn copy_dir_into_container(docker_client: DockerClient) {
+    async fn copy_dir_into_container(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
         let image = docker_client
             .pull_image(TEST_IMAGE)
             .await
@@ -523,7 +561,8 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn set_working_dir(docker_client: DockerClient) {
+    async fn set_working_dir(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
         let image = docker_client
             .pull_image(TEST_IMAGE)
             .await
