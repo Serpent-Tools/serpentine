@@ -23,7 +23,6 @@ impl DockerClient {
     pub async fn new() -> Result<Self, RuntimeError> {
         log::info!("Connecting to Docker daemon");
 
-        log::info!("{}", std::env::var("DOCKER_HOST").unwrap());
         let client = match bollard::Docker::connect_with_defaults() {
             Ok(client) => client,
             Err(bollard::errors::Error::SocketNotFoundError(_)) => {
@@ -36,7 +35,6 @@ impl DockerClient {
 
         match client.ping().await {
             Ok(_) => {
-                println!("ping successful");
                 log::info!("Docker connection successful");
                 Ok(Self {
                     client,
@@ -45,18 +43,11 @@ impl DockerClient {
                 })
             }
             Err(e) => {
-                println!("docker ping failed");
                 // Connection worked but ping failed (permission denied, daemon down, etc.)
                 log::warn!("Docker ping failed: {}, trying podman", e);
                 return Self::try_podman_connection();
             }
         }
-
-        // Ok(Self {
-        //     client,
-        //     containers: RefCell::new(HashMap::new()),
-        //     cleanup_list: RefCell::new(Vec::new()),
-        // })
     }
 
     fn try_podman_connection() -> Result<Self, RuntimeError> {
