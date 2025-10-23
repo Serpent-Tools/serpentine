@@ -6,3 +6,6 @@ snapshot:
 
 test:
     RUST_LOG=serpentine=trace cargo nextest run --no-fail-fast
+
+clean:
+    docker system reset

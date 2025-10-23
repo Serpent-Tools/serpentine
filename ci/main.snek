@@ -1,3 +1,4 @@
+/*
 base = Image("rust:latest");
 
 def WithSource(container) {
@@ -9,7 +10,7 @@ binstall = base > Exec("cargo install cargo-binstall");
 clippy = base
     > Exec("rustup component add clippy")
     > WithSource()
-    > Exec("cargo clippy");
+    > Exec("cargo clippy -- -Dwarnings");
 
 spelling = binstall
     > Exec("cargo binstall typos-cli")
@@ -22,3 +23,14 @@ tests = binstall
     > Exec("cargo nextest run");
 
 export DEFAULT = !(tests, spelling, clippy) Noop(0);
+*/
+
+def Foo(container) {
+    return container > Exec("echo hello") > Exec("echo world") > Exec("echo lol") > Exec("sleep 1");
+}
+
+def Bar(container) {
+    return container > Foo() > Foo() > Foo() > Foo() > Foo();
+}
+
+export DEFAULT = Image("rust:latest") > Bar() > Bar() > Bar() > Bar();

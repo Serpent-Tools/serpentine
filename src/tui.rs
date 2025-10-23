@@ -6,7 +6,7 @@ use ratatui::{
     style::{Color, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Padding},
+    widgets::{Block, Borders, Gauge, Padding},
 };
 
 /// The messages that can be passed to the tui;
@@ -26,9 +26,38 @@ pub enum TuiMessage {
     RunningNode,
     /// A node has finished execution
     NodeFinished,
+    /// Update the progress of a task (or create it if it doesn't exist)
+    UpdateTask(Task),
+    /// A task is done
+    FinishTask(String),
 }
 
 pub type TuiSender = std::sync::mpsc::Sender<TuiMessage>;
+
+/// Represents the progress of a task
+#[derive(Debug)]
+pub enum TaskProgress {
+    /// A task with a messurable progress
+    Measurable {
+        /// How many units have been completed
+        completed: u64,
+        /// How much work there is total
+        total: u64,
+    },
+    /// A task with no measurable progress
+    Log(String),
+}
+
+/// Represents a task being executed in the pipeline
+#[derive(Debug)]
+pub struct Task {
+    /// Th identiifer for the task
+    pub identifier: String,
+    /// The name to show in the UI
+    pub title: String,
+    /// The current progress of the task
+    pub progress: TaskProgress,
+}
 
 /// The current state of the ui
 #[derive(Debug)]
@@ -43,6 +72,8 @@ struct UiState {
     finished_nodes: usize,
     /// Are we shutting down?
     shutting_down: bool,
+    /// Tasks being tracked by the UI
+    tasks: Vec<Task>,
 }
 
 impl UiState {
@@ -54,6 +85,7 @@ impl UiState {
             running_nodes: 0,
             finished_nodes: 0,
             shutting_down: false,
+            tasks: Vec::new(),
         }
     }
 
@@ -74,13 +106,25 @@ impl UiState {
                 self.running_nodes = self.running_nodes.saturating_sub(1);
                 self.finished_nodes = self.finished_nodes.saturating_add(1);
             }
+            TuiMessage::UpdateTask(task) => {
+                for existing_task in &mut self.tasks {
+                    if existing_task.identifier == task.identifier {
+                        *existing_task = task;
+                        return;
+                    }
+                }
+                self.tasks.push(task);
+            }
+            TuiMessage::FinishTask(identifier) => {
+                self.tasks.retain(|task| task.identifier != identifier);
+            }
         }
     }
 
     /// Draw the current state to the terminal
     fn draw(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
-        let [progress_area, _rest] = Layout::new(
+        let [progress_area, task_area] = Layout::new(
             Direction::Vertical,
             [Constraint::Length(3), Constraint::Fill(1)],
         )
@@ -93,6 +137,56 @@ impl UiState {
 
         frame.render_widget(progress, progress_area);
         self.draw_progress_bar(progress_inner, frame);
+
+        let tasks = Block::default()
+            .borders(Borders::ALL)
+            .title(" Tasks ")
+            .padding(Padding {
+                left: 1,
+                right: 1,
+                top: 0,
+                bottom: 0,
+            });
+        let tasks_inner = tasks.inner(task_area);
+        frame.render_widget(tasks, task_area);
+        self.draw_tasks(tasks_inner, frame);
+    }
+
+    /// Draw the tasks
+    fn draw_tasks(&self, area: Rect, frame: &mut ratatui::Frame) {
+        let areas = Layout::new(
+            Direction::Vertical,
+            self.tasks.iter().map(|_| Constraint::Length(1)),
+        )
+        .split(area);
+
+        for (task, task_area) in self.tasks.iter().zip(areas.iter()) {
+            match &task.progress {
+                TaskProgress::Measurable { completed, total } => {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "we want to do floating point division here"
+                    )]
+                    let widget = Gauge::default()
+                        .ratio((*completed as f64) / (*total as f64).max(1.0))
+                        .label(task.title.clone());
+                    frame.render_widget(widget, *task_area);
+                }
+                TaskProgress::Log(message) => {
+                    let widget = Line::from(vec![
+                        Span {
+                            content: format!("{:<30}  ", task.title).into(),
+                            style: Style::default().fg(Color::Yellow),
+                        },
+                        Span {
+                            content: strip_ansi_escapes::strip_str(message).into(),
+                            style: Style::default().fg(Color::Gray),
+                        },
+                    ]);
+                    frame.render_widget(widget, *task_area);
+                }
+            }
+        }
     }
 
     /// Draw the progress bar widget
@@ -253,6 +347,8 @@ pub fn start_tui(events: std::sync::mpsc::Receiver<TuiMessage>, total_nodes: usi
             }
         }
     }
+
+    println!("Executed {} nodes", ui_state.finished_nodes);
 
     ratatui::restore();
     log::info!("TUI terminated");
