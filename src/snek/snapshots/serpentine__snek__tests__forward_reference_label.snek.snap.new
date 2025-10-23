@@ -1,0 +1,16 @@
+---
+source: src/snek/mod.rs
+assertion_line: 277
+expression: err
+---
+  x Compile Error
+
+Error: compiler::item_not_found
+
+  x 'foo' not found in scope
+   ,-[<redacted-path>:1:18]
+ 1 | export DEFAULT = foo;
+   :                  ^|^
+   :                   `-- Item with this name not found
+ 2 | foo = 10;
+   `----

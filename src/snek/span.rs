@@ -1,5 +1,6 @@
 //! Spans represent a range in the code
 
+use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
@@ -156,8 +157,16 @@ impl From<Span> for miette::SourceSpan {
 }
 
 /// Store `T` and a `Span`
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Spanned<T>(pub T, pub Span);
+
+impl<T: Debug> Debug for Spanned<T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_tuple("Spanned")
+            .field(&self.0)
+            .finish_non_exhaustive()
+    }
+}
 
 impl<T> Deref for Spanned<T> {
     type Target = T;
