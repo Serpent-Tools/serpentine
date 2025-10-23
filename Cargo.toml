@@ -18,6 +18,7 @@ futures-util = { version = "0.3.31", default-features = false, features = ["allo
 ignore = "0.4.23"
 log = "0.4.28"
 miette = { version = "7.6.0", features = ["fancy"] }
+ratatui = "0.29.0"
 shell-words = "1.1.0"
 smallvec = { version = "1.15.1", features = ["union"] }
 tar = "0.4.44"

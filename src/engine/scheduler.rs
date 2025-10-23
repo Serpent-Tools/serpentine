@@ -7,6 +7,7 @@ use tokio::sync::OnceCell;
 use super::RuntimeContext;
 use crate::engine::RuntimeError;
 use crate::engine::data_model::{Data, Graph, NodeInstanceId, NodeStorage};
+use crate::tui::TuiSender;
 
 /// Executes the various nodes
 pub struct Scheduler {
@@ -22,12 +23,16 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// Create a new scheduler to run the given graph
-    pub async fn new(nodes: NodeStorage, graph: Graph) -> Result<Self, RuntimeError> {
+    pub async fn new(
+        nodes: NodeStorage,
+        graph: Graph,
+        tui: TuiSender,
+    ) -> Result<Self, RuntimeError> {
         Ok(Self {
             data: vec![OnceCell::new(); graph.len()],
             nodes,
             graph,
-            context: Rc::new(RuntimeContext::new().await?),
+            context: Rc::new(RuntimeContext::new(tui).await?),
         })
     }
 
@@ -45,6 +50,8 @@ impl Scheduler {
 
         let res = cell
             .get_or_try_init(async || {
+                let _ = self.context.tui.send(crate::tui::TuiMessage::PendingNode);
+
                 let node = self.graph.get(node)?;
 
                 futures_util::future::try_join_all(
@@ -58,7 +65,9 @@ impl Scheduler {
                     .ok_or_else(|| RuntimeError::internal("NodeKind out of bounds"))?;
 
                 log::debug!("Executing node {node:?}");
-                node_impl.execute(self, &node.inputs).await
+                let res = node_impl.execute(self, &node.inputs).await;
+                let _ = self.context.tui.send(crate::tui::TuiMessage::NodeFinished);
+                res
             })
             .await;
         log::trace!("Got output of node {node:?}: {res:?}");

@@ -7,7 +7,11 @@ mod scheduler;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::{docker, snek::CompileResult};
+use crate::{
+    docker,
+    snek::CompileResult,
+    tui::{TuiMessage, TuiSender},
+};
 
 /// An error encountered while running the source code
 #[derive(Debug, Error, Diagnostic)]
@@ -60,26 +64,32 @@ impl RuntimeError {
 pub struct RuntimeContext {
     /// The docker client
     docker: docker::DockerClient,
+    /// The update  channel for the TUI
+    tui: TuiSender,
 }
 
 impl RuntimeContext {
     /// Create a new runtime context
-    async fn new() -> Result<Self, RuntimeError> {
+    async fn new(tui: TuiSender) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
         Ok(Self {
             docker: docker::DockerClient::new().await?,
+            tui,
         })
     }
 
     /// Shutdown the runtime context, cleaning up any resources
     async fn shutdown(&self) {
         log::debug!("Shutting down runtime context");
+
+        let _ = self.tui.send(TuiMessage::ShuttingDown);
+
         self.docker.shutdown().await;
     }
 }
 
 /// Run the given compilation result
-pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> {
+pub fn run(compile_result: CompileResult, tui: TuiSender) -> Result<(), crate::SerpentineError> {
     let start_node = compile_result.start_node;
 
     log::debug!("Nodes: {}", compile_result.graph.len());
@@ -95,7 +105,7 @@ pub fn run(compile_result: CompileResult) -> Result<(), crate::SerpentineError> 
         })?
         .block_on(async {
             let scheduler =
-                scheduler::Scheduler::new(compile_result.nodes, compile_result.graph).await?;
+                scheduler::Scheduler::new(compile_result.nodes, compile_result.graph, tui).await?;
             let result = tokio::select!(
                 res = scheduler.get_output(start_node) => res.map(|_| ()),
                 _ = tokio::signal::ctrl_c() => {
