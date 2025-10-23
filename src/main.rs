@@ -71,6 +71,14 @@ fn setup_logging() -> miette::Result<()> {
     })?;
 
     fern::Dispatch::new()
+        .filter(|metadata| {
+            // Filter out noisy docker logs
+            if metadata.target().starts_with("serpentine") {
+                true
+            } else {
+                metadata.level() <= log::Level::Info
+            }
+        })
         .format(|out, message, record| {
             out.finish(format_args!(
                 "[{}][{}] {}",
@@ -80,14 +88,6 @@ fn setup_logging() -> miette::Result<()> {
             ));
         })
         .level(log::LevelFilter::Trace)
-        .filter(|metadata| {
-            // Filter out noisy docker logs
-            if metadata.target().starts_with("serpentine") {
-                true
-            } else {
-                metadata.level() <= log::Level::Info
-            }
-        })
         .chain(
             fern::log_file(log_file)
                 .map_err(|error| miette::miette!("Failed to open log file: {}", error))?,
@@ -107,8 +107,17 @@ fn main() -> miette::Result<()> {
 
     log::info!("Compiling pipeline: {}", command.pipeline().display());
     let result = snek::compile_graph(&command.pipeline())?;
-    log::info!("Executing pipeline");
-    engine::run(result)?;
 
-    Ok(())
+    log::info!("Executing pipeline");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let total_nodes = result.graph.len();
+    let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes));
+    let result = engine::run(result, sender.clone());
+
+    log::info!("Executor returned, waiting for TUI to exit");
+    let _ = sender.send(tui::TuiMessage::Shutdown);
+    let _ = tui.join();
+    ratatui::restore();
+
+    result.map_err(Into::into)
 }
