@@ -1,0 +1,10 @@
+def Foo() {
+    // In a version of the compiler this caused the modules code to be included in the function body instead of the top level
+    // Which caused issues when re-importing it hit the cache.
+    import "../lib.snek" as lib;
+    return lib::ten;
+}
+
+import "../lib.snek" as lib;
+
+export DEFAULT = lib::ten;

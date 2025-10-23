@@ -1,0 +1,24 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: 
+  x Importing module '<redacted-path>' failed
+  |->   x Importing module '<redacted-path>' failed
+  |      ,-[<redacted-path>:1:8]
+  |    1 | import ".<redacted-path>" as lib;
+  |      :        ^^^^^^^^^^^^^|^^^^^^^^^^^^^
+  |      :                     `-- In this import statement
+  |      `----
+  |   
+  `-> compiler::circular_import
+      
+        x Circular import. Module <redacted-path> attempted to be imported while resolving.
+      
+   ,-[<redacted-path>:1:8]
+ 1 | import ".<redacted-path>" as lib;
+   :        ^^^^^^^^^^^^^|^^^^^^^^^^^^^
+   :                     `-- In this import statement
+   `----

@@ -13,3 +13,4 @@ Error: compiler::item_not_found
    :                       ^^^|^^
    :                          `-- Item with this name not found
    `----
+  help: Serpentine cannot reference items (including functions) before they are defined.

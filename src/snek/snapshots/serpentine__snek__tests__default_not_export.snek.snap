@@ -4,11 +4,6 @@ expression: err
 ---
   x Compile Error
 
-Error: compiler::entrypoint_not_found
-
-  x Entry point 'DEFAULT' not found
-  help: Make sure its exported.
-
 Error: compiler::item_not_found
 
   x 'DEFAULT' not found in scope
@@ -17,3 +12,4 @@ Error: compiler::item_not_found
    : ^^^|^^^
    :    `-- Item with this name not found
    `----
+  help: Serpentine cannot reference items (including functions) before they are defined.

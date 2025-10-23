@@ -6,14 +6,6 @@ expression: err
 
 Error: 
   x Importing module '<redacted-path>' failed
-  |->   x Inlining function failed
-  |      ,-[<redacted-path>:6:18]
-  |    5 |
-  |    6 | export DEFAULT = Double(10);
-  |      :                  ^^^|^^
-  |      :                     `-- In this call
-  |      `----
-  |   
   `-> compiler::double_return
       
         x Multiple returns

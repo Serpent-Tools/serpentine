@@ -1,0 +1,6 @@
+def Double(value) {
+    export import "../lib.snek" as lib;
+    return Add(value, value);
+}
+
+export DEFAULT = Double(10);

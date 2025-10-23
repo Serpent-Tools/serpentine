@@ -9,9 +9,9 @@ Error: compiler::invalid_statement
   x export not allowed in function
    ,-[<redacted-path>:2:5]
  1 | def Double(value) {
- 2 |     export result = Add(value, value);
+ 2 |     export def Foo() {
    :     ^^^|^^
    :        `-- This statement is not allowed here
- 3 | }
+ 3 |         return 10;
    `----
   help: Maybe you meant to use `return` instead?

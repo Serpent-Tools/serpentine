@@ -9,7 +9,7 @@ Error: compiler::argument_count
   x Expected 2 arguments got 1
    ,-[<redacted-path>:1:18]
  1 | export DEFAULT = Add(2);
-   :                  ^|^
-   :                   `-- This node expects 2 arguments
+   :                  ^^^|^^^
+   :                     `-- This node expects 2 arguments
    `----
   help: Remember that chaining counts as a argument, `... > Foo(1, 2)` has 3 arguments passed for example.

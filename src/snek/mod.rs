@@ -16,16 +16,19 @@
 
 mod ast;
 mod compiler;
+mod ir;
 mod parser;
+mod resolver;
 pub mod span;
 mod tokenizer;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-pub use compiler::{CompileResult, compile_graph};
 use miette::Diagnostic;
 use span::Span;
 use thiserror::Error;
+
+pub use compiler::CompileResult;
 
 /// An error occurred while building the graph.
 #[derive(Debug, Error, Diagnostic)]
@@ -108,6 +111,9 @@ pub enum CompileError {
 
     /// A name wasn't found in scope
     #[error("'{ident}' not found in scope")]
+    #[diagnostic(help(
+        "Serpentine cannot reference items (including functions) before they are defined."
+    ))]
     #[diagnostic(code(compiler::item_not_found))]
     ItemNotFound {
         /// The name that wasn't found
@@ -134,14 +140,14 @@ pub enum CompileError {
     /// Statement found in unexpected context.
     #[error("{stmt} not allowed in {context}")]
     #[diagnostic(code(compiler::invalid_statement))]
+    #[diagnostic(help("Maybe you meant to use `{maybe}` instead?"))]
     InvalidStatement {
         /// The statement that was invalid
         stmt: &'static str,
         /// The context it was found in
         context: &'static str,
         /// A possible alternative statement
-        #[help("Maybe you meant to use a `{maybe}` statement?")]
-        maybe: Option<&'static str>,
+        maybe: &'static str,
         /// The location of the statement
         #[label("This statement is not allowed here")]
         location: Span,
@@ -163,17 +169,6 @@ pub enum CompileError {
         /// Where was the second return found.
         #[label("Second return after existing return.")]
         location: Span,
-    },
-
-    /// A error occurred while inling function
-    #[error("Inlining function failed")]
-    InlineError {
-        /// The error in the function
-        #[diagnostic_source]
-        error: Box<dyn Diagnostic + Send + Sync>,
-        /// Where the function call was
-        #[label("In this call")]
-        call: Span,
     },
 
     /// A error occurred while importing a module
@@ -198,18 +193,12 @@ pub enum CompileError {
         name: String,
     },
 
-    /// A scope item was overwritten
-    #[error("Item '{ident}' already defined in this scope")]
-    #[diagnostic(code(compiler::item_already_defined))]
-    #[diagnostic(help(
-        "Snek semantically speaking does not have a specified execution order, so shadowing is not allowed."
-    ))]
-    ShadowedName {
-        /// The name that was shadowed
-        ident: String,
-        /// The location of the name
-        #[label("This name is already defined in this scope")]
-        location: Span,
+    /// A circular import was encountered.
+    #[error("Circular import. Module {file} attempted to be imported while resolving.")]
+    #[diagnostic(code(compiler::circular_import))]
+    CircularImport {
+        /// The file that was circular imported
+        file: PathBuf,
     },
 
     /// Unhandled internal error.
@@ -227,6 +216,13 @@ impl CompileError {
     }
 }
 
+/// Compile the given file into a compile result
+pub fn compile_graph(file: &Path) -> Result<CompileResult, crate::SerpentineError> {
+    let resolved = resolver::resolve(file)?;
+    let compiled = compiler::compile(resolved)?;
+    Ok(compiled)
+}
+
 #[cfg(test)]
 #[expect(clippy::panic, reason = "tests")]
 mod tests {
@@ -237,7 +233,7 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn compile_positive(#[files("test_cases/positive/**/*.snek")] path: PathBuf) {
-        let res = compiler::compile_graph(&path);
+        let res = compile_graph(&path);
         match res {
             Ok(_) => {}
             Err(err) => {
@@ -251,7 +247,7 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn compile_negative(#[files("test_cases/negative/**/*.snek")] path: PathBuf) {
-        let res = compiler::compile_graph(&path);
+        let res = compile_graph(&path);
         match res {
             Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),
             Err(err) => {

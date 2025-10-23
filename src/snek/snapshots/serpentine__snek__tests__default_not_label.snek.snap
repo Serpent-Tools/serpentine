@@ -6,9 +6,9 @@ expression: err
 
 Error: compiler::wrong_item_kind
 
-  x Expected a value
+  x Expected a label
    ,-[<cli>:1:1]
  1 | DEFAULT
    : ^^^|^^^
-   :    `-- This is a 'node'
+   :    `-- This is a 'function'
    `----

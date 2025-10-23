@@ -8,6 +8,13 @@ use tokio::io::AsyncBufReadExt;
 
 use crate::engine::RuntimeError;
 
+/// A container created by the Docker client
+struct Container(Box<str>);
+
+/// A reference to a specific state of a container.
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+pub struct ContainerState(Rc<str>);
+
 /// A docker client wrapper
 pub struct DockerClient {
     /// The underlying bollard Docker client
@@ -395,13 +402,6 @@ impl Drop for DockerClient {
         }
     }
 }
-
-/// A container created by the Docker client
-struct Container(Box<str>);
-
-/// A reference to a specific state of a container.
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
-pub struct ContainerState(Rc<str>);
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Tests")]

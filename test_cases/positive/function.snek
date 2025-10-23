@@ -2,5 +2,9 @@ def Double(value) {
     return Add(value, value);
 }
 
+def Quadruple(value) {
+    return Double(Double(value));
+}
+
 ten = 10;
-export DEFAULT = !ten Double(ten);
+export DEFAULT = !ten Quadruple(ten);
