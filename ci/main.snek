@@ -1,3 +1,4 @@
+/*
 base = Image("rust:latest");
 
 def WithSource(container) {
@@ -22,3 +23,14 @@ tests = binstall
     > Exec("cargo nextest run");
 
 export DEFAULT = !(tests, spelling, clippy) Noop(0);
+*/
+
+def Foo(container) {
+    return container > Exec("echo Foo") > Exec("echo Bar") > Exec("echo Baz") > Exec("echo Qux");
+}
+
+def Bar(container) {
+    return container > Foo() > Foo() > Foo() > Foo();
+}
+
+export Deffault = Image("alpine:latest") > Bar() > Bar() > Bar() > Bar();

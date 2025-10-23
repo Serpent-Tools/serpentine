@@ -21,6 +21,7 @@ miette = { version = "7.6.0", features = ["fancy"] }
 ratatui = "0.29.0"
 shell-words = "1.1.0"
 smallvec = { version = "1.15.1", features = ["union"] }
+strip-ansi-escapes = "0.2.1"
 tar = "0.4.44"
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "time", "test-util", "signal"] }

@@ -73,7 +73,7 @@ impl RuntimeContext {
     async fn new(tui: TuiSender) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
         Ok(Self {
-            docker: docker::DockerClient::new().await?,
+            docker: docker::DockerClient::new(tui.clone()).await?,
             tui,
         })
     }

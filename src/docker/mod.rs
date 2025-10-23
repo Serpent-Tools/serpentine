@@ -6,7 +6,10 @@ use bollard::API_DEFAULT_VERSION;
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::AsyncBufReadExt;
 
-use crate::engine::RuntimeError;
+use crate::{
+    engine::RuntimeError,
+    tui::{Task, TaskProgress, TuiSender},
+};
 
 /// A docker client wrapper
 pub struct DockerClient {
@@ -16,13 +19,25 @@ pub struct DockerClient {
     containers: RefCell<HashMap<ContainerState, Container>>,
     /// List of all containers created by this client, never removed from to ensure cleanup
     cleanup_list: RefCell<Vec<Container>>,
+    /// Sender to the TUI
+    tui: TuiSender,
 }
 
 impl DockerClient {
     /// Create a new Docker client
-    pub async fn new() -> Result<Self, RuntimeError> {
-        log::info!("Connecting to Docker daemon");
+    pub async fn new(tui: TuiSender) -> Result<Self, RuntimeError> {
+        let client = Self::connect_docker().await?;
+        Ok(Self {
+            client,
+            containers: RefCell::new(HashMap::new()),
+            cleanup_list: RefCell::new(Vec::new()),
+            tui,
+        })
+    }
 
+    /// Attempt to connect to docker
+    async fn connect_docker() -> Result<bollard::Docker, RuntimeError> {
+        log::info!("Connecting to Docker daemon");
         let client = match bollard::Docker::connect_with_defaults() {
             Ok(client) => client,
             Err(bollard::errors::Error::SocketNotFoundError(_)) => {
@@ -36,11 +51,7 @@ impl DockerClient {
         match client.ping().await {
             Ok(_) => {
                 log::info!("Docker connection successful");
-                Ok(Self {
-                    client,
-                    containers: RefCell::new(HashMap::new()),
-                    cleanup_list: RefCell::new(Vec::new()),
-                })
+                Ok(client)
             }
             Err(err) => {
                 // Connection worked but ping failed (permission denied, daemon down, etc.)
@@ -51,7 +62,7 @@ impl DockerClient {
     }
 
     /// utility function to find podman socket and connect to it
-    fn try_podman_connection() -> Result<Self, RuntimeError> {
+    fn try_podman_connection() -> Result<bollard::Docker, RuntimeError> {
         let podman_socket_output = Command::new("podman")
             .args(["info", "--format", "{{.Host.RemoteSocket.Path}}"])
             .output()?;
@@ -67,12 +78,7 @@ impl DockerClient {
 
         let client =
             bollard::Docker::connect_with_socket(&podman_socket_path, 120, API_DEFAULT_VERSION)?;
-
-        Ok(Self {
-            client,
-            containers: RefCell::new(HashMap::new()),
-            cleanup_list: RefCell::new(Vec::new()),
-        })
+        Ok(client)
     }
 
     /// Stop and remove all containers created by this client
@@ -214,6 +220,16 @@ impl DockerClient {
         log::debug!("Executing command {:?} in image {}", cmd, container.0);
         let container = self.get_state(container).await?;
 
+        let task_title = cmd.join(" ");
+        let task_id = format!("docker-exec-{}-{}", container.0, task_title);
+
+        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+            identifier: task_id.clone(),
+            title: task_title.clone(),
+            progress: TaskProgress::Log(String::new()),
+            complete: false,
+        }));
+
         let exec = self
             .client
             .create_exec(
@@ -264,6 +280,13 @@ impl DockerClient {
                         container.0.get(0..12).unwrap_or("<invalid>"),
                         line
                     );
+
+                    let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+                        identifier: task_id.clone(),
+                        title: task_title.clone(),
+                        progress: TaskProgress::Log(line),
+                        complete: false,
+                    }));
                 }
             }
         }
@@ -281,6 +304,13 @@ impl DockerClient {
                 "Exec exit code is None, this should not happen",
             ));
         }
+
+        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+            identifier: task_id.clone(),
+            title: task_title,
+            progress: TaskProgress::Log(String::new()),
+            complete: true,
+        }));
 
         self.commit_container(container).await
     }
@@ -300,10 +330,19 @@ impl DockerClient {
         );
         let container = self.get_state(container).await?;
 
+        let task_id = format!("docker-copy-{}-to-{dest}", container.0);
+        let task_title = format!("Copying to {dest}");
+        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+            identifier: task_id.clone(),
+            title: task_title.clone(),
+            progress: TaskProgress::Log(String::new()),
+            complete: false,
+        }));
+
         let tar_data = {
             let mut tar_data = Vec::new();
             let paths = ignore::WalkBuilder::new(src)
-                .hidden(false)
+                .hidden(true)
                 .git_ignore(true)
                 .git_exclude(true)
                 .git_global(true)
@@ -320,6 +359,13 @@ impl DockerClient {
                     if relative_path.to_string_lossy().is_empty() {
                         continue;
                     }
+
+                    let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+                        identifier: task_id.clone(),
+                        title: task_title.clone(),
+                        progress: TaskProgress::Log(format!("Adding {}", relative_path.display())),
+                        complete: false,
+                    }));
 
                     if path.is_file() {
                         tar_builder.append_path_with_name(path, relative_path)?;
@@ -339,6 +385,13 @@ impl DockerClient {
             tar_data
         };
 
+        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+            identifier: task_id.clone(),
+            title: task_title.clone(),
+            progress: TaskProgress::Log("Uploading to container".into()),
+            complete: false,
+        }));
+
         self.client
             .upload_to_container(
                 &container.0,
@@ -350,6 +403,13 @@ impl DockerClient {
                 bollard::body_full(tar_data.into()),
             )
             .await?;
+
+        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+            identifier: task_id.clone(),
+            title: task_title,
+            progress: TaskProgress::Log(String::new()),
+            complete: true,
+        }));
 
         self.commit_container(container).await
     }
@@ -414,6 +474,8 @@ pub struct ContainerState(Rc<str>);
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Tests")]
 mod tests {
+    use crate::tui::TuiMessage;
+
     use super::*;
     use rstest::{fixture, rstest};
 
@@ -421,7 +483,8 @@ mod tests {
 
     #[fixture]
     async fn docker_client() -> DockerClient {
-        DockerClient::new()
+        let (sender, _receiver) = std::sync::mpsc::channel::<TuiMessage>();
+        DockerClient::new(sender)
             .await
             .expect("Failed to create Docker client")
     }
