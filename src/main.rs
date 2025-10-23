@@ -61,6 +61,7 @@ fn setup_logging() -> miette::Result<()> {
         .unwrap_or(0);
 
     let log_file = log_dir.join(format!("{current_timestamp}.log"));
+    println!("Saving logs in {}", log_file.display());
 
     std::fs::create_dir_all(&log_dir).map_err(|error| {
         miette::miette!(

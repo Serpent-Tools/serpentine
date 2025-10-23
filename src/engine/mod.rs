@@ -22,13 +22,15 @@ pub enum RuntimeError {
     Docker(#[from] bollard::errors::Error),
 
     /// A command failed to execute
-    #[error("Failed to execute command (exit code {code}): {command:?}")]
+    #[error("Failed to execute command (exit code {code}): {command:?} \n{output}")]
     #[diagnostic(code(command_execution_error))]
     CommandExecution {
         /// The exit code
         code: i64,
         /// The command that was run
         command: Vec<String>,
+        /// The stdout/stderr of the command
+        output: String,
     },
 
     /// A exec command failed to parse
@@ -73,7 +75,7 @@ impl RuntimeContext {
     async fn new(tui: TuiSender) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
         Ok(Self {
-            docker: docker::DockerClient::new().await?,
+            docker: docker::DockerClient::new(tui.clone()).await?,
             tui,
         })
     }
