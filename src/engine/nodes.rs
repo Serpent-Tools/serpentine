@@ -273,12 +273,11 @@ pub struct LiteralNode(pub Data);
 impl NodeImpl for LiteralNode {
     fn return_type(
         &self,
+        // Should only be constructed by `Compiler`, hence we don't check this.
         _arguments: &[Spanned<DataType>],
         _node_span: Span,
     ) -> Result<DataType, CompileError> {
-        // This node is directly constructed by the compiler and shouldnt end up in the type check
-        // flow.
-        Err(CompileError::internal("return_type called on literal node"))
+        Ok(self.0.type_())
     }
 
     fn execute<'scheduler>(

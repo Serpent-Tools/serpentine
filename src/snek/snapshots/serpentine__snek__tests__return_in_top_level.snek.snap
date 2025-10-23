@@ -6,10 +6,10 @@ expression: err
 
 Error: compiler::invalid_statement
 
-  x return not allowed in top level
+  x return not allowed in module
    ,-[<redacted-path>:1:1]
  1 | return Add(10, 10);
    : ^^^|^^
    :    `-- This statement is not allowed here
    `----
-  help: export
+  help: Maybe you meant to use `export` instead?

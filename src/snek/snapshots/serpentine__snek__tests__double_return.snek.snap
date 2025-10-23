@@ -4,22 +4,13 @@ expression: err
 ---
   x Compile Error
 
-Error: 
-  x Inlining function failed
-  `-> compiler::double_return
-      
-        x Multiple returns
-         ,-[<redacted-path>:3:5]
-       2 |     return Add(value, value);
-       3 |     return Add(value, value);
-         :     ^^^|^^
-         :        `-- Second return after existing return.
-       4 | }
-         `----
-      
-   ,-[<redacted-path>:6:18]
- 5 | 
- 6 | export DEFAULT = Double(10);
-   :                  ^^^|^^
-   :                     `-- In this call
+Error: compiler::double_return
+
+  x Multiple returns
+   ,-[<redacted-path>:3:5]
+ 2 |     return Add(value, value);
+ 3 |     return Add(value, value);
+   :     ^^^|^^
+   :        `-- Second return after existing return.
+ 4 | }
    `----

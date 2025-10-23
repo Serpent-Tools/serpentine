@@ -4,22 +4,14 @@ expression: err
 ---
   x Compile Error
 
-Error: 
-  x Inlining function failed
-  `-> compiler::item_already_defined
-      
-        x Item 'value' already defined in this scope
-         ,-[<redacted-path>:1:5]
-       1 | def Foo(value) {
-         :     ^|^
-         :      `-- This name is already defined in this scope
-       2 |     return Foo(value);
-         `----
-        help: Snek semantically speaking does not have a specified execution order, so shadowing is not allowed.
-      
-   ,-[<redacted-path>:5:18]
- 4 | 
- 5 | export DEFAULT = Foo(10);
-   :                  ^|^
-   :                   `-- In this call
+Error: compiler::item_not_found
+
+  x 'Foo' not found in scope
+   ,-[<redacted-path>:2:12]
+ 1 | def Foo(value) {
+ 2 |     return Foo(value);
+   :            ^|^
+   :             `-- Item with this name not found
+ 3 | }
    `----
+  help: Serpentine cannot reference items (including functions) before they are defined.

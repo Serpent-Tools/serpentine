@@ -4,26 +4,17 @@ expression: err
 ---
   x Compile Error
 
-Error: 
-  x Inlining function failed
-  `-> compiler::type_mismatch
-      
-        x Expected `integer` got `string`
-         ,-[<redacted-path>:2:12]
-       1 | def Double(value) {
-       2 |     return Add(value, value);
-         :            ^|^
-         :             `-- In call to this node
-       3 | }
-       4 |
-       5 | export DEFAULT = Double("Hello");
-         :                         ^^^|^^^
-         :                            `-- Has type `string`
-         `----
-      
-   ,-[<redacted-path>:5:18]
+Error: compiler::type_mismatch
+
+  x Expected `integer` got `string`
+   ,-[<redacted-path>:2:12]
+ 1 | def Double(value) {
+ 2 |     return Add(value, value);
+   :            ^^^^^^^^^|^^^^^^^^
+   :                     `-- In call to this node
+ 3 | }
  4 | 
  5 | export DEFAULT = Double("Hello");
-   :                  ^^^|^^
-   :                     `-- In this call
+   :                         ^^^|^^^
+   :                            `-- Has type `string`
    `----

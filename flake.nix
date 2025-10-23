@@ -43,6 +43,7 @@
             cargo-nextest
             cargo-insta
             cargo-watch
+            typos
           ];
         };
       }

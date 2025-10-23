@@ -1,0 +1,9 @@
+def Double(value) {
+    export def Foo() {
+        return 10;
+    }
+
+    return Add(value, value);
+}
+
+export DEFAULT = Double(10);

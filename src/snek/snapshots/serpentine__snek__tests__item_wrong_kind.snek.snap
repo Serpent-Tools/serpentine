@@ -6,9 +6,9 @@ expression: err
 
 Error: compiler::wrong_item_kind
 
-  x Expected a value
+  x Expected a label
    ,-[<redacted-path>:1:22]
  1 | export DEFAULT = Add(Add, 10);
    :                      ^|^
-   :                       `-- This is a 'node'
+   :                       `-- This is a 'function'
    `----
