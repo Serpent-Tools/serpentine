@@ -3,7 +3,7 @@
 use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc};
 
 use bollard::API_DEFAULT_VERSION;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::AsyncBufReadExt;
 
 use crate::engine::RuntimeError;
@@ -84,10 +84,12 @@ impl DockerClient {
 
     /// Stop and remove all containers created by this client
     pub async fn shutdown(&self) {
+        let mut futures = Vec::new();
+
         for container in self.cleanup_list.take() {
             log::debug!("Stopping and removing container {}", container.0);
 
-            if let Err(err) = self
+            let future = self
                 .client
                 .remove_container(
                     &container.0,
@@ -97,11 +99,17 @@ impl DockerClient {
                             .build(),
                     ),
                 )
-                .await
-            {
-                log::warn!("Failed to remove container {}: {err}", container.0);
-            }
+                .await;
+            futures.push(future);
         }
+
+        futures_util::stream::iter(futures.into_iter())
+            .for_each_concurrent(None, |res| async {
+                if let Err(err) = res {
+                    log::error!("Error removing container: {err}");
+                }
+            })
+            .await;
     }
 
     /// Create a new container, download the image if necessary
