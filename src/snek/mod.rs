@@ -16,6 +16,7 @@
 
 mod ast;
 mod compiler;
+mod ir;
 mod parser;
 pub mod span;
 mod tokenizer;
