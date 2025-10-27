@@ -39,13 +39,16 @@ impl Scheduler {
     /// Retrieve a data from a node.
     /// If the node hasnt started starts running it, then awaits on the result.
     pub async fn get_output(&self, node: NodeInstanceId) -> Result<&Data, RuntimeError> {
-        let Some(cell) = self.data.get(node.0) else {
+        let Some(cell) = self.data.get(node.index()) else {
             return Err(RuntimeError::internal("NodeInstanceId out of bounds"));
         };
 
         let res = cell
             .get_or_try_init(async || {
-                let node = self.graph.get(node)?;
+                let node = self
+                    .graph
+                    .get(node)
+                    .ok_or_else(|| RuntimeError::internal("NodeInstanceId out of bounds"))?;
 
                 futures_util::future::try_join_all(
                     node.phantom_inputs.iter().map(|id| self.get_output(*id)),
@@ -57,7 +60,7 @@ impl Scheduler {
                     .get(node.kind)
                     .ok_or_else(|| RuntimeError::internal("NodeKind out of bounds"))?;
 
-                log::debug!("Executing node {node:?}");
+                log::debug!("Executing node {}", node.kind.index());
                 node_impl.execute(self, &node.inputs).await
             })
             .await;

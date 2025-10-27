@@ -39,87 +39,94 @@ impl DataType {
     }
 }
 
-/// Id for referencing the node implementation
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct NodeKindId(usize);
-
-/// Id for referencing a node in the graph
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-pub struct NodeInstanceId(pub usize);
-
-/// Stores the node implementations
-pub struct NodeStorage {
-    /// The list
-    nodes: Vec<Box<dyn NodeImpl>>,
+/// A push only store of T, returning stable IDs.
+pub struct Store<T> {
+    /// The backing storage of the items
+    items: Vec<T>,
 }
 
-impl std::fmt::Debug for NodeStorage {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt.debug_list()
-            .entries(std::iter::repeat_n("*", self.nodes.len()))
-            .finish()
+/// Id into a store of T.
+///
+/// This is generic over the type T to prevent mixing ids from different stores.
+/// Althought in theory a program can have multiple stores of the same type T, in which case
+/// we would need to be careful to not mix the ids.
+/// in practice serpentine only has one store per type T.
+pub struct StoreId<T> {
+    /// The index into the store
+    index: usize,
+    /// Phantom data to tie this id to the type T
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> StoreId<T> {
+    /// Return the index of this id
+    ///
+    /// This should only be used for secondary maps.
+    pub fn index(&self) -> usize {
+        self.index
     }
 }
 
-impl NodeStorage {
-    /// Create a new node storage
+impl<T> Clone for StoreId<T> {
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+impl<T> Copy for StoreId<T> {}
+impl<T> std::fmt::Debug for StoreId<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StoreId({})", self.index)
+    }
+}
+
+impl<T> Store<T> {
+    /// Create a new empty store
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self { items: Vec::new() }
     }
 
-    /// add a new node to the storage, returning its new id
-    pub fn push(&mut self, node: Box<dyn NodeImpl>) -> NodeKindId {
-        let id = NodeKindId(self.nodes.len());
-        self.nodes.push(node);
+    /// Push a new item to the store, returning its id
+    pub fn push(&mut self, item: T) -> StoreId<T> {
+        let id = StoreId {
+            index: self.items.len(),
+            _marker: std::marker::PhantomData,
+        };
+        self.items.push(item);
         id
     }
 
-    /// returns the node of the given id if found.
-    pub fn get(&self, id: NodeKindId) -> Option<&dyn NodeImpl> {
-        self.nodes.get(id.0).map(|node| &**node)
+    /// Get a item from its id.
+    pub fn get(&self, id: StoreId<T>) -> Option<&T> {
+        self.items.get(id.index)
+    }
+
+    /// Get the length of the store
+    pub fn len(&self) -> usize {
+        self.items.len()
     }
 }
 
+/// Id for referencing the node implementation
+pub type NodeKindId = StoreId<Box<dyn NodeImpl>>;
+
+/// Stores the node implementations
+pub type NodeStorage = Store<Box<dyn NodeImpl>>;
+
 /// A node in the graph
-#[derive(Debug)]
 pub struct Node {
     /// The kind of this node
     pub kind: NodeKindId,
     /// The node ids for this inputs
     pub inputs: SmallVec<[NodeInstanceId; 2]>, // 2 usize / usize
     /// Phantom inputs to this node, these will be resolved before the nodes actual logic runs.
-    pub phantom_inputs: SmallVec<[NodeInstanceId; 2]>,
+    pub phantom_inputs: Vec<NodeInstanceId>,
 }
+
+/// Id for referencing a node in the graph
+pub type NodeInstanceId = StoreId<Node>;
 
 /// Contains the graph
-#[derive(Debug)]
-pub struct Graph {
-    /// Indexes by `NodeInstanceId`, contains the inputs for the given node
-    nodes: Vec<Node>,
-}
-
-impl Graph {
-    /// Create a new graph
-    pub fn new() -> Self {
-        Self { nodes: Vec::new() }
-    }
-
-    /// Return the number of nodes
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Get the node at this index
-    pub fn get(&self, index: NodeInstanceId) -> Result<&Node, RuntimeError> {
-        self.nodes
-            .get(index.0)
-            .ok_or_else(|| RuntimeError::internal("Node id out of bounds"))
-    }
-
-    /// Push a new node to the graph and return its id.
-    pub fn push(&mut self, node: Node) -> NodeInstanceId {
-        let index = self.nodes.len();
-        self.nodes.push(node);
-        NodeInstanceId(index)
-    }
-}
+pub type Graph = Store<Node>;

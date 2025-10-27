@@ -15,14 +15,13 @@
 //! ```
 
 mod ast;
-mod compiler;
+mod ir;
 mod parser;
 pub mod span;
 mod tokenizer;
 
 use std::path::PathBuf;
 
-pub use compiler::{CompileResult, compile_graph};
 use miette::Diagnostic;
 use span::Span;
 use thiserror::Error;
