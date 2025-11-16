@@ -192,12 +192,13 @@ impl DockerClient {
             Ok(container)
         } else {
             log::trace!("Creating container from image {}", state.0);
+            let name = format!("serpentine-worker-{}", uuid::Uuid::new_v4());
             let id = self
                 .client
                 .create_container(
                     Some(
                         bollard::query_parameters::CreateContainerOptionsBuilder::new()
-                            .name(&format!("serpentine-worker-{}", uuid::Uuid::new_v4()))
+                            .name(&name)
                             .build(),
                     ),
                     bollard::secret::ContainerCreateBody {
@@ -220,6 +221,7 @@ impl DockerClient {
                 .push(Container(id.clone().into_boxed_str()));
 
             log::trace!("Starting container {id}");
+            let _ = self.tui.send(crate::tui::TuiMessage::Container(id.clone()));
             self.client
                 .start_container(
                     &id,
@@ -296,6 +298,8 @@ impl DockerClient {
                 let mut output = tokio::io::BufReader::new(output).lines();
 
                 while let Some(line) = output.next_line().await? {
+                    let line = strip_ansi_escapes::strip_str(line);
+
                     log::trace!(
                         "{} ({}): {}",
                         cmd.first().unwrap_or(&"<unknown>"),
@@ -329,9 +333,9 @@ impl DockerClient {
             ));
         }
 
+        let image = self.commit_container(container).await?;
         let _ = self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
-
-        self.commit_container(container).await
+        Ok(image)
     }
 
     /// Copy the given directory from the host into the container

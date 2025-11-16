@@ -6,7 +6,7 @@ use ratatui::{
     style::{Color, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Padding},
+    widgets::{Block, Borders, Gauge, Padding, Paragraph},
 };
 
 /// The messages that can be passed to the tui;
@@ -30,6 +30,10 @@ pub enum TuiMessage {
     UpdateTask(Task),
     /// A task is done
     FinishTask(String),
+    /// Add a line to the logs
+    Log(String),
+    /// A new container was created
+    Container(String),
 }
 
 pub type TuiSender = std::sync::mpsc::Sender<TuiMessage>;
@@ -38,6 +42,7 @@ pub type TuiSender = std::sync::mpsc::Sender<TuiMessage>;
 #[derive(Debug)]
 pub enum TaskProgress {
     /// A task with a messurable progress
+    #[expect(dead_code, reason = "Will be used in the future")]
     Measurable {
         /// How many units have been completed
         completed: u64,
@@ -74,6 +79,12 @@ struct UiState {
     shutting_down: bool,
     /// Tasks being tracked by the UI
     tasks: Vec<Task>,
+    /// Log lines
+    logs: Vec<String>,
+    /// Containers spawned by serpentine
+    containers: Vec<String>,
+    /// Logs from tasks
+    task_logs: Vec<String>,
 }
 
 impl UiState {
@@ -86,6 +97,9 @@ impl UiState {
             finished_nodes: 0,
             shutting_down: false,
             tasks: Vec::new(),
+            logs: Vec::new(),
+            containers: Vec::new(),
+            task_logs: Vec::new(),
         }
     }
 
@@ -107,6 +121,13 @@ impl UiState {
                 self.finished_nodes = self.finished_nodes.saturating_add(1);
             }
             TuiMessage::UpdateTask(task) => {
+                if let TaskProgress::Log(msg) = &task.progress {
+                    self.task_logs.push(msg.clone());
+                    if self.task_logs.len() > 20 {
+                        self.task_logs.remove(0);
+                    }
+                }
+
                 for existing_task in &mut self.tasks {
                     if existing_task.identifier == task.identifier {
                         *existing_task = task;
@@ -118,15 +139,28 @@ impl UiState {
             TuiMessage::FinishTask(identifier) => {
                 self.tasks.retain(|task| task.identifier != identifier);
             }
+            TuiMessage::Log(msg) => {
+                self.logs.push(msg);
+                if self.logs.len() > 20 {
+                    self.logs.remove(0);
+                }
+            }
+            TuiMessage::Container(id) => {
+                self.containers.push(id);
+            }
         }
     }
 
     /// Draw the current state to the terminal
     fn draw(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
-        let [progress_area, task_area] = Layout::new(
+        let [progress_area, task_area, status_area] = Layout::new(
             Direction::Vertical,
-            [Constraint::Length(3), Constraint::Fill(1)],
+            [
+                Constraint::Length(3),
+                Constraint::Min(6),
+                Constraint::Max(22),
+            ],
         )
         .areas(area);
 
@@ -150,6 +184,8 @@ impl UiState {
         let tasks_inner = tasks.inner(task_area);
         frame.render_widget(tasks, task_area);
         self.draw_tasks(tasks_inner, frame);
+
+        self.draw_status(status_area, frame);
     }
 
     /// Draw the tasks
@@ -179,7 +215,7 @@ impl UiState {
                             style: Style::default().fg(Color::Yellow),
                         },
                         Span {
-                            content: strip_ansi_escapes::strip_str(message).into(),
+                            content: message.into(),
                             style: Style::default().fg(Color::Gray),
                         },
                     ]);
@@ -280,6 +316,29 @@ impl UiState {
 
         frame.render_widget(bar, area);
     }
+
+    /// Draw the various status readouts
+    fn draw_status(&self, area: Rect, frame: &mut ratatui::Frame) {
+        let [log_area, task_area, container_area] =
+            Layout::new(Direction::Horizontal, [Constraint::Fill(1); 3]).areas(area);
+
+        let logs = Block::default()
+            .borders(Borders::ALL)
+            .title(" Serpentine Logs ");
+        let log_inner = logs.inner(log_area);
+        frame.render_widget(logs, log_area);
+        frame.render_widget(Paragraph::new(self.logs.join("\n")), log_inner);
+
+        let tasks = Block::default().borders(Borders::ALL).title(" Task Logs ");
+        let task_inner = tasks.inner(task_area);
+        frame.render_widget(tasks, task_area);
+        frame.render_widget(Paragraph::new(self.task_logs.join("\n")), task_inner);
+
+        let containers = Block::default().borders(Borders::ALL).title(" Containers ");
+        let container_inner = containers.inner(container_area);
+        frame.render_widget(containers, container_area);
+        frame.render_widget(Paragraph::new(self.containers.join("\n")), container_inner);
+    }
 }
 
 /// Calculate the usize width that represents the given fraction of `total_width`
@@ -311,6 +370,7 @@ pub fn start_tui(events: std::sync::mpsc::Receiver<TuiMessage>, total_nodes: usi
     std::panic::set_hook(Box::new(|info| {
         ratatui::restore();
         log::error!("Serpentine panicked: {info}");
+        eprintln!("Tui panicked: {info}");
     }));
     let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
 

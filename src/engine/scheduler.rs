@@ -59,13 +59,13 @@ impl Scheduler {
                 .await?;
                 let node_impl = self.nodes.get(node.kind);
 
-                log::debug!("Executing node {node_id:?}");
+                log::debug!("Executing node {node_id:?}",);
                 let res = node_impl.execute(self, &node.inputs).await;
                 let _ = self.context.tui.send(crate::tui::TuiMessage::NodeFinished);
                 res
             })
             .await;
-        log::trace!("Got output of node {node_id:?}: {res:?}");
+        log::debug!("Got output of node {node_id:?}: {res:?}");
         res
     }
 }

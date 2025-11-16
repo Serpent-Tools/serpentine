@@ -49,7 +49,7 @@ enum SerpentineError {
     Runtime(engine::RuntimeError),
 }
 
-fn setup_logging() -> miette::Result<()> {
+fn setup_logging(tui: tui::TuiSender) -> miette::Result<()> {
     let project_dirs = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
         .ok_or_else(|| miette::miette!("Failed to determine log directory"))?;
 
@@ -80,18 +80,29 @@ fn setup_logging() -> miette::Result<()> {
                 metadata.level() <= log::Level::Info
             }
         })
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "[{}][{}] {}",
-                record.level(),
-                record.target(),
-                message
-            ));
-        })
-        .level(log::LevelFilter::Trace)
         .chain(
-            fern::log_file(log_file)
-                .map_err(|error| miette::miette!("Failed to open log file: {}", error))?,
+            fern::Dispatch::new()
+                .format(|out, message, record| {
+                    out.finish(format_args!(
+                        "[{}][{}] {}",
+                        record.level(),
+                        record.target(),
+                        message
+                    ));
+                })
+                .level(log::LevelFilter::Trace)
+                .chain(
+                    fern::log_file(log_file)
+                        .map_err(|error| miette::miette!("Failed to open log file: {}", error))?,
+                ),
+        )
+        .chain(
+            fern::Dispatch::new()
+                .level(log::LevelFilter::Debug)
+                .chain(fern::Output::call(move |record| {
+                    let message = record.args().to_string();
+                    let _ = tui.send(tui::TuiMessage::Log(message));
+                })),
         )
         .apply()
         .map_err(|error| miette::miette!("Failed to initialize logging: {}", error))?;
@@ -100,8 +111,9 @@ fn setup_logging() -> miette::Result<()> {
 
 fn main() -> miette::Result<()> {
     let command = Cli::parse();
+    let (sender, receiver) = std::sync::mpsc::channel();
 
-    let res = setup_logging();
+    let res = setup_logging(sender.clone());
     if let Err(error) = res {
         eprintln!("Failed to initialize logging: {error}");
     }
@@ -110,7 +122,6 @@ fn main() -> miette::Result<()> {
     let result = snek::compile_graph(&command.pipeline())?;
 
     log::info!("Executing pipeline");
-    let (sender, receiver) = std::sync::mpsc::channel();
     let total_nodes = result.graph.len();
     let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes));
     let result = engine::run(result, sender.clone());

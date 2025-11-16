@@ -1,8 +1,7 @@
-/*
-base = Image("rust:latest");
+base = Image("rust:latest") > WorkingDir("/app");
 
 def WithSource(container) {
-    return container > Copy(".", "/app") > WorkingDir("/app");
+    return container > Copy(".", ".") ;
 }
 
 binstall = base > Exec("cargo install cargo-binstall");
@@ -23,14 +22,3 @@ tests = binstall
     > Exec("cargo nextest run");
 
 export DEFAULT = !(tests, spelling, clippy) Noop(0);
-*/
-
-def Foo(container) {
-    return container > Exec("echo hello") > Exec("echo world") > Exec("echo lol") > Exec("sleep 1");
-}
-
-def Bar(container) {
-    return container > Foo() > Foo() > Foo() > Foo() > Foo();
-}
-
-export DEFAULT = Image("rust:latest") > Bar() > Bar() > Bar() > Bar();
