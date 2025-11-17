@@ -188,51 +188,81 @@ impl DockerClient {
     /// This removes the container from the cache of containers at that given image,
     /// with the assumption that its about to be modified.
     async fn get_state(&self, state: &ContainerState) -> Result<Container, RuntimeError> {
-        if let Some(container) = self.containers.borrow_mut().remove(state) {
+        if let Some(container) = { self.containers.borrow_mut().remove(state) } {
             log::trace!("Reusing existing container {}", container.0);
-            Ok(container)
-        } else {
-            log::trace!("Creating container from image {}", state.0);
-            let name = format!("serpentine-worker-{}", uuid::Uuid::new_v4());
-            let id = self
+
+            if let Ok(status) = self
                 .client
-                .create_container(
-                    Some(
-                        bollard::query_parameters::CreateContainerOptionsBuilder::new()
-                            .name(&name)
-                            .build(),
-                    ),
-                    bollard::secret::ContainerCreateBody {
-                        image: Some(state.0.to_string()),
-                        cmd: Some(vec!["sleep".into(), "infinity".into()]),
-                        tty: Some(false),
-                        open_stdin: Some(false),
-                        host_config: Some(bollard::secret::HostConfig {
-                            init: Some(true),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    },
+                .inspect_container(
+                    &container.0,
+                    Some(bollard::query_parameters::InspectContainerOptionsBuilder::new().build()),
                 )
-                .await?
-                .id;
+                .await
+            {
+                if let Some(bollard::secret::ContainerState {
+                    status: Some(bollard::secret::ContainerStateStatusEnum::RUNNING),
+                    ..
+                }) = status.state
+                {
+                    return Ok(container);
+                }
 
-            self.cleanup_list
-                .borrow_mut()
-                .push(Container(id.clone().into_boxed_str()));
+                log::error!("Container {} stopped externally, re-starting", container.0);
+                self.client
+                    .start_container(
+                        &container.0,
+                        Some(
+                            bollard::query_parameters::StartContainerOptionsBuilder::new().build(),
+                        ),
+                    )
+                    .await?;
 
-            log::trace!("Starting container {id}");
-            self.tui.send(crate::tui::TuiMessage::Container(id.clone()));
-            self.client
-                .start_container(
-                    &id,
-                    Some(bollard::query_parameters::StartContainerOptionsBuilder::new().build()),
-                )
-                .await?;
+                return Ok(container);
+            }
 
-            let container = Container(id.into_boxed_str());
-            Ok(container)
+            log::error!("Container {} deleted externally, re-creating", container.0);
         }
+
+        log::trace!("Creating container from image {}", state.0);
+        let name = format!("serpentine-worker-{}", uuid::Uuid::new_v4());
+        let id = self
+            .client
+            .create_container(
+                Some(
+                    bollard::query_parameters::CreateContainerOptionsBuilder::new()
+                        .name(&name)
+                        .build(),
+                ),
+                bollard::secret::ContainerCreateBody {
+                    image: Some(state.0.to_string()),
+                    cmd: Some(vec!["sleep".into(), "infinity".into()]),
+                    tty: Some(false),
+                    open_stdin: Some(false),
+                    host_config: Some(bollard::secret::HostConfig {
+                        init: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .id;
+
+        self.cleanup_list
+            .borrow_mut()
+            .push(Container(id.clone().into_boxed_str()));
+
+        log::trace!("Starting container {id}");
+        self.tui.send(crate::tui::TuiMessage::Container(id.clone()));
+        self.client
+            .start_container(
+                &id,
+                Some(bollard::query_parameters::StartContainerOptionsBuilder::new().build()),
+            )
+            .await?;
+
+        let container = Container(id.into_boxed_str());
+        Ok(container)
     }
 
     /// Execute a command in a container
@@ -653,6 +683,138 @@ mod tests {
             .expect("Failed to set working dir");
         docker_client
             .exec(&image, &["ls", "bar"])
+            .await
+            .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
+
+    // The following tests, against our general test policy, use the clients internal details.
+    // This is because these tests are designed to test "external" interference.
+    // which is simplest to do by just using the existing docker connection and internal data in
+    // the client.
+    //
+    // Like yes public code shouldnt be able to grab the image name and mess with it, but external
+    // programs can via the docker cli, so we find this justified.
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn external_interference_image_deleted(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+        let image = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let image = docker_client
+            .exec(&image, &["touch", "hello.txt"])
+            .await
+            .expect("Exec failed");
+
+        log::debug!("Deleting {image:?}");
+        docker_client
+            .client
+            .remove_image(
+                &image.0,
+                Some(
+                    bollard::query_parameters::RemoveImageOptionsBuilder::new()
+                        .force(true)
+                        .build(),
+                ),
+                None,
+            )
+            .await
+            .expect("Failed to remove image");
+
+        docker_client
+            .exec(&image, &["cat", "hello.txt"])
+            .await
+            .expect("Exec failed");
+
+        // Trigger forking (i.e we need to use the image)
+        // The system should handle image deletion gracefully without panicking
+        // whether it succeeds or fails is implementation detail
+        // (At the time of writing this fails, and there isnt a clear recovery path to make it not)
+        let _ = docker_client.exec(&image, &["cat", "hello.txt"]).await;
+
+        docker_client.shutdown().await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn external_interference_container_deleted(#[future] docker_client: DockerClient) {
+        let mut docker_client = docker_client.await;
+        let image = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let image = docker_client
+            .exec(&image, &["touch", "hello.txt"])
+            .await
+            .expect("Exec failed");
+
+        let container = docker_client
+            .containers
+            .get_mut()
+            .get(&image)
+            .expect("container for image not found");
+        log::debug!("Deleting {}", container.0);
+        docker_client
+            .client
+            .remove_container(
+                &container.0,
+                Some(
+                    bollard::query_parameters::RemoveContainerOptionsBuilder::new()
+                        .force(true)
+                        .build(),
+                ),
+            )
+            .await
+            .expect("Failed to remove container");
+
+        docker_client
+            .exec(&image, &["cat", "hello.txt"])
+            .await
+            .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn external_interference_container_stopped(#[future] docker_client: DockerClient) {
+        let mut docker_client = docker_client.await;
+        let image = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let image = docker_client
+            .exec(&image, &["touch", "hello.txt"])
+            .await
+            .expect("Exec failed");
+
+        let container = docker_client
+            .containers
+            .get_mut()
+            .get(&image)
+            .expect("container for image not found");
+        log::debug!("Stopping {}", container.0);
+        docker_client
+            .client
+            .stop_container(
+                &container.0,
+                Some(bollard::query_parameters::StopContainerOptionsBuilder::new().build()),
+            )
+            .await
+            .expect("Failed to stop container");
+
+        docker_client
+            .exec(&image, &["cat", "hello.txt"])
             .await
             .expect("Exec failed");
 
