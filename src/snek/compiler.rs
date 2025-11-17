@@ -209,7 +209,7 @@ impl Compiler {
     ) -> NodeInstanceId {
         self.graph.push(Node {
             kind: context.noop,
-            inputs: smallvec::smallvec![function_output],
+            inputs: Box::new([function_output]),
             phantom_inputs: phantom_inputs.into_vec().into(),
         })
     }

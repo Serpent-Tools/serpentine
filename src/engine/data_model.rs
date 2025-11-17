@@ -1,6 +1,6 @@
 //! contains the definitions of the various core node types and structures.
 
-use smallvec::SmallVec;
+use std::rc::Rc;
 
 use crate::docker;
 use crate::engine::nodes::NodeImpl;
@@ -11,7 +11,7 @@ pub enum Data {
     /// A numeric whole number value
     Int(i128),
     /// A string, usually a short literal
-    String(Box<str>),
+    String(Rc<str>),
     /// A docker container (well in reality an image)
     Container(docker::ContainerState),
 }
@@ -141,9 +141,9 @@ pub struct Node {
     /// The kind of this node
     pub kind: NodeKindId,
     /// The node ids for this inputs
-    pub inputs: SmallVec<[NodeInstanceId; 2]>, // 2 usize / usize
+    pub inputs: Box<[NodeInstanceId]>,
     /// Phantom inputs to this node, these will be resolved before the nodes actual logic runs.
-    pub phantom_inputs: SmallVec<[NodeInstanceId; 2]>,
+    pub phantom_inputs: Box<[NodeInstanceId]>,
 }
 
 /// Id for referencing a node in the graph

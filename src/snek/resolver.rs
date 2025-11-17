@@ -534,7 +534,7 @@ impl Resolver {
             }
             ast::Expression::String(text) => {
                 let span = text.span();
-                Ok(self.resolve_literal(top_level_body, Data::String(text.take()), span))
+                Ok(self.resolve_literal(top_level_body, Data::String(text.take().into()), span))
             }
             ast::Expression::Label(label) => {
                 let error_span = label.span();

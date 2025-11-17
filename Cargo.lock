@@ -1811,7 +1811,6 @@ dependencies = [
  "ratatui",
  "rstest",
  "shell-words",
- "smallvec",
  "strip-ansi-escapes",
  "tar",
  "test-log",

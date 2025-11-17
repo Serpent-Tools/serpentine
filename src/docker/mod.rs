@@ -1,6 +1,6 @@
 //! Wrapper around bollard Docker API client
 
-use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc, sync::Arc};
 
 use bollard::API_DEFAULT_VERSION;
 use futures_util::{StreamExt, TryStreamExt};
@@ -130,8 +130,8 @@ impl DockerClient {
         } else {
             log::info!("Pulling image {image}");
 
-            let task_id = format!("pull-{image}");
-            let task_title = format!("docker pull {image}");
+            let task_id: Arc<str> = Arc::from(format!("pull-{image}"));
+            let task_title: Arc<str> = Arc::from(format!("docker pull {image}"));
 
             let mut stream = self.client.create_image(
                 Some(
@@ -147,9 +147,9 @@ impl DockerClient {
                 log::debug!("{status:?}");
                 if let Some(status) = status.status {
                     self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-                        identifier: task_id.clone(),
-                        title: task_title.clone(),
-                        progress: TaskProgress::Log(status),
+                        identifier: Arc::clone(&task_id),
+                        title: Arc::clone(&task_title),
+                        progress: TaskProgress::Log(status.into_boxed_str()),
                     }));
                 }
             }
@@ -253,7 +253,9 @@ impl DockerClient {
             .push(Container(id.clone().into_boxed_str()));
 
         log::trace!("Starting container {id}");
-        self.tui.send(crate::tui::TuiMessage::Container(id.clone()));
+        self.tui.send(crate::tui::TuiMessage::Container(
+            id.clone().into_boxed_str(),
+        ));
         self.client
             .start_container(
                 &id,
@@ -272,15 +274,15 @@ impl DockerClient {
         cmd: &[&str],
     ) -> Result<ContainerState, RuntimeError> {
         log::debug!("Executing command {:?} in image {}", cmd, container.0);
-        let task_title = cmd.join(" ");
-        let task_id = format!("docker-exec-{}-{}", container.0, task_title);
+        let task_title: Arc<str> = Arc::from(cmd.join(" "));
+        let task_id: Arc<str> = Arc::from(format!("docker-exec-{}-{}", container.0, task_title));
 
         let container = self.get_state(container).await?;
 
         self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-            identifier: task_id.clone(),
-            title: task_title.clone(),
-            progress: TaskProgress::Log(String::new()),
+            identifier: Arc::clone(&task_id),
+            title: Arc::clone(&task_title),
+            progress: TaskProgress::Log(Box::from("")),
         }));
 
         let exec = self
@@ -339,9 +341,9 @@ impl DockerClient {
                     );
 
                     self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-                        identifier: task_id.clone(),
-                        title: task_title.clone(),
-                        progress: TaskProgress::Log(line.clone()),
+                        identifier: Arc::clone(&task_id),
+                        title: Arc::clone(&task_title),
+                        progress: TaskProgress::Log(line.clone().into_boxed_str()),
                     }));
 
                     all_output.push(line);
@@ -382,14 +384,14 @@ impl DockerClient {
             container.0,
             dest
         );
-        let task_id = format!("docker-copy-{}-to-{dest}", container.0);
-        let task_title = format!("cp -r {src} {dest}");
+        let task_id: Arc<str> = Arc::from(format!("docker-copy-{}-to-{dest}", container.0));
+        let task_title: Arc<str> = Arc::from(format!("cp -r {src} {dest}"));
         let container = self.get_state(container).await?;
 
         self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-            identifier: task_id.clone(),
-            title: task_title.clone(),
-            progress: TaskProgress::Log(String::new()),
+            identifier: Arc::clone(&task_id),
+            title: Arc::clone(&task_title),
+            progress: TaskProgress::Log(Box::from("")),
         }));
 
         let tar_data = {
@@ -414,9 +416,11 @@ impl DockerClient {
                     }
 
                     self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-                        identifier: task_id.clone(),
-                        title: task_title.clone(),
-                        progress: TaskProgress::Log(format!("Adding {}", relative_path.display())),
+                        identifier: Arc::clone(&task_id),
+                        title: Arc::clone(&task_title),
+                        progress: TaskProgress::Log(
+                            format!("Adding {}", relative_path.display()).into_boxed_str(),
+                        ),
                     }));
 
                     if path.is_file() {
@@ -438,8 +442,8 @@ impl DockerClient {
         };
 
         self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-            identifier: task_id.clone(),
-            title: task_title.clone(),
+            identifier: Arc::clone(&task_id),
+            title: Arc::clone(&task_title),
             progress: TaskProgress::Log("Uploading to container".into()),
         }));
 

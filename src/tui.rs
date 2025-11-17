@@ -1,6 +1,6 @@
 //! Handles the display of progress and container state to the terminal.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use ratatui::{
     crossterm,
@@ -31,11 +31,11 @@ pub enum TuiMessage {
     /// Update the progress of a task (or create it if it doesn't exist)
     UpdateTask(Task),
     /// A task is done
-    FinishTask(String),
+    FinishTask(Arc<str>),
     /// Add a line to the logs
-    Log(String),
+    Log(Box<str>),
     /// A new container was created
-    Container(String),
+    Container(Box<str>),
 }
 
 #[derive(Clone)]
@@ -63,16 +63,16 @@ pub enum TaskProgress {
         total: u64,
     },
     /// A task with no measurable progress
-    Log(String),
+    Log(Box<str>),
 }
 
 /// Represents a task being executed in the pipeline
 #[derive(Debug)]
 pub struct Task {
     /// The identiifer for the task
-    pub identifier: String,
+    pub identifier: Arc<str>,
     /// The name to show in the UI
-    pub title: String,
+    pub title: Arc<str>,
     /// The current progress of the task
     pub progress: TaskProgress,
 }
@@ -93,11 +93,11 @@ struct UiState {
     /// Tasks being tracked by the UI
     tasks: Vec<Task>,
     /// Log lines
-    logs: Vec<String>,
+    logs: Vec<Box<str>>,
     /// Containers spawned by serpentine
-    containers: Vec<String>,
+    containers: Vec<Box<str>>,
     /// Logs from tasks
-    task_logs: Vec<String>,
+    task_logs: Vec<Box<str>>,
 }
 
 impl UiState {
@@ -218,7 +218,7 @@ impl UiState {
                     )]
                     let widget = Gauge::default()
                         .ratio((*completed as f64) / (*total as f64).max(1.0))
-                        .label(task.title.clone());
+                        .label(task.title.as_ref());
                     frame.render_widget(widget, *task_area);
                 }
                 TaskProgress::Log(message) => {
@@ -228,7 +228,7 @@ impl UiState {
                             style: Style::default().fg(Color::Yellow),
                         },
                         Span {
-                            content: message.into(),
+                            content: message.as_ref().into(),
                             style: Style::default().fg(Color::Gray),
                         },
                     ]);
