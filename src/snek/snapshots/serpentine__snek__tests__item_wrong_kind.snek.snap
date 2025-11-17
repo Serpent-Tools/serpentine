@@ -7,8 +7,8 @@ expression: err
 Error: compiler::wrong_item_kind
 
   x Expected a label
-   ,-[<redacted-path>:1:22]
- 1 | export DEFAULT = Add(Add, 10);
-   :                      ^|^
-   :                       `-- This is a 'function'
+   ,-[<redacted-path>:1:24]
+ 1 | export DEFAULT = Image(Image);
+   :                        ^^|^^
+   :                          `-- This is a 'function'
    `----

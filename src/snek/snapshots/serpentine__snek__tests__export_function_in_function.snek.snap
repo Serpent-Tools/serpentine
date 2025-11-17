@@ -8,7 +8,7 @@ Error: compiler::invalid_statement
 
   x export not allowed in function
    ,-[<redacted-path>:2:5]
- 1 | def Double(value) {
+ 1 | def Foo(value) {
  2 |     export def Foo() {
    :     ^^^|^^
    :        `-- This statement is not allowed here

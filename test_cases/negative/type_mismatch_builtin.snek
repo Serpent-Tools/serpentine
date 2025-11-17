@@ -1,1 +1,1 @@
-export DEFAULT = 1 > Add("Hello");
+export DEFAULT = 1 > Exec("echo hello");

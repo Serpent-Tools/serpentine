@@ -6,15 +6,15 @@ expression: err
 
 Error: compiler::type_mismatch
 
-  x Expected `integer` got `string`
-   ,-[<redacted-path>:2:12]
- 1 | def Double(value) {
- 2 |     return Add(value, value);
-   :            ^^^^^^^^^|^^^^^^^^
-   :                     `-- In call to this node
+  x Expected `container` got `string`
+   ,-[<redacted-path>:2:20]
+ 1 | def Foo(value) {
+ 2 |     return value > Exec("echo hello");
+   :                    ^^^^^^^^^|^^^^^^^^^
+   :                             `-- In call to this node
  3 | }
  4 | 
- 5 | export DEFAULT = Double("Hello");
-   :                         ^^^|^^^
-   :                            `-- Has type `string`
+ 5 | export DEFAULT = Foo("Hello");
+   :                      ^^^|^^^
+   :                         `-- Has type `string`
    `----

@@ -1,9 +1,9 @@
-def Double(value) {
+def Foo(value) {
     export def Foo() {
         return 10;
     }
 
-    return Add(value, value);
+    return Image("rust:latest");
 }
 
-export DEFAULT = Double(10);
+export DEFAULT = Foo();

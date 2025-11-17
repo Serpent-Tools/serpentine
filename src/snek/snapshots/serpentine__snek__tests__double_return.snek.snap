@@ -8,8 +8,8 @@ Error: compiler::double_return
 
   x Multiple returns
    ,-[<redacted-path>:3:5]
- 2 |     return Add(value, value);
- 3 |     return Add(value, value);
+ 2 |     return value > Exec("hello");
+ 3 |     return value > Exec("hello");
    :     ^^^|^^
    :        `-- Second return after existing return.
  4 | }

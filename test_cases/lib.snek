@@ -4,10 +4,10 @@ secret = 20;
 
 export ten = 10;
 
-export def Double(value) {
-    return Add(value, value);
+export def Sleep(container) {
+    return container > Exec("sleep 2");
 }
 
-export def AddTen(value) {
-    return Add(ten, value);
+export def Echo(container) {
+    return container > Exec("echo hello");
 }

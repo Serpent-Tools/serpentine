@@ -1,5 +1,5 @@
-def Double(value) {
-    return Add(value, value);
+def Foo(container) {
+    return container > Exec("echo hello");
 }
 
-export DEFAULT = Double();
+export DEFAULT = Foo();

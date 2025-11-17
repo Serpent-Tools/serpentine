@@ -368,12 +368,6 @@ async fn with_working_dir(
     context.docker.set_working_dir(&container, &dir).await
 }
 
-/// An Add node that adds two integers
-/// Mainly used in tests (I can't be bothered to rewrite the test graphs)
-async fn add(_context: Rc<RuntimeContext>, left: i128, right: i128) -> Result<i128, RuntimeError> {
-    Ok(left.saturating_add(right))
-}
-
 /// Return the list of prelude nodes
 pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     let mut nodes: HashMap<&'static str, Box<dyn NodeImpl>> = HashMap::new();
@@ -399,8 +393,6 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
             with_working_dir,
         )),
     );
-
-    nodes.insert("Add", Box::new(Wrap::<_, (i128, i128)>::new(add)));
 
     nodes
 }

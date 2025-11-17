@@ -8,10 +8,10 @@ Error: compiler::invalid_statement
 
   x export not allowed in function
    ,-[<redacted-path>:2:5]
- 1 | def Double(value) {
+ 1 | def Foo() {
  2 |     export import "..<redacted-path>" as lib;
    :     ^^^|^^
    :        `-- This statement is not allowed here
- 3 |     return Add(value, value);
+ 3 |     return Image("rust:latest");
    `----
   help: Maybe you meant to use `return` instead?

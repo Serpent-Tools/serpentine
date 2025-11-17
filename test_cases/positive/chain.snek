@@ -1,1 +1,1 @@
-export DEFAULT = 10 > Add(5);
+export DEFAULT = Image("alpine:latest") > Exec("echo nice");
