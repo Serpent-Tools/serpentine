@@ -49,6 +49,7 @@ missing_docs = "warn"
 unfulfilled_lint_expectations = "warn"
 unsafe_code = "forbid"
 non_ascii_idents = "deny"
+unused_assignments = "allow" # https://github.com/rust-lang/rust/issues/147648
 
 [lints.clippy]
 pedantic = {level = "warn", priority = 1}

@@ -1,18 +1,12 @@
 //! The resolver parses the input file into an ast, resolves and parses all imported modules,
 //! and processes everything into a simplified IR for further processing and type checking.
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use crate::{
-    engine::data_model::{Data, NodeKindId, NodeStorage, Store, StoreId},
-    snek::{
-        CompileError, ast, ir,
-        span::{Span, Spanned, VirtualFile},
-    },
-};
+use crate::engine::data_model::{Data, NodeKindId, NodeStorage, Store, StoreId};
+use crate::snek::span::{Span, Spanned, VirtualFile};
+use crate::snek::{CompileError, ast, ir};
 
 /// A snek module
 struct Module {

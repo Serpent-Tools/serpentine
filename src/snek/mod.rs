@@ -24,11 +24,10 @@ mod tokenizer;
 
 use std::path::{Path, PathBuf};
 
+pub use compiler::CompileResult;
 use miette::Diagnostic;
 use span::Span;
 use thiserror::Error;
-
-pub use compiler::CompileResult;
 
 /// An error occurred while building the graph.
 #[derive(Debug, Error, Diagnostic)]

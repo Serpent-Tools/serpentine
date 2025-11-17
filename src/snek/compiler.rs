@@ -2,17 +2,10 @@
 
 use std::collections::HashMap;
 
-use crate::engine::data_model::DataType;
-use crate::engine::data_model::Graph;
-use crate::engine::data_model::Node;
-use crate::engine::data_model::NodeInstanceId;
-use crate::engine::data_model::NodeKindId;
-use crate::engine::data_model::NodeStorage;
-use crate::snek::span::Span;
-
-use super::CompileError;
-use super::ir;
 use super::resolver::ResolveResult;
+use super::{CompileError, ir};
+use crate::engine::data_model::{DataType, Graph, Node, NodeInstanceId, NodeKindId, NodeStorage};
+use crate::snek::span::Span;
 
 /// The result of compiling
 pub struct CompileResult {

@@ -1,15 +1,13 @@
 //! Handles the display of progress and container state to the terminal.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
-use ratatui::{
-    crossterm,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
-    symbols,
-    text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Padding, Paragraph},
-};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Gauge, Padding, Paragraph};
+use ratatui::{crossterm, symbols};
 
 /// The messages that can be passed to the tui;
 ///
