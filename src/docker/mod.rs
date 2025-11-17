@@ -95,23 +95,24 @@ impl DockerClient {
         for container in self.cleanup_list.take() {
             log::debug!("Stopping and removing container {}", container.0);
 
-            let future = self
-                .client
-                .remove_container(
-                    &container.0,
-                    Some(
-                        bollard::query_parameters::RemoveContainerOptionsBuilder::new()
-                            .force(true)
-                            .build(),
-                    ),
-                )
-                .await;
+            let future = async move {
+                self.client
+                    .remove_container(
+                        &container.0,
+                        Some(
+                            bollard::query_parameters::RemoveContainerOptionsBuilder::new()
+                                .force(true)
+                                .build(),
+                        ),
+                    )
+                    .await
+            };
             futures.push(future);
         }
 
         futures_util::stream::iter(futures.into_iter())
             .for_each_concurrent(None, |res| async {
-                if let Err(err) = res {
+                if let Err(err) = res.await {
                     log::error!("Error removing container: {err}");
                 }
             })
@@ -145,7 +146,7 @@ impl DockerClient {
             while let Some(status) = stream.try_next().await? {
                 log::debug!("{status:?}");
                 if let Some(status) = status.status {
-                    let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+                    self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
                         identifier: task_id.clone(),
                         title: task_title.clone(),
                         progress: TaskProgress::Log(status),
@@ -153,7 +154,7 @@ impl DockerClient {
                 }
             }
 
-            let _ = self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
+            self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
 
             Ok(ContainerState(Rc::from(image)))
         }
@@ -221,7 +222,7 @@ impl DockerClient {
                 .push(Container(id.clone().into_boxed_str()));
 
             log::trace!("Starting container {id}");
-            let _ = self.tui.send(crate::tui::TuiMessage::Container(id.clone()));
+            self.tui.send(crate::tui::TuiMessage::Container(id.clone()));
             self.client
                 .start_container(
                     &id,
@@ -246,7 +247,7 @@ impl DockerClient {
 
         let container = self.get_state(container).await?;
 
-        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+        self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
             identifier: task_id.clone(),
             title: task_title.clone(),
             progress: TaskProgress::Log(String::new()),
@@ -307,7 +308,7 @@ impl DockerClient {
                         line
                     );
 
-                    let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+                    self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
                         identifier: task_id.clone(),
                         title: task_title.clone(),
                         progress: TaskProgress::Log(line.clone()),
@@ -334,7 +335,7 @@ impl DockerClient {
         }
 
         let image = self.commit_container(container).await?;
-        let _ = self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
+        self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
         Ok(image)
     }
 
@@ -355,7 +356,7 @@ impl DockerClient {
         let task_title = format!("cp -r {src} {dest}");
         let container = self.get_state(container).await?;
 
-        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+        self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
             identifier: task_id.clone(),
             title: task_title.clone(),
             progress: TaskProgress::Log(String::new()),
@@ -364,7 +365,7 @@ impl DockerClient {
         let tar_data = {
             let mut tar_data = Vec::new();
             let paths = ignore::WalkBuilder::new(src)
-                .hidden(true)
+                .hidden(false)
                 .git_ignore(true)
                 .git_exclude(true)
                 .git_global(true)
@@ -382,7 +383,7 @@ impl DockerClient {
                         continue;
                     }
 
-                    let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+                    self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
                         identifier: task_id.clone(),
                         title: task_title.clone(),
                         progress: TaskProgress::Log(format!("Adding {}", relative_path.display())),
@@ -406,7 +407,7 @@ impl DockerClient {
             tar_data
         };
 
-        let _ = self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+        self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
             identifier: task_id.clone(),
             title: task_title.clone(),
             progress: TaskProgress::Log("Uploading to container".into()),
@@ -424,7 +425,7 @@ impl DockerClient {
             )
             .await?;
 
-        let _ = self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
+        self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
 
         self.commit_container(container).await
     }
@@ -492,7 +493,7 @@ mod tests {
     #[fixture]
     async fn docker_client() -> DockerClient {
         let (sender, _receiver) = std::sync::mpsc::channel::<TuiMessage>();
-        DockerClient::new(sender)
+        DockerClient::new(TuiSender(Some(sender)))
             .await
             .expect("Failed to create Docker client")
     }

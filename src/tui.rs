@@ -1,5 +1,7 @@
 //! Handles the display of progress and container state to the terminal.
 
+use std::time::Duration;
+
 use ratatui::{
     crossterm,
     layout::{Constraint, Direction, Layout, Rect},
@@ -11,7 +13,7 @@ use ratatui::{
 
 /// The messages that can be passed to the tui;
 ///
-/// These messages cary no information about which node is being updated,
+/// These messages carry no information about which node is being updated,
 /// as the tui is only concerned with overall progress.
 /// and trusts the executor to send sensible messages.
 #[derive(Debug)]
@@ -36,12 +38,23 @@ pub enum TuiMessage {
     Container(String),
 }
 
-pub type TuiSender = std::sync::mpsc::Sender<TuiMessage>;
+#[derive(Clone)]
+pub struct TuiSender(pub Option<std::sync::mpsc::Sender<TuiMessage>>);
+impl TuiSender {
+    /// Send a message over the channel.
+    ///
+    /// Noop if not in tui mode.
+    pub fn send(&self, msg: TuiMessage) {
+        if let Some(channel) = &self.0 {
+            let _ = channel.send(msg);
+        }
+    }
+}
 
 /// Represents the progress of a task
 #[derive(Debug)]
 pub enum TaskProgress {
-    /// A task with a messurable progress
+    /// A task with a measurable progress
     #[expect(dead_code, reason = "Will be used in the future")]
     Measurable {
         /// How many units have been completed
@@ -56,7 +69,7 @@ pub enum TaskProgress {
 /// Represents a task being executed in the pipeline
 #[derive(Debug)]
 pub struct Task {
-    /// Th identiifer for the task
+    /// The identiifer for the task
     pub identifier: String,
     /// The name to show in the UI
     pub title: String,
@@ -267,9 +280,21 @@ impl UiState {
         let [prefix_area, bar_area, suffix_area] = Layout::new(
             Direction::Horizontal,
             [
-                Constraint::Length(prefix.width().try_into().unwrap_or(u16::MAX)),
+                Constraint::Length(
+                    prefix
+                        .width()
+                        .try_into()
+                        .unwrap_or(u16::MAX)
+                        .min(area.width),
+                ),
                 Constraint::Fill(1),
-                Constraint::Length(suffix.width().try_into().unwrap_or(u16::MAX)),
+                Constraint::Length(
+                    suffix
+                        .width()
+                        .try_into()
+                        .unwrap_or(u16::MAX)
+                        .min(area.width),
+                ),
             ],
         )
         .areas(area);
@@ -384,7 +409,7 @@ pub fn start_tui(events: std::sync::mpsc::Receiver<TuiMessage>, total_nodes: usi
 
     let mut ui_state = UiState::new(total_nodes);
 
-    loop {
+    'draw_loop: loop {
         let draw_result = terminal.draw(|frame| {
             ui_state.draw(frame);
         });
@@ -393,17 +418,15 @@ pub fn start_tui(events: std::sync::mpsc::Receiver<TuiMessage>, total_nodes: usi
             break;
         }
 
-        match events.recv() {
-            Ok(TuiMessage::Shutdown) => {
-                log::info!("Received shutdown message, terminating TUI");
-                break;
-            }
-            Ok(message) => {
-                ui_state.update(message);
-            }
-            Err(err) => {
-                log::error!("Error receiving TUI message: {err}, terminating TUI");
-                break;
+        while let Ok(message) = events.recv_timeout(Duration::from_millis(10)) {
+            match message {
+                TuiMessage::Shutdown => {
+                    log::info!("Received shutdown message, terminating TUI");
+                    break 'draw_loop;
+                }
+                message => {
+                    ui_state.update(message);
+                }
             }
         }
     }

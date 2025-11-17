@@ -66,7 +66,7 @@ impl RuntimeError {
 pub struct RuntimeContext {
     /// The docker client
     docker: docker::DockerClient,
-    /// The update  channel for the TUI
+    /// The update channel for the TUI
     tui: TuiSender,
 }
 
@@ -84,7 +84,7 @@ impl RuntimeContext {
     async fn shutdown(&self) {
         log::debug!("Shutting down runtime context");
 
-        let _ = self.tui.send(TuiMessage::ShuttingDown);
+        self.tui.send(TuiMessage::ShuttingDown);
 
         self.docker.shutdown().await;
     }

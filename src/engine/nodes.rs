@@ -188,7 +188,7 @@ macro_rules! impl_node_impl {
 
                     log::debug!("Executing {}", std::any::type_name::<F>());
                     let context = scheduler.context();
-                    let _ = context.tui.send(crate::tui::TuiMessage::RunningNode);
+                    context.tui.send(crate::tui::TuiMessage::RunningNode);
                     Ok((self.0)(context, $($arg),*).await?.into_data())
                 })
             }
@@ -224,12 +224,11 @@ where
         _inputs: &'scheduler [NodeInstanceId],
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
         Box::pin(async {
-            let res = Ok((self.0)(scheduler.context()).await?.into_data());
-            let _ = scheduler
+            scheduler
                 .context()
                 .tui
                 .send(crate::tui::TuiMessage::RunningNode);
-            res
+            Ok((self.0)(scheduler.context()).await?.into_data())
         })
     }
 }
@@ -271,7 +270,7 @@ impl NodeImpl for Noop {
                 .first()
                 .ok_or_else(|| RuntimeError::internal("Argument index out of bounds"))?;
             let input = scheduler.get_output(*input).await?;
-            let _ = scheduler
+            scheduler
                 .context()
                 .tui
                 .send(crate::tui::TuiMessage::RunningNode);
@@ -298,7 +297,7 @@ impl NodeImpl for LiteralNode {
         scheduler: &'scheduler Scheduler,
         _inputs: &'scheduler [NodeInstanceId],
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-        let _ = scheduler
+        scheduler
             .context()
             .tui
             .send(crate::tui::TuiMessage::RunningNode);

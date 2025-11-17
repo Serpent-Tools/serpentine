@@ -51,7 +51,7 @@ impl Scheduler {
         let res = cell
             .get_or_try_init(async || {
                 let node = self.graph.get(node_id);
-                let _ = self.context.tui.send(crate::tui::TuiMessage::PendingNode);
+                self.context.tui.send(crate::tui::TuiMessage::PendingNode);
 
                 futures_util::future::try_join_all(
                     node.phantom_inputs.iter().map(|id| self.get_output(*id)),
@@ -61,7 +61,7 @@ impl Scheduler {
 
                 log::debug!("Executing node {node_id:?}",);
                 let res = node_impl.execute(self, &node.inputs).await;
-                let _ = self.context.tui.send(crate::tui::TuiMessage::NodeFinished);
+                self.context.tui.send(crate::tui::TuiMessage::NodeFinished);
                 res
             })
             .await;
