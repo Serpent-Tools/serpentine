@@ -241,6 +241,8 @@ struct Resolver {
     file: VirtualFile,
     /// The next symbol id to use
     next_symbol_id: usize,
+    /// Cache of literal values
+    cached_literals: HashMap<Data, ir::Symbol>,
 }
 
 /// The result of a resolving a file
@@ -264,6 +266,7 @@ pub fn resolve(file: &Path) -> Result<ResolveResult, crate::SerpentineError> {
         nodes: NodeStorage::new(),
         file: VirtualFile::new(),
         next_symbol_id: 0,
+        cached_literals: HashMap::new(),
     };
     let (prelude, noop) = resolver.create_prelude();
 
@@ -441,11 +444,8 @@ impl Resolver {
                 return_kw,
                 expression,
             } => {
-                let value = self.resolve_expression(
-                    scope,
-                    statement_context.body_for_statements(top_level_body),
-                    expression,
-                )?;
+                let value =
+                    self.resolve_expression(scope, top_level_body, statement_context, expression)?;
                 statement_context.set_return_value(value, return_kw)?;
             }
             ast::Statement::Label {
@@ -453,11 +453,8 @@ impl Resolver {
                 expression,
                 label,
             } => {
-                let value = self.resolve_expression(
-                    scope,
-                    statement_context.body_for_statements(top_level_body),
-                    expression,
-                )?;
+                let value =
+                    self.resolve_expression(scope, top_level_body, statement_context, expression)?;
                 let item = ScopeItem::Label(value);
 
                 let name = label.0.take();
@@ -527,29 +524,43 @@ impl Resolver {
     fn resolve_expression(
         &mut self,
         scope: &Scope<'_>,
-        ir_body: &mut Vec<ir::Node>,
+        top_level_body: &mut Vec<ir::Node>,
+        statement_context: &mut StatementContext,
         expression: ast::Expression,
     ) -> Result<ir::Symbol, CompileError> {
         match expression {
             ast::Expression::Number(number) => {
-                Ok(self.resolve_literal(ir_body, Data::Int(number.take()), number.span()))
+                Ok(self.resolve_literal(top_level_body, Data::Int(number.take()), number.span()))
             }
             ast::Expression::String(text) => {
                 let span = text.span();
-                Ok(self.resolve_literal(ir_body, Data::String(text.take()), span))
+                Ok(self.resolve_literal(top_level_body, Data::String(text.take()), span))
             }
             ast::Expression::Label(label) => {
                 let error_span = label.span();
                 let item = self.get_item_path(scope, label.take())?.label(error_span)?;
                 Ok(item)
             }
-            ast::Expression::Node(node) => self.resolve_node(scope, ir_body, node, None),
+            ast::Expression::Node(node) => {
+                self.resolve_node(scope, top_level_body, statement_context, node, None)
+            }
             ast::Expression::Chain(chain) => {
                 let chain = chain.take();
-                let mut current = self.resolve_expression(scope, ir_body, *chain.start)?;
+                let mut current = self.resolve_expression(
+                    scope,
+                    top_level_body,
+                    statement_context,
+                    *chain.start,
+                )?;
 
                 for node in chain.nodes {
-                    current = self.resolve_node(scope, ir_body, node, Some(current))?;
+                    current = self.resolve_node(
+                        scope,
+                        top_level_body,
+                        statement_context,
+                        node,
+                        Some(current),
+                    )?;
                 }
 
                 Ok(current)
@@ -561,7 +572,8 @@ impl Resolver {
     fn resolve_node(
         &mut self,
         scope: &Scope<'_>,
-        ir_body: &mut Vec<ir::Node>,
+        top_level_body: &mut Vec<ir::Node>,
+        statement_context: &mut StatementContext,
         node: Spanned<ast::Node>,
         first_argument: Option<ir::Symbol>,
     ) -> Result<ir::Symbol, CompileError> {
@@ -586,9 +598,9 @@ impl Resolver {
             })
             .collect::<Result<Box<_>, _>>()?;
 
-        let inline_arguments = arguments
-            .into_iter()
-            .map(|expression| self.resolve_expression(scope, ir_body, expression));
+        let inline_arguments = arguments.into_iter().map(|expression| {
+            self.resolve_expression(scope, top_level_body, statement_context, expression)
+        });
         let resolved_arguments = if let Some(first_argument) = first_argument {
             std::iter::once(Ok(first_argument))
                 .chain(inline_arguments)
@@ -598,13 +610,15 @@ impl Resolver {
         }?;
 
         let symbol = self.new_symbol();
-        ir_body.push(ir::Node {
-            name: symbol,
-            function,
-            arguments: resolved_arguments,
-            phantom_inputs,
-            span: node_span,
-        });
+        statement_context
+            .body_for_statements(top_level_body)
+            .push(ir::Node {
+                name: symbol,
+                function,
+                arguments: resolved_arguments,
+                phantom_inputs,
+                span: node_span,
+            });
 
         Ok(symbol)
     }
@@ -612,22 +626,28 @@ impl Resolver {
     /// Create a "builtin" node to represent a literal
     fn resolve_literal(
         &mut self,
-        ir_body: &mut Vec<ir::Node>,
+        top_level_body: &mut Vec<ir::Node>,
         literal: Data,
         source_span: Span,
     ) -> ir::Symbol {
-        let node_impl = crate::engine::nodes::LiteralNode(literal);
+        if let Some(cached) = self.cached_literals.get(&literal) {
+            return *cached;
+        }
+
+        let node_impl = crate::engine::nodes::LiteralNode(literal.clone());
         let node_id = self.nodes.push(Box::new(node_impl));
         let function_id = self.functions.push(ir::Function::BuiltinFunction(node_id));
         let node_name = self.new_symbol();
 
-        ir_body.push(ir::Node {
+        top_level_body.push(ir::Node {
             name: node_name,
             function: function_id,
             arguments: Box::new([]),
             phantom_inputs: Box::new([]),
             span: source_span,
         });
+
+        self.cached_literals.insert(literal, node_name);
 
         node_name
     }
