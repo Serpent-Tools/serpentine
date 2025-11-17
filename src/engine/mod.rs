@@ -66,7 +66,7 @@ impl RuntimeError {
 pub struct RuntimeContext {
     /// The docker client
     docker: docker::DockerClient,
-    /// The update  channel for the TUI
+    /// The update channel for the TUI
     tui: TuiSender,
 }
 

@@ -11,7 +11,7 @@ repository = "https://github.com/Serpent-Tools/serpentine"
 
 [dependencies]
 bollard = { version = "0.19.3", default-features = false, features = ["http", "pipe"] }
-clap = { version = "4.5.47", features = ["derive"] }
+clap = { version = "4.5.47", features = ["derive", "env"] }
 directories = { version = "6.0.0", default-features = false }
 fern = { version = "0.7.1", default-features = false }
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }

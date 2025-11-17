@@ -224,12 +224,11 @@ where
         _inputs: &'scheduler [NodeInstanceId],
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
         Box::pin(async {
-            let res = Ok((self.0)(scheduler.context()).await?.into_data());
             let _ = scheduler
                 .context()
                 .tui
                 .send(crate::tui::TuiMessage::RunningNode);
-            res
+            Ok((self.0)(scheduler.context()).await?.into_data())
         })
     }
 }

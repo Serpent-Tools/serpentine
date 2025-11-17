@@ -95,23 +95,24 @@ impl DockerClient {
         for container in self.cleanup_list.take() {
             log::debug!("Stopping and removing container {}", container.0);
 
-            let future = self
-                .client
-                .remove_container(
-                    &container.0,
-                    Some(
-                        bollard::query_parameters::RemoveContainerOptionsBuilder::new()
-                            .force(true)
-                            .build(),
-                    ),
-                )
-                .await;
+            let future = async move {
+                self.client
+                    .remove_container(
+                        &container.0,
+                        Some(
+                            bollard::query_parameters::RemoveContainerOptionsBuilder::new()
+                                .force(true)
+                                .build(),
+                        ),
+                    )
+                    .await
+            };
             futures.push(future);
         }
 
         futures_util::stream::iter(futures.into_iter())
             .for_each_concurrent(None, |res| async {
-                if let Err(err) = res {
+                if let Err(err) = res.await {
                     log::error!("Error removing container: {err}");
                 }
             })
@@ -364,7 +365,7 @@ impl DockerClient {
         let tar_data = {
             let mut tar_data = Vec::new();
             let paths = ignore::WalkBuilder::new(src)
-                .hidden(true)
+                .hidden(false)
                 .git_ignore(true)
                 .git_exclude(true)
                 .git_global(true)
