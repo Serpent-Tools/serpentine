@@ -11,6 +11,12 @@ clippy = base
     > WithSource()
     > Exec("cargo clippy -- -Dwarnings");
 
+fmt = base
+    > Exec("rustup default nightly")
+    > Exec("rustup component add rustfmt")
+    > WithSource()
+    > Exec("cargo fmt --check");
+
 spelling = binstall
     > Exec("cargo binstall typos-cli")
     > WithSource()
@@ -21,4 +27,4 @@ tests = binstall
     > WithSource()
     > Exec("cargo nextest run");
 
-export DEFAULT = !(tests, spelling, clippy) Noop(0);
+export DEFAULT = !(tests, spelling, clippy, fmt) Noop(0);

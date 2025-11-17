@@ -128,7 +128,7 @@ fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
                 .level(log::LevelFilter::Debug)
                 .chain(fern::Output::call(move |record| {
                     let message = record.args().to_string();
-                    tui.send(tui::TuiMessage::Log(message));
+                    tui.send(tui::TuiMessage::Log(message.into_boxed_str()));
                 }))
         }))
         .apply()

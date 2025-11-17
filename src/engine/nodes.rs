@@ -71,25 +71,33 @@ impl IntoData for i128 {
     }
 }
 
-impl UnwrappedType for Box<str> {
+impl UnwrappedType for Rc<str> {
     fn data_type() -> DataType {
         DataType::String
     }
 
     fn from_data(data: &Data) -> Result<Self, RuntimeError> {
         if let Data::String(value) = data {
-            Ok(value.clone())
+            Ok(Rc::clone(value))
         } else {
             Err(RuntimeError::internal("mismatched types at runtime"))
         }
     }
 }
 
-impl IntoData for Box<str> {
+impl IntoData for Rc<str> {
     const RESULT: DataType = DataType::String;
 
     fn into_data(self) -> Data {
         Data::String(self)
+    }
+}
+
+impl IntoData for String {
+    const RESULT: DataType = DataType::String;
+
+    fn into_data(self) -> Data {
+        Data::String(Rc::from(self))
     }
 }
 
@@ -312,7 +320,7 @@ pub const NOOP_NAME: &str = "Noop";
 /// Create a docker image
 async fn image(
     context: Rc<RuntimeContext>,
-    image: Box<str>,
+    image: Rc<str>,
 ) -> Result<docker::ContainerState, RuntimeError> {
     context.docker.pull_image(&image).await
 }
@@ -321,7 +329,7 @@ async fn image(
 async fn exec_sh(
     context: Rc<RuntimeContext>,
     container: docker::ContainerState,
-    command: Box<str>,
+    command: Rc<str>,
 ) -> Result<docker::ContainerState, RuntimeError> {
     context
         .docker
@@ -333,7 +341,7 @@ async fn exec_sh(
 async fn exec(
     context: Rc<RuntimeContext>,
     container: docker::ContainerState,
-    command: Box<str>,
+    command: Rc<str>,
 ) -> Result<docker::ContainerState, RuntimeError> {
     let command = shell_words::split(&command)?;
 
@@ -350,8 +358,8 @@ async fn exec(
 async fn with_dir(
     context: Rc<RuntimeContext>,
     container: docker::ContainerState,
-    host_path: Box<str>,
-    container_path: Box<str>,
+    host_path: Rc<str>,
+    container_path: Rc<str>,
 ) -> Result<docker::ContainerState, RuntimeError> {
     context
         .docker
@@ -363,7 +371,7 @@ async fn with_dir(
 async fn with_working_dir(
     context: Rc<RuntimeContext>,
     container: docker::ContainerState,
-    dir: Box<str>,
+    dir: Rc<str>,
 ) -> Result<docker::ContainerState, RuntimeError> {
     context.docker.set_working_dir(&container, &dir).await
 }
@@ -374,22 +382,24 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
 
     nodes.insert(NOOP_NAME, Box::new(Noop));
 
-    nodes.insert("Image", Box::new(Wrap::<_, Box<str>>::new(image)));
+    nodes.insert("Image", Box::new(Wrap::<_, Rc<str>>::new(image)));
     nodes.insert(
         "ExecSh",
-        Box::new(Wrap::<_, (docker::ContainerState, Box<str>)>::new(exec_sh)),
+        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(exec_sh)),
     );
     nodes.insert(
         "Exec",
-        Box::new(Wrap::<_, (docker::ContainerState, Box<str>)>::new(exec)),
+        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(exec)),
     );
     nodes.insert(
         "Copy",
-        Box::new(Wrap::<_, (docker::ContainerState, Box<str>, Box<str>)>::new(with_dir)),
+        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>, Rc<str>)>::new(
+            with_dir,
+        )),
     );
     nodes.insert(
         "WorkingDir",
-        Box::new(Wrap::<_, (docker::ContainerState, Box<str>)>::new(
+        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
             with_working_dir,
         )),
     );
