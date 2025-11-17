@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::AsyncBufReadExt;
 
 use crate::engine::RuntimeError;
+use crate::engine::data_model::{FILE_SYSTEM_FILE_TAR_NAME, FileSystem};
 use crate::tui::{Task, TaskProgress, TuiSender};
 
 /// A container created by the Docker client
@@ -373,97 +375,259 @@ impl DockerClient {
         Ok(image)
     }
 
-    /// Copy the given directory from the host into the container
-    pub async fn copy_dir_into_container(
+    /// Execute a command in a container directly without progress logging etc.
+    /// For internal use
+    async fn exec_internal(&self, container: &Container, cmd: &[&str]) -> Result<(), RuntimeError> {
+        let exec = self
+            .client
+            .create_exec(
+                &container.0,
+                bollard::exec::CreateExecOptions {
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    cmd: Some(cmd.iter().map(ToString::to_string).collect()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let res = self.client.start_exec(&exec.id, None).await?;
+        let mut all_output = Vec::new();
+        match res {
+            bollard::exec::StartExecResults::Detached => {
+                return Err(RuntimeError::internal(
+                    "Exec detached, this should not happen",
+                ));
+            }
+            bollard::exec::StartExecResults::Attached { output, .. } => {
+                let output = tokio_util::io::StreamReader::new(
+                    output
+                        .map_err(|err| {
+                            if let bollard::errors::Error::IOError { err } = err {
+                                err
+                            } else {
+                                std::io::Error::other(err)
+                            }
+                        })
+                        .try_filter_map(|msg| match msg {
+                            bollard::container::LogOutput::StdErr { message }
+                            | bollard::container::LogOutput::StdOut { message }
+                            | bollard::container::LogOutput::Console { message } => {
+                                futures_util::future::ok(Some(message))
+                            }
+                            bollard::container::LogOutput::StdIn { .. } => {
+                                futures_util::future::ok(None)
+                            }
+                        }),
+                );
+
+                let mut output = tokio::io::BufReader::new(output).lines();
+
+                while let Some(line) = output.next_line().await? {
+                    let line = strip_ansi_escapes::strip_str(line);
+
+                    log::trace!(
+                        "{} ({}): {}",
+                        cmd.first().unwrap_or(&"<unknown>"),
+                        container.0.get(0..12).unwrap_or("<invalid>"),
+                        line
+                    );
+
+                    all_output.push(line);
+                }
+            }
+        }
+
+        let exec_info = self.client.inspect_exec(&exec.id).await?;
+        if let Some(code) = exec_info.exit_code {
+            if code != 0 {
+                return Err(RuntimeError::CommandExecution {
+                    code,
+                    command: cmd.iter().map(ToString::to_string).collect(),
+                    output: all_output.join("\n"),
+                });
+            }
+        } else {
+            return Err(RuntimeError::internal(
+                "Exec exit code is None, this should not happen",
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Copy the given file/directory into the container
+    pub async fn copy_fs_into_container(
         &self,
         container: &ContainerState,
-        src: &str,
+        src: FileSystem,
         dest: &str,
     ) -> Result<ContainerState, RuntimeError> {
-        log::debug!(
-            "Copying directory {} into container {} at {}",
-            src,
-            container.0,
-            dest
-        );
+        const FILE_TEMP_DIR: &str = "/tmp/serpentine/";
+
+        log::debug!("Copying into container {} at {}", container.0, dest);
         let task_id: Arc<str> = Arc::from(format!("docker-copy-{}-to-{dest}", container.0));
-        let task_title: Arc<str> = Arc::from(format!("cp -r {src} {dest}"));
+        let task_title: Arc<str> = Arc::from(format!("cp -r <input> {dest}"));
         let container = self.get_state(container).await?;
 
         self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
             identifier: Arc::clone(&task_id),
             title: Arc::clone(&task_title),
-            progress: TaskProgress::Log(Box::from("")),
+            progress: TaskProgress::Log(Box::from("Uploading to container")),
         }));
 
-        let tar_data = {
-            let mut tar_data = Vec::new();
-            let paths = ignore::WalkBuilder::new(src)
-                .hidden(false)
-                .git_ignore(true)
-                .git_exclude(true)
-                .git_global(true)
-                .build()
-                .filter_map(std::result::Result::ok);
-
-            {
-                let mut tar_builder = tar::Builder::new(&mut tar_data);
-
-                for entry in paths {
-                    let path = entry.path();
-                    let relative_path = path.strip_prefix(src).unwrap_or(path);
-
-                    if relative_path.to_string_lossy().is_empty() {
-                        continue;
-                    }
-
-                    self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-                        identifier: Arc::clone(&task_id),
-                        title: Arc::clone(&task_title),
-                        progress: TaskProgress::Log(
-                            format!("Adding {}", relative_path.display()).into_boxed_str(),
+        match src {
+            FileSystem::File(tar_data) => {
+                self.client
+                    .upload_to_container(
+                        &container.0,
+                        Some(
+                            bollard::query_parameters::UploadToContainerOptionsBuilder::new()
+                                .path(FILE_TEMP_DIR)
+                                .build(),
                         ),
-                    }));
+                        bollard::body_full(tar_data.as_ref().to_vec().into()),
+                    )
+                    .await?;
 
-                    if path.is_file() {
-                        tar_builder.append_path_with_name(path, relative_path)?;
-                    } else if path.is_dir() {
-                        let mut header = tar::Header::new_gnu();
-                        header.set_path(relative_path)?;
-                        header.set_entry_type(tar::EntryType::Directory);
-                        header.set_mode(0o755);
-                        header.set_size(0);
-                        header.set_cksum();
-                        tar_builder.append(&header, std::io::empty())?;
-                    }
-                }
-
-                tar_builder.finish()?;
+                self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+                    identifier: Arc::clone(&task_id),
+                    title: Arc::clone(&task_title),
+                    progress: TaskProgress::Log(Box::from("Copying to destination")),
+                }));
+                self.exec_internal(
+                    &container,
+                    &[
+                        "cp",
+                        &format!("{FILE_TEMP_DIR}/{FILE_SYSTEM_FILE_TAR_NAME}"),
+                        dest,
+                    ],
+                )
+                .await?;
+                self.exec_internal(
+                    &container,
+                    &[
+                        "rm",
+                        &format!("{FILE_TEMP_DIR}/{FILE_SYSTEM_FILE_TAR_NAME}"),
+                    ],
+                )
+                .await?;
             }
-            tar_data
-        };
-
-        self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
-            identifier: Arc::clone(&task_id),
-            title: Arc::clone(&task_title),
-            progress: TaskProgress::Log("Uploading to container".into()),
-        }));
-
-        self.client
-            .upload_to_container(
-                &container.0,
-                Some(
-                    bollard::query_parameters::UploadToContainerOptionsBuilder::new()
-                        .path(dest)
-                        .build(),
-                ),
-                bollard::body_full(tar_data.into()),
-            )
-            .await?;
+            FileSystem::Folder(tar_data) => {
+                log::debug!("Is folder, uploading directly");
+                self.client
+                    .upload_to_container(
+                        &container.0,
+                        Some(
+                            bollard::query_parameters::UploadToContainerOptionsBuilder::new()
+                                .path(dest)
+                                .build(),
+                        ),
+                        bollard::body_full(tar_data.as_ref().to_vec().into()),
+                    )
+                    .await?;
+            }
+        }
 
         self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
 
         self.commit_container(container).await
+    }
+
+    /// Export the given path from the container into a `FileSystem`
+    pub async fn export_path(
+        &self,
+        image: &ContainerState,
+        docker_path: &str,
+    ) -> Result<FileSystem, RuntimeError> {
+        log::debug!("Exporting {docker_path} from {}", image.0);
+
+        let container = self.get_state(image).await?;
+
+        // WARN: This might be including a lot of metadata like timestamps that we want to
+        // strip out to make the caching better.
+        let docker_tar = self
+            .client
+            .download_from_container(
+                &container.0,
+                Some(
+                    bollard::query_parameters::DownloadFromContainerOptionsBuilder::new()
+                        .path(docker_path)
+                        .build(),
+                ),
+            )
+            .map(|item| {
+                Ok::<_, bollard::errors::Error>(futures_util::stream::iter(
+                    item?
+                        .into_iter()
+                        .map(Result::<_, bollard::errors::Error>::Ok),
+                ))
+            })
+            .try_flatten()
+            .try_collect::<Vec<u8>>()
+            .await?;
+
+        self.containers
+            .borrow_mut()
+            .insert(image.clone(), container);
+
+        // We need to construct a new archive to match what `FileSystem` expects.
+        // Docker returns a tar containing the path as a entry.
+        // I.e `/the_folder` or `/the_file.txt`
+        // But `FileSystem` expects single files to be named after `FILE_SYSTEM_FILE_TAR_NAME`,
+        // And folders to be directly at the root.
+        //
+        // In other words:
+        // | Path           | Docker                                 | `FileSystem`                   |
+        // | -------------- | -------------------------------------- | ------------------------------ |
+        // | `/my_folder`   | `/my_folder/a.txt`, `/my_folder/b.txt` | `/a.txt`, `/b.txt`             |
+        // | `/my_file.txt` | `/my_file.txt`                         | `/{FILE_SYSTEM_FILE_TAR_NAME}` |
+        let mut archive = tar::Archive::new(docker_tar.as_slice());
+        let mut entries = archive.entries()?;
+
+        let first_entry = entries
+            .next()
+            .ok_or_else(|| RuntimeError::internal("Docker returned a empty archive."))??;
+        let is_file = first_entry.header().entry_type() == tar::EntryType::Regular;
+
+        let tar_data = Vec::with_capacity(docker_tar.len());
+        let mut builder = tar::Builder::new(tar_data);
+
+        if is_file {
+            builder.append_data(
+                &mut first_entry.header().clone(),
+                FILE_SYSTEM_FILE_TAR_NAME,
+                first_entry,
+            )?;
+
+            Ok(FileSystem::File(builder.into_inner()?.into()))
+        } else {
+            let docker_path = PathBuf::from(docker_path);
+            let dot_path = std::ffi::OsString::from(".");
+            let suffix: &std::ffi::OsStr = docker_path
+                .components()
+                .next_back()
+                .map_or(&dot_path, |comp| comp.as_os_str());
+
+            // We skip the first entry because its the `docker_path` folder itself
+            // Which we want to remove.
+            for entry in entries {
+                let entry = entry?;
+                let entry_path = entry.path()?;
+
+                #[expect(
+                    clippy::map_unwrap_or,
+                    reason = "For borrowing reasons we have to do this in two calls"
+                )]
+                let entry_path = entry_path
+                    .strip_prefix(suffix)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|_| entry_path.into_owned());
+
+                builder.append_data(&mut entry.header().clone(), entry_path, entry)?;
+            }
+            Ok(FileSystem::Folder(builder.into_inner()?.into()))
+        }
     }
 
     /// Set the working directory of the container
@@ -646,25 +810,102 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
-    async fn copy_dir_into_container(#[future] docker_client: DockerClient) {
+    async fn copy_file_between_containers(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
-        let image = docker_client
+        let base = docker_client
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let image = docker_client
-            .copy_dir_into_container(&image, "./test_cases", "/data")
+
+        let from = docker_client
+            .exec(&base, &["sh", "-c", "echo hello > /tmp/hello.txt"])
             .await
-            .expect("Failed to copy dir into container");
+            .expect("Exec failed");
+
+        let file = docker_client
+            .export_path(&from, "/tmp/hello.txt")
+            .await
+            .expect("Export failed");
+
+        let to = docker_client
+            .copy_fs_into_container(&base, file, "nice.txt")
+            .await
+            .expect("Failed to copy into container");
 
         docker_client
-            .exec(&image, &["ls", "/data"])
+            .exec(&to, &["sh", "-c", "grep -q hello nice.txt || exit 1"])
             .await
             .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn copy_folder_between_containers(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+        let base = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+
+        let from = docker_client
+            .exec(&base, &["mkdir", "-p", "/tmp/foo/bar/baz"])
+            .await
+            .expect("Exec failed");
+
+        let from = docker_client
+            .exec(
+                &from,
+                &["sh", "-c", "echo hello > /tmp/foo/bar/baz/nice.txt"],
+            )
+            .await
+            .expect("Exec failed");
+
+        let file = docker_client
+            .export_path(&from, "/tmp/foo")
+            .await
+            .expect("Export failed");
+
+        let to = docker_client
+            .copy_fs_into_container(&base, file, "hello")
+            .await
+            .expect("Failed to copy into container");
+
         docker_client
-            .exec(&image, &["ls", "/data/positive"])
+            .exec(&to, &["ls", "hello/bar/baz"])
             .await
             .expect("Exec failed");
+
+        docker_client
+            .exec(
+                &to,
+                &["sh", "-c", "grep -q hello hello/bar/baz/nice.txt || exit 1"],
+            )
+            .await
+            .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn export_path_not_found(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+        let base = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+
+        let result = docker_client.export_path(&base, "i_am_not_real.txt").await;
+        assert!(
+            result.is_err(),
+            "Expected reading non-existent path to fail"
+        );
 
         docker_client.shutdown().await;
     }
