@@ -1,31 +1,32 @@
-stable = Image("rust:latest") > WorkingDir("/app");
-nightly = Image("rustlang/rust:nightly") > WorkingDir("/app");
+rust = Image("rustlang/rust:nightly");
+src = rust 
+    > WorkingDir("/app") 
+    > With(FromHost("."), ".")
+    // Prime the target cache
+    > Exec("cargo build --all-features --tests");
 
-def WithSource(container) {
-    return container > Copy(".", ".") ;
-}
+binstall = rust > Exec("cargo install cargo-binstall");
+typos = binstall > Exec("cargo binstall typos-cli --install-path out") > Export("out/typos");
+nextest = binstall > Exec("cargo binstall cargo-nextest --install-path out") > Export("out/cargo-nextest");
 
-binstall = stable > Exec("cargo install cargo-binstall");
-
-clippy = nightly
+clippy = src
     > Exec("rustup component add clippy")
-    > WithSource()
     > Exec("cargo clippy -- -Dwarnings");
 
-fmt = nightly
-    > Exec("rustup default nightly")
+fmt = src
     > Exec("rustup component add rustfmt")
-    > WithSource()
     > Exec("cargo fmt --check");
 
-spelling = binstall
-    > Exec("cargo binstall typos-cli")
-    > WithSource()
+spelling = src
+    > With(typos, "/bin/typos")
     > Exec("typos");
 
-tests = binstall
-    > Exec("cargo binstall cargo-nextest")
-    > WithSource()
+tests = src
+    > With(nextest, "/bin/cargo-nextest")
     > Exec("cargo nextest run");
 
-export DEFAULT = !(tests, spelling, clippy, fmt) Noop(0);
+checks = !(tests, spelling, clippy, fmt) Noop(0);
+
+build = src > !checks Exec("cargo build --release");
+
+export DEFAULT = build;

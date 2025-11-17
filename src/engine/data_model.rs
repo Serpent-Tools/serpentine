@@ -5,6 +5,27 @@ use std::rc::Rc;
 use crate::docker;
 use crate::engine::nodes::NodeImpl;
 
+/// The name of the file in the tar archives for `FileSystem` representing a single file.
+pub const FILE_SYSTEM_FILE_TAR_NAME: &str = "file";
+
+/// A exported filesystem
+#[derive(Hash, PartialEq, Eq, Clone)]
+pub enum FileSystem {
+    /// A tar entry containing a file name `FILE_SYSTEM_FILE_TAR_NAME` at `/{FILE_SYSTEM_FILE_TAR_NAME}`
+    File(Rc<[u8]>),
+    /// A tar containing the contents of a folder directly in the root
+    Folder(Rc<[u8]>),
+}
+
+impl std::fmt::Debug for FileSystem {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(_) => fmt.debug_tuple("File").finish_non_exhaustive(),
+            Self::Folder(_) => fmt.debug_tuple("Folder").finish_non_exhaustive(),
+        }
+    }
+}
+
 /// Holds the various forms of data that the node engine uses
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Data {
@@ -14,6 +35,8 @@ pub enum Data {
     String(Rc<str>),
     /// A docker container (well in reality an image)
     Container(docker::ContainerState),
+    /// A file/folder
+    FileSystem(FileSystem),
 }
 
 impl Data {
@@ -24,6 +47,7 @@ impl Data {
             Data::Int(_) => DataType::Int,
             Data::String(_) => DataType::String,
             Data::Container(_) => DataType::Container,
+            Data::FileSystem(_) => DataType::FileSystem,
         }
     }
 }
@@ -37,6 +61,8 @@ pub enum DataType {
     String,
     /// A docker container
     Container,
+    /// A file or folder
+    FileSystem,
 }
 
 impl DataType {
@@ -47,6 +73,7 @@ impl DataType {
             Self::Int => "integer",
             Self::String => "string",
             Self::Container => "container",
+            Self::FileSystem => "file/folder",
         }
     }
 }

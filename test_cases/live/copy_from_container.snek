@@ -1,0 +1,17 @@
+base = Image("alpine:latest")
+    > Exec("touch hello.txt")
+    > Exec("mkdir foo")
+    > Exec("touch foo/hello.txt");
+
+hello = base > Export("hello.txt");
+foo = base > Export("foo");
+
+check_hello = Image("alpine:latest")
+    > With(hello, "nice.txt")
+    > Exec("cat nice.txt");
+
+check_foo = Image("alpine:latest")
+    > With(foo, "bar")
+    > Exec("cat bar/hello.txt");
+
+export DEFAULT = !(check_hello, check_foo) Noop(0);

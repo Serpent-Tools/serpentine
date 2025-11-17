@@ -1,0 +1,6 @@
+export DEFAULT = Image("alpine:latest")
+    > With(FromHost("justfile"), "justfile")
+    > Exec("cat justfile")
+    > With(FromHost("src"), "src")
+    > Exec("ls src")
+    > Exec("cat src/main.rs");

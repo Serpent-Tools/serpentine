@@ -8,4 +8,4 @@ snapshot:
     cargo insta test --review --unreferenced delete
 
 test:
-    RUST_LOG=serpentine=trace cargo nextest run --no-fail-fast
+    RUST_LOG=serpentine=trace cargo nextest run --no-fail-fast --jobs 1

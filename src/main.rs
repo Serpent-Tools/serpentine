@@ -175,3 +175,19 @@ fn main() -> miette::Result<()> {
         result.map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "Tests")]
+mod tests {
+    use std::path::PathBuf;
+
+    use rstest::rstest;
+
+    #[rstest]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    fn live_examples(#[files("test_cases/live/**/*.snek")] path: PathBuf) {
+        let graph = crate::snek::compile_graph(&path).expect("Failed to compile pipeline");
+        crate::engine::run(graph, crate::tui::TuiSender(None)).expect("Failed to execute");
+    }
+}
