@@ -1,10 +1,8 @@
 //! This represents a snek program where all symbols have been resolved
 //! and modules have been merged into a unified symbol table.
 
-use crate::{
-    engine::data_model::{NodeKindId, Store, StoreId},
-    snek::span::Span,
-};
+use crate::engine::data_model::{NodeKindId, Store, StoreId};
+use crate::snek::span::Span;
 
 /// A snek pipeline
 pub struct Pipeline {

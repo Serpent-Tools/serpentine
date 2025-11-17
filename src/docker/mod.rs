@@ -1,15 +1,17 @@
 //! Wrapper around bollard Docker API client
 
-use std::{cell::RefCell, collections::HashMap, process::Command, rc::Rc, sync::Arc};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::process::Command;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use bollard::API_DEFAULT_VERSION;
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::AsyncBufReadExt;
 
-use crate::{
-    engine::RuntimeError,
-    tui::{Task, TaskProgress, TuiSender},
-};
+use crate::engine::RuntimeError;
+use crate::tui::{Task, TaskProgress, TuiSender};
 
 /// A container created by the Docker client
 struct Container(Box<str>);
@@ -517,10 +519,10 @@ impl Drop for DockerClient {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Tests")]
 mod tests {
-    use crate::tui::TuiMessage;
+    use rstest::{fixture, rstest};
 
     use super::*;
-    use rstest::{fixture, rstest};
+    use crate::tui::TuiMessage;
 
     const TEST_IMAGE: &str = "alpine:latest";
 

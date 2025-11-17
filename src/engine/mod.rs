@@ -7,11 +7,9 @@ mod scheduler;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::{
-    docker,
-    snek::CompileResult,
-    tui::{TuiMessage, TuiSender},
-};
+use crate::docker;
+use crate::snek::CompileResult;
+use crate::tui::{TuiMessage, TuiSender};
 
 /// An error encountered while running the source code
 #[derive(Debug, Error, Diagnostic)]

@@ -1,17 +1,18 @@
-base = Image("rust:latest") > WorkingDir("/app");
+stable = Image("rust:latest") > WorkingDir("/app");
+nightly = Image("rustlang/rust:nightly") > WorkingDir("/app");
 
 def WithSource(container) {
     return container > Copy(".", ".") ;
 }
 
-binstall = base > Exec("cargo install cargo-binstall");
+binstall = stable > Exec("cargo install cargo-binstall");
 
-clippy = base
+clippy = nightly
     > Exec("rustup component add clippy")
     > WithSource()
     > Exec("cargo clippy -- -Dwarnings");
 
-fmt = base
+fmt = nightly
     > Exec("rustup default nightly")
     > Exec("rustup component add rustfmt")
     > WithSource()
