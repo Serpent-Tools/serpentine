@@ -7,6 +7,6 @@ isnt it neat.
 */
 
 // This is a comment
-export DEFAULT = 10
+export DEFAULT = Image("alpine:latest")
     // they can be in the middle of expression
-    > Add(20);    
+    > Exec("hello world");    

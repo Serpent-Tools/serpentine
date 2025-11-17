@@ -8,7 +8,7 @@ Error: compiler::invalid_statement
 
   x return not allowed in module
    ,-[<redacted-path>:1:1]
- 1 | return Add(10, 10);
+ 1 | return Image("rust:latest");
    : ^^^|^^
    :    `-- This statement is not allowed here
    `----

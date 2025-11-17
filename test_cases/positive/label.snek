@@ -1,3 +1,3 @@
-three = 10;
-five = three > Add(2);
-export DEFAULT = five > Add(three);
+base = Image("alpine:latest");
+echo = base > Exec("echo hello");
+export DEFAULT = echo > Exec("sleep 5");

@@ -1,1 +1,1 @@
-export DEFAULT = Add(Add, 10);
+export DEFAULT = Image(Image);

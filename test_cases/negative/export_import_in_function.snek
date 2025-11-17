@@ -1,6 +1,6 @@
-def Double(value) {
+def Foo() {
     export import "../lib.snek" as lib;
-    return Add(value, value);
+    return Image("rust:latest");
 }
 
-export DEFAULT = Double(10);
+export DEFAULT = Foo();

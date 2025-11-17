@@ -6,10 +6,10 @@ expression: err
 
 Error: compiler::type_mismatch
 
-  x Expected `integer` got `string`
-   ,-[<redacted-path>:1:22]
- 1 | export DEFAULT = 1 > Add("Hello");
-   :                      ^^^^^^|^^^^^^|
-   :                            |      `-- Has type `string`
-   :                            `-- In call to this node
+  x Expected `container` got `integer`
+   ,-[<redacted-path>:1:18]
+ 1 | export DEFAULT = 1 > Exec("echo hello");
+   :                  |   ^^^^^^^^^|^^^^^^^^^
+   :                  |            `-- In call to this node
+   :                  `-- Has type `integer`
    `----

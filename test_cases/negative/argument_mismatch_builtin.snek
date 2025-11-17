@@ -1,1 +1,1 @@
-export DEFAULT = Add(2);
+export DEFAULT = Exec("echo hello");

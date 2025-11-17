@@ -1,10 +1,10 @@
-def Double(value) {
-    return Add(value, value);
+def Foo(value) {
+    return value;
 }
 
-def Quadruple(value) {
-    return Double(Double(value));
+def Bar(value) {
+    return Foo(Foo(value));
 }
 
 ten = 10;
-export DEFAULT = !ten Quadruple(ten);
+export DEFAULT = !ten Bar(ten);

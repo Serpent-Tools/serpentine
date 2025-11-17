@@ -1,6 +1,6 @@
-def Double(value) {
-    return Add(value, value);
-    return Add(value, value);
+def Foo(value) {
+    return value > Exec("hello");
+    return value > Exec("hello");
 }
 
-export DEFAULT = Double(10);
+export DEFAULT = Foo(Image("alpine:latest"));
