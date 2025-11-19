@@ -37,10 +37,10 @@ pub trait NodeImpl {
 }
 
 /// Trait implemented on the raw types in `Data`
-/// Used for automatic node implementations to get the correct `DataType` automatically.
+/// Used for unwrapping inputs in the automatic function implementation for `NodeImpl`
 trait UnwrappedType: Sized {
     /// The `DataType` this would respond to
-    fn data_type() -> DataType;
+    const KIND: DataType;
 
     /// Unwrap the `Data` into this type, returning a internal error if mismatched
     /// (compiler should have ensured types match up)
@@ -49,17 +49,16 @@ trait UnwrappedType: Sized {
 
 /// Convert a value back into its data variant
 trait IntoData {
-    /// The resulting data kind
-    const RESULT: DataType;
+    /// The kind of this data
+    const KIND: DataType;
 
     /// Convert this into `Data`
     fn into_data(self) -> Data;
 }
 
 impl UnwrappedType for i128 {
-    fn data_type() -> DataType {
-        DataType::Int
-    }
+    const KIND: DataType = DataType::Int;
+
     fn from_data(data: &Data) -> Option<Self> {
         if let Data::Int(value) = data {
             Some(*value)
@@ -70,7 +69,7 @@ impl UnwrappedType for i128 {
 }
 
 impl IntoData for i128 {
-    const RESULT: DataType = DataType::Int;
+    const KIND: DataType = DataType::Int;
 
     fn into_data(self) -> Data {
         Data::Int(self)
@@ -78,9 +77,7 @@ impl IntoData for i128 {
 }
 
 impl UnwrappedType for Rc<str> {
-    fn data_type() -> DataType {
-        DataType::String
-    }
+    const KIND: DataType = DataType::String;
 
     fn from_data(data: &Data) -> Option<Self> {
         if let Data::String(value) = data {
@@ -92,7 +89,7 @@ impl UnwrappedType for Rc<str> {
 }
 
 impl IntoData for Rc<str> {
-    const RESULT: DataType = DataType::String;
+    const KIND: DataType = DataType::String;
 
     fn into_data(self) -> Data {
         Data::String(self)
@@ -100,7 +97,7 @@ impl IntoData for Rc<str> {
 }
 
 impl IntoData for String {
-    const RESULT: DataType = DataType::String;
+    const KIND: DataType = DataType::String;
 
     fn into_data(self) -> Data {
         Data::String(Rc::from(self))
@@ -108,9 +105,7 @@ impl IntoData for String {
 }
 
 impl UnwrappedType for docker::ContainerState {
-    fn data_type() -> DataType {
-        DataType::Container
-    }
+    const KIND: DataType = DataType::Container;
     fn from_data(data: &Data) -> Option<Self> {
         if let Data::Container(value) = data {
             Some(value.clone())
@@ -121,16 +116,14 @@ impl UnwrappedType for docker::ContainerState {
 }
 
 impl IntoData for docker::ContainerState {
-    const RESULT: DataType = DataType::Container;
+    const KIND: DataType = DataType::Container;
     fn into_data(self) -> Data {
         Data::Container(self)
     }
 }
 
 impl UnwrappedType for FileSystem {
-    fn data_type() -> DataType {
-        DataType::FileSystem
-    }
+    const KIND: DataType = DataType::FileSystem;
 
     fn from_data(data: &Data) -> Option<Self> {
         if let Data::FileSystem(value) = data {
@@ -142,7 +135,7 @@ impl UnwrappedType for FileSystem {
 }
 
 impl IntoData for FileSystem {
-    const RESULT: DataType = DataType::FileSystem;
+    const KIND: DataType = DataType::FileSystem;
     fn into_data(self) -> Data {
         Data::FileSystem(self)
     }
@@ -186,9 +179,9 @@ macro_rules! impl_node_impl {
                 let mut arguments = arguments.iter();
                 $(
                     if let Some(argument) = arguments.next() {
-                        if **argument != $arg::data_type() {
+                        if **argument != $arg::KIND {
                             return Err(CompileError::TypeMismatch {
-                                expected: $arg::data_type().describe().to_owned(),
+                                expected: $arg::KIND.describe().to_owned(),
                                 got: argument.describe().to_owned(),
                                 location: argument.span(),
                                 node: node_span,
@@ -197,7 +190,7 @@ macro_rules! impl_node_impl {
                     }
                 )*
 
-                Ok(R::RESULT)
+                Ok(R::KIND)
             }
 
             fn execute<'scheduler>(
@@ -250,7 +243,7 @@ where
                 location: node_span,
             });
         }
-        Ok(R::RESULT)
+        Ok(R::KIND)
     }
 
     fn execute<'scheduler>(

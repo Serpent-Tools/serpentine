@@ -41,6 +41,8 @@ impl Parser {
     }
 
     /// Parse a statement from the current token stream.
+    ///
+    /// This expects the next token to be the start of a statement.
     fn parse_statement(&mut self) -> Result<ast::Statement, CompileError> {
         let token = self.next()?;
         let token_span = token.span();
@@ -81,6 +83,9 @@ impl Parser {
     }
 
     /// Parse a label statement
+    ///
+    /// This expects the next token to be the `=` of the label statement.
+    /// As such it takes in the identifier as a argument.
     fn parse_label(
         &mut self,
         export: Option<Span>,
@@ -99,6 +104,10 @@ impl Parser {
     }
 
     /// Parse a function definition
+    ///
+    /// This expects the next token to be the function name.
+    /// I.e it expects `export` and `def` to have already been consumed,
+    /// and if export was present its span should be passed as a argument.
     fn parse_function_def(&mut self, export: Option<Span>) -> Result<ast::Statement, CompileError> {
         let name = self.expect_ident()?;
 
@@ -118,6 +127,10 @@ impl Parser {
     }
 
     /// Parse an import statement
+    ///
+    /// This expects the next token to be the import path.
+    /// I.e it expects `export` and `import` to have already been consumed,
+    /// and if export was present its span should be passed as a argument.
     fn parse_import(&mut self, export: Option<Span>) -> Result<ast::Statement, CompileError> {
         let path = self.expect_str()?;
         self.expect(Token::As)?;
@@ -127,6 +140,8 @@ impl Parser {
     }
 
     /// Parse a expression
+    ///
+    /// This expects the next token to be the start of the expression.
     fn parse_expression(&mut self) -> Result<ast::Expression, CompileError> {
         let value = self.parse_atom()?;
 
@@ -145,6 +160,8 @@ impl Parser {
     }
 
     /// Parse a simple expression (literal, var, node)
+    ///
+    /// This expects the next token to be the start of the expression.
     fn parse_atom(&mut self) -> Result<ast::Expression, CompileError> {
         Ok(match self.peek()? {
             Token::Numeric(value) => {
@@ -169,6 +186,9 @@ impl Parser {
     }
 
     /// Parse a chain of nodes, `expression > Node > Node`
+    ///
+    /// This expects the next token to be the first `>`.
+    /// I.e it the start expression is already consumed, and passed as a argument.
     fn parse_chain(&mut self, start: ast::Expression) -> Result<ast::Chain, CompileError> {
         let mut nodes = Vec::new();
         while self.next_if(Token::Pipe)?.is_some() {
@@ -183,8 +203,10 @@ impl Parser {
 
     /// Parse a node
     ///
+    /// This expects the next token to be the start of the node call (phantom inputs or function
+    /// name)
     /// If `name` is passed its assumed a previous parser attempted to grab a ident, but then
-    /// realized it was a node.
+    /// realized it was a node, and hence expects the next token to be the `(` of the call part.
     fn parse_node(
         &mut self,
         pre_parsed_name: Option<ast::ItemPath>,
@@ -271,6 +293,8 @@ impl Parser {
     }
 
     /// Parse a item path
+    ///
+    /// This expects the first token to be the first identifier of the path.
     fn parse_item_path(&mut self) -> Result<ast::ItemPath, CompileError> {
         let base = self.expect_ident()?;
         let mut rest = Vec::new();
@@ -326,7 +350,11 @@ impl Parser {
         }
     }
 
-    /// Return the span of the token if its the indicated token, otherwise return None
+    /// If the next token is `expected_token` consume it and return its span,
+    /// If not returns None
+    ///
+    /// This is effectively a version of `expect` that returns a `None` instead and ensures the
+    /// parser state is allowed to continue without failure.
     fn next_if(&mut self, expected_token: Token) -> Result<Option<Span>, CompileError> {
         if self.peek()? == expected_token {
             Ok(Some(self.next()?.span()))
@@ -335,7 +363,7 @@ impl Parser {
         }
     }
 
-    /// Return the next value in the token stream
+    /// Return the next value in the token stream (without consuming it)
     fn peek(&mut self) -> Result<Token, CompileError> {
         match self.tokens.peek() {
             Some(token) => Ok((**token).clone()),

@@ -45,11 +45,11 @@ struct Compiler {
     /// The current symbol mapping
     symbol_mapping: HashMap<ir::Symbol, SymbolValue>,
     /// Cache of nodes to their instance ids,
-    /// This lets us detect functionaly identical nodes and deduplicate them.
+    /// This lets us detect functionally identical nodes and deduplicate them.
     node_cache: HashMap<Node, NodeInstanceId>,
 }
 
-/// Entry point to compiling
+/// Compile the given resolved ir to a graph
 pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::SerpentineError> {
     let ResolveResult {
         ir:

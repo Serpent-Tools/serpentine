@@ -153,7 +153,6 @@ impl<'src> Tokenizer<'src> {
             '/' if self.peek()? == Some('*') => {
                 // consume until closing */
                 self.advance()?;
-                self.advance()?;
                 loop {
                     let next_char = self.advance()?;
                     match next_char {
@@ -231,7 +230,7 @@ impl<'src> Tokenizer<'src> {
         }
     }
 
-    /// Return the next character in the string and output `self.byte`
+    /// Return the next character in the string and update `self.byte`
     fn advance(&mut self) -> Result<Option<char>, CompileError> {
         let result = self.peek()?;
         if let Some(next_character) = result {
@@ -249,6 +248,7 @@ impl<'src> Tokenizer<'src> {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use proptest::property_test;
     use rstest::rstest;
@@ -257,7 +257,6 @@ mod tests {
     use crate::snek::span::FileId;
 
     #[property_test]
-    #[test_log::test]
     fn doesnt_panic(code: String) {
         let _ = Tokenizer::tokenize(FileId(0), &code);
     }
@@ -265,10 +264,15 @@ mod tests {
     #[rstest]
     #[case::simple_number("123")]
     #[case::string(r#""hello""#)]
-    #[test_log::test]
     fn tokenize(#[case] code: String) {
         let res = Tokenizer::tokenize(FileId(0), &code);
         assert!(res.is_ok(), "Failed to tokenize {code:?}: {res:?}");
+    }
+
+    #[test]
+    fn empty_comment() {
+        let res = Tokenizer::tokenize(FileId(0), "/**/123").expect("Failed to tokenize");
+        assert_eq!(res.len(), 2, "Expected 2 tokens, number, EOF");
     }
 
     #[rstest]
@@ -276,7 +280,6 @@ mod tests {
     #[case::unterminated_string(r#""hello"#)]
     #[case::single_colon(":")]
     #[case::double_colon_with_whitespace(": :")]
-    #[test_log::test]
     fn edge_case_fails(#[case] code: String) {
         let res = Tokenizer::tokenize(FileId(0), &code);
         assert!(res.is_err(), "Should fail to tokenize {code:?}: {res:?}");

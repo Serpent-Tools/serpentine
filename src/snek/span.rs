@@ -25,6 +25,8 @@ impl VirtualFile {
     }
 
     /// Add a new file to this virtual file, returning its `FileId`.
+    ///
+    /// This will clone the `code` into the virtual file
     pub fn push(&mut self, path: PathBuf, code: &str) -> FileId {
         let mut current_end = 0;
         for (name, file) in &self.files {

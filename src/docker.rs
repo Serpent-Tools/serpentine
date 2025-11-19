@@ -26,7 +26,7 @@ pub struct ContainerState(Rc<str>);
 pub struct DockerClient {
     /// The underlying bollard Docker client
     client: bollard::Docker,
-    /// Cache of containers at the current image state
+    /// Cache of containers at the specified image state
     containers: RefCell<HashMap<ContainerState, Container>>,
     /// List of all containers created by this client, never removed from to ensure cleanup
     cleanup_list: RefCell<Vec<Container>>,
