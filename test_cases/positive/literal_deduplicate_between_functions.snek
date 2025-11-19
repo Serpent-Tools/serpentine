@@ -1,6 +1,6 @@
 // REGRESSION TEST:
-// In a earlier version of the compiler literals were emitted into the function body, *and cached globally*.
-// Which under specific call patterns meant a literal wasnt defined when the compiler tried to find it.
+// In an earlier version of the compiler literals were emitted into the function body, *and cached globally*.
+// Which under specific call patterns meant a literal wasn't defined when the compiler tried to find it.
 
 def Foo() {
     return Image("rust:latest");

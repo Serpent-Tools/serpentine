@@ -186,7 +186,7 @@ impl StatementContext<'_> {
 
     /// Export an item
     ///
-    /// `error_span` is used to construct a error if we are in a function,
+    /// `error_span` is used to construct an error if we are in a function,
     /// and should point to the `export` keyword.
     fn export(
         &mut self,
@@ -209,7 +209,7 @@ impl StatementContext<'_> {
 
     /// Register a return value for a function
     ///
-    /// `error_span` is used to construct a error if we are in the top level,
+    /// `error_span` is used to construct an error if we are in the top level,
     /// and should point to the `return` keyword.
     fn set_return_value(
         &mut self,
