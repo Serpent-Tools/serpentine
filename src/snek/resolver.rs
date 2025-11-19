@@ -43,7 +43,10 @@ impl ScopeItem {
     }
 
     /// Return a module or return a `CompileError`
-    fn module(self, error_span: Span) -> Result<ModuleId, CompileError> {
+    ///
+    /// `error_span` is used in the any potential errors,
+    /// and should point to the source of the item path that got this value.
+    fn try_into_module(self, error_span: Span) -> Result<ModuleId, CompileError> {
         if let Self::Module(module) = self {
             Ok(module)
         } else {
@@ -56,7 +59,10 @@ impl ScopeItem {
     }
 
     /// Return a label or return a `CompileError`
-    fn label(self, error_span: Span) -> Result<ir::Symbol, CompileError> {
+    ///
+    /// `error_span` is used in the any potential errors,
+    /// and should point to the source of the item path that got this value.
+    fn try_into_label(self, error_span: Span) -> Result<ir::Symbol, CompileError> {
         if let Self::Label(symbol) = self {
             Ok(symbol)
         } else {
@@ -69,7 +75,10 @@ impl ScopeItem {
     }
 
     /// Return a function or return a `CompileError`
-    fn function(self, error_span: Span) -> Result<ir::FunctionId, CompileError> {
+    ///
+    /// `error_span` is used in the any potential errors,
+    /// and should point to the source of the item path that got this value.
+    fn try_into_function(self, error_span: Span) -> Result<ir::FunctionId, CompileError> {
         if let Self::Function(function) = self {
             Ok(function)
         } else {
@@ -116,6 +125,9 @@ impl Scope<'_> {
     }
 
     /// Lookup an item in the scope
+    ///
+    /// `error_span` is used for constructing the `ItemNotFound` error,
+    /// and should point to the identifier that was the source of `name`
     fn lookup(&self, name: &str, error_span: Span) -> Result<&ScopeItem, CompileError> {
         if let Some(item) = self.items.get(name) {
             Ok(item)
@@ -173,6 +185,9 @@ impl StatementContext<'_> {
     }
 
     /// Export an item
+    ///
+    /// `error_span` is used to construct a error if we are in a function,
+    /// and should point to the `export` keyword.
     fn export(
         &mut self,
         name: Box<str>,
@@ -193,6 +208,9 @@ impl StatementContext<'_> {
     }
 
     /// Register a return value for a function
+    ///
+    /// `error_span` is used to construct a error if we are in the top level,
+    /// and should point to the `return` keyword.
     fn set_return_value(
         &mut self,
         value: ir::Symbol,
@@ -284,7 +302,7 @@ pub fn resolve(file: &Path) -> Result<ResolveResult, crate::SerpentineError> {
     let start_symbol = match module
         .items
         .lookup(entry_point, cli_span)
-        .and_then(|item| item.label(cli_span))
+        .and_then(|item| item.try_into_label(cli_span))
     {
         Ok(symbol) => symbol,
         Err(err) => {
@@ -401,7 +419,7 @@ impl Resolver {
         Ok(Module { items: exports })
     }
 
-    /// Compile a statement
+    /// Resolve a statement
     fn resolve_statement(
         &mut self,
         resolve_context: &ImmutableContext,
@@ -532,7 +550,9 @@ impl Resolver {
             }
             ast::Expression::Label(label) => {
                 let error_span = label.span();
-                let item = self.get_item_path(scope, label.take())?.label(error_span)?;
+                let item = self
+                    .get_item_path(scope, label.take())?
+                    .try_into_label(error_span)?;
                 Ok(item)
             }
             ast::Expression::Node(node) => {
@@ -581,13 +601,15 @@ impl Resolver {
         let name_error_span = name.span();
         let function = self
             .get_item_path(scope, name.take())?
-            .function(name_error_span)?;
+            .try_into_function(name_error_span)?;
 
         let phantom_inputs = phantom_inputs
             .into_iter()
             .map(|input| {
                 let error_span = input.span();
-                let symbol = self.get_item_path(scope, input.take())?.label(error_span)?;
+                let symbol = self
+                    .get_item_path(scope, input.take())?
+                    .try_into_label(error_span)?;
                 Ok(symbol)
             })
             .collect::<Result<Box<_>, _>>()?;
@@ -656,7 +678,7 @@ impl Resolver {
         let mut item = scope.lookup(&path.base.0, path.base.0.span())?;
 
         for segment in path.rest {
-            let module_id = item.module(previous_span)?;
+            let module_id = item.try_into_module(previous_span)?;
             let module = self.modules.get(module_id);
             previous_span = segment.0.span();
             item = module.items.lookup(&segment.0, segment.0.span())?;
