@@ -190,7 +190,7 @@ impl DockerClient {
 
     /// Get a container in the given state (image), creating it if necessary.
     /// This removes the container from the cache of containers at that given image,
-    /// with the assumption that its about to be modified.
+    /// with the assumption that it's about to be modified.
     async fn get_state(&self, state: &ContainerState) -> Result<Container, RuntimeError> {
         if let Some(container) = { self.containers.borrow_mut().remove(state) } {
             log::trace!("Reusing existing container {}", container.0);
@@ -567,12 +567,13 @@ impl DockerClient {
             .try_collect::<Vec<u8>>()
             .await?;
 
+        // Put the container back in the cache, as we didn't modify it
         self.containers
             .borrow_mut()
             .insert(image.clone(), container);
 
         // We need to construct a new archive to match what `FileSystem` expects.
-        // Docker returns a tar containing the path as a entry.
+        // Docker returns a tar containing the path as an entry.
         // I.e `/the_folder` or `/the_file.txt`
         // But `FileSystem` expects single files to be named after `FILE_SYSTEM_FILE_TAR_NAME`,
         // And folders to be directly at the root.
@@ -587,7 +588,7 @@ impl DockerClient {
 
         let first_entry = entries
             .next()
-            .ok_or_else(|| RuntimeError::internal("Docker returned a empty archive."))??;
+            .ok_or_else(|| RuntimeError::internal("Docker returned an empty archive."))??;
         let is_file = first_entry.header().entry_type() == tar::EntryType::Regular;
 
         let tar_data = Vec::with_capacity(docker_tar.len());
@@ -659,7 +660,7 @@ impl DockerClient {
             .await?
             .id;
 
-        // Put the container back in the cache, as we didnt modify it
+        // Put the container back in the cache, as we didn't modify it
         self.containers
             .borrow_mut()
             .insert(image.clone(), container);
