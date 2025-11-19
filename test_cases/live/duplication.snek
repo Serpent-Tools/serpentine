@@ -1,0 +1,4 @@
+foo = Image("alpine:latest") > Exec("echo hello") > Exec("echo world");
+bar = Image("alpine:latest") > Exec("echo hello") > Exec("echo world");
+
+export DEFAULT = !(foo, bar) Noop(0);

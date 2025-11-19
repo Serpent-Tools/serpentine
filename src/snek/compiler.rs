@@ -44,6 +44,9 @@ struct Compiler {
     graph: Graph,
     /// The current symbol mapping
     symbol_mapping: HashMap<ir::Symbol, SymbolValue>,
+    /// Cache of nodes to their instance ids,
+    /// This lets us detect functionaly identical nodes and deduplicate them.
+    node_cache: HashMap<Node, NodeInstanceId>,
 }
 
 /// Entry point to compiling
@@ -68,6 +71,7 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::Se
     let mut compiler = Compiler {
         graph: Graph::new(),
         symbol_mapping: HashMap::new(),
+        node_cache: HashMap::new(),
     };
 
     for node in top_level.0 {
@@ -162,11 +166,19 @@ impl Compiler {
         let return_type = node_impl.return_type(&argument_types, span)?;
 
         let argument_ids = arguments.into_iter().map(|arg| arg.node).collect();
-        let instance_id = self.graph.push(Node {
+        let node = Node {
             kind: node_impl_id,
             inputs: argument_ids,
             phantom_inputs: phantom_inputs.into_vec().into(),
-        });
+        };
+
+        let instance_id = if let Some(cached_value) = self.node_cache.get(&node) {
+            *cached_value
+        } else {
+            let instance_id = self.graph.push(node.clone());
+            self.node_cache.insert(node, instance_id);
+            instance_id
+        };
 
         Ok((instance_id, return_type))
     }
