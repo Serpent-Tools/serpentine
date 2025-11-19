@@ -20,6 +20,11 @@ use crate::snek::span::{Span, Spanned};
 
 /// A node implementation
 pub trait NodeImpl {
+    /// Should this node be cached?
+    /// In general quick to execute pure nodes should not be cached.
+    /// As well as nodes that read external resources should not be cached.
+    fn should_be_cached(&self) -> bool;
+
     /// Given the input types return the return type of the node.
     /// Error on invalid types
     fn return_type(
@@ -142,12 +147,24 @@ impl IntoData for FileSystem {
 }
 
 /// Wrap a function with phantomdata to allow trait impls to work.
-struct Wrap<F, P>(F, PhantomData<P>);
+struct Wrap<F, P> {
+    /// The function thats wrapped
+    function: F,
+    /// Should this node be cached
+    should_be_cached: bool,
+    /// The return type needs to exsist as a generic on this type for rust trait resolution to be
+    /// happy.
+    phantom: PhantomData<P>,
+}
 
 impl<F, P> Wrap<F, P> {
     /// Create a new wrapped
-    fn new(func: F) -> Self {
-        Self(func, PhantomData)
+    fn new(func: F, should_be_cached: bool) -> Self {
+        Self {
+            function: func,
+            should_be_cached,
+            phantom: PhantomData,
+        }
     }
 }
 
@@ -162,6 +179,10 @@ macro_rules! impl_node_impl {
             R: IntoData,
             $($arg: UnwrappedType),*
         {
+            fn should_be_cached(&self) -> bool {
+                self.should_be_cached
+            }
+
             fn return_type(&self, arguments: &[Spanned<DataType>], node_span: Span) -> Result<DataType, CompileError> {
                 let count = $({
                     #[cfg(false)]
@@ -217,7 +238,7 @@ macro_rules! impl_node_impl {
                     log::debug!("Executing {}", std::any::type_name::<F>());
                     let context = scheduler.context();
                     context.tui.send(crate::tui::TuiMessage::RunningNode);
-                    Ok((self.0)(context, $($arg),*).await?.into_data())
+                    Ok((self.function)(context, $($arg),*).await?.into_data())
                 })
             }
         }
@@ -230,6 +251,10 @@ where
     Fut: Future<Output = Result<R, RuntimeError>>,
     R: IntoData,
 {
+    fn should_be_cached(&self) -> bool {
+        self.should_be_cached
+    }
+
     fn return_type(
         &self,
         arguments: &[Spanned<DataType>],
@@ -256,7 +281,7 @@ where
                 .context()
                 .tui
                 .send(crate::tui::TuiMessage::RunningNode);
-            Ok((self.0)(scheduler.context()).await?.into_data())
+            Ok((self.function)(scheduler.context()).await?.into_data())
         })
     }
 }
@@ -270,6 +295,10 @@ impl_node_impl!(A, B, C, D);
 struct Noop;
 
 impl NodeImpl for Noop {
+    fn should_be_cached(&self) -> bool {
+        false
+    }
+
     fn return_type(
         &self,
         arguments: &[Spanned<DataType>],
@@ -311,6 +340,10 @@ impl NodeImpl for Noop {
 pub struct LiteralNode(pub Data);
 
 impl NodeImpl for LiteralNode {
+    fn should_be_cached(&self) -> bool {
+        false
+    }
+
     fn return_type(
         &self,
         // Should only be constructed by `Compiler`, hence we don't check this.
@@ -484,28 +517,57 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
 
     nodes.insert(NOOP_NAME, Box::new(Noop));
 
-    nodes.insert("Image", Box::new(Wrap::<_, Rc<str>>::new(image)));
+    // cache reasoning: Image is at best a simple check with the docker client, which is super
+    // quick, and more importantly the output is consistent.
+    nodes.insert("Image", Box::new(Wrap::<_, Rc<str>>::new(image, false)));
+    // cache reasoning: Executiong command is the bulk of what serpentine does and takes the most
+    // time, this is the primary target for caching
     nodes.insert(
         "ExecSh",
-        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(exec_sh)),
+        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            exec_sh, true,
+        )),
     );
+    // cache reasoning: see ExecSh
     nodes.insert(
         "Exec",
-        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(exec)),
+        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            exec, true,
+        )),
     );
-    nodes.insert("FromHost", Box::new(Wrap::<_, Rc<str>>::new(from_host)));
+    // cache reasoning: We need to check with the host system on each run to know wether the output
+    // of this is still valid, if the files didnt change on disk this will still spend some time
+    // reading them, but will result in the same result aftwards and further nodes will have cache
+    // hits.
+    nodes.insert(
+        "FromHost",
+        Box::new(Wrap::<_, Rc<str>>::new(from_host, false)),
+    );
+    // cache reasoning: Copying the files from a container is usually a quick job, and keeping such
+    // files in the cache is just duplicating data is also stored in docker.
+    // The one downside here is that we have to spin up a container to export the data, but that
+    // should be quick enough.
     nodes.insert(
         "Export",
-        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(export)),
+        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            export, false,
+        )),
     );
+    // cache reasoning: While this operation is generaly quick it is a primary candidate for
+    // caching, not because the operation is nice to skip, but because it isnt truely pure as
+    // docker will likely give a new image id even when run with the same inputs.
+    // Hence we use the CaC to skip this node if the input files and the input image match the
+    // cache.
     nodes.insert(
         "With",
-        Box::new(Wrap::<_, (docker::ContainerState, FileSystem, Rc<str>)>::new(with)),
+        Box::new(Wrap::<_, (docker::ContainerState, FileSystem, Rc<str>)>::new(with, true)),
     );
+    // cache reasoning: See With
     nodes.insert(
         "WorkingDir",
         Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
             with_working_dir,
+            true,
         )),
     );
 
