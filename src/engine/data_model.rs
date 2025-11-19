@@ -1,5 +1,6 @@
 //! contains the definitions of the various core node types and structures.
 
+use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::docker;
@@ -119,6 +120,18 @@ impl<T> std::fmt::Debug for StoreId<T> {
     }
 }
 
+impl<T> PartialEq for StoreId<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
+impl<T> Eq for StoreId<T> {}
+impl<T> Hash for StoreId<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+    }
+}
+
 impl<T> Store<T> {
     /// Create a new empty store
     #[must_use]
@@ -164,6 +177,7 @@ pub type NodeKindId = StoreId<Box<dyn NodeImpl>>;
 pub type NodeStorage = Store<Box<dyn NodeImpl>>;
 
 /// A node in the graph
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Node {
     /// The kind of this node
     pub kind: NodeKindId,
