@@ -1,0 +1,15 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::type_mismatch
+
+  x Expected `string` got `integer`
+   ,-[<redacted-path>:1:18]
+ 1 | export DEFAULT = Join(1, 2);
+   :                  ^^^^^|^^^^^|
+   :                       |     `-- Has type `integer`
+   :                       `-- In call to this node
+   `----

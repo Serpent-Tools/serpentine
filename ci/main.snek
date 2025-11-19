@@ -1,33 +1,52 @@
-rust = Image("rustlang/rust:nightly");
-src = rust 
-    > WorkingDir("/app") 
-    > With(FromHost("."), ".")
-    // Prime the target cache
-    > Exec("cargo build --all-features --tests");
+rust = Image("rustlang/rust:nightly") > WorkingDir("/app");
 
-binstall = rust > Exec("cargo install cargo-binstall");
-typos = binstall > Exec("cargo binstall typos-cli --install-path out") > Export("out/typos");
-nextest = binstall > Exec("cargo binstall cargo-nextest --install-path out") > Export("out/cargo-nextest");
+def Binstall(container, crate, bin_name) {
+    binary = rust 
+        > Exec("cargo install cargo-binstall")
+        > Exec(Join("cargo binstall ", crate, " --install-path out"))
+        > Export(Join("out/", bin_name));
 
-clippy = src
+    return container > With(binary, Join("/bin/", bin_name));
+}
+
+source_code = FromHost(".");
+
+def Cooked(build_kind) {
+    recipe = rust
+        > Binstall("cargo-chef", "cargo-chef")
+        > With(source_code, ".")
+        > Exec("cargo chef prepare --recipe-path recipe.json")
+        > Export("recipe.json");
+
+    return rust 
+        > Binstall("cargo-chef", "cargo-chef")
+        > With(recipe, "recipe.json")
+        > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
+        > Exec("rm recipe.json")
+        > With(source_code, ".");
+}
+
+clippy = Cooked("")
     > Exec("rustup component add clippy")
     > Exec("cargo clippy -- -Dwarnings");
 
-fmt = src
+fmt = rust
     > Exec("rustup component add rustfmt")
+    > With(source_code, ".")
     > Exec("cargo fmt --check");
 
-spelling = src
-    > With(typos, "/bin/typos")
+spelling = rust // We dont need the full rust image for this, but its easier than pulling in a extra image.
+    > Binstall("typos-cli", "typos")
+    > With(source_code, ".")
     > Exec("typos");
 
-tests = src
-    > With(nextest, "/bin/cargo-nextest")
+tests = Cooked("--tests")
+    > Binstall("cargo-nextest", "cargo-nextest")
     > Exec("cargo nextest run");
 
 checks = !(tests, spelling, clippy, fmt) Noop(0);
 
-build = src > !checks Exec("cargo build --release");
+build = Cooked("--release") > !checks Exec("cargo build --release");
 
 export DEFAULT = build;
 
