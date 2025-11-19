@@ -5,6 +5,8 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
 
+use futures_util::{StreamExt, TryStreamExt};
+
 use crate::docker;
 use crate::engine::data_model::{
     Data,
@@ -152,7 +154,7 @@ struct Wrap<F, P> {
     function: F,
     /// Should this node be cached
     should_be_cached: bool,
-    /// The return type needs to exsist as a generic on this type for rust trait resolution to be
+    /// The return type needs to exist as a generic on this type for rust trait resolution to be
     /// happy.
     phantom: PhantomData<P>,
 }
@@ -511,6 +513,68 @@ async fn with_working_dir(
     context.docker.set_working_dir(&container, &dir).await
 }
 
+/// A node for joining strings
+struct Join;
+
+impl NodeImpl for Join {
+    fn should_be_cached(&self) -> bool {
+        false
+    }
+
+    fn return_type(
+        &self,
+        arguments: &[Spanned<DataType>],
+        node_span: Span,
+    ) -> Result<DataType, CompileError> {
+        for argument in arguments {
+            if argument.0 != DataType::String {
+                return Err(CompileError::TypeMismatch {
+                    expected: DataType::String.describe().into(),
+                    got: argument.0.describe().into(),
+                    location: argument.span(),
+                    node: node_span,
+                });
+            }
+        }
+
+        Ok(DataType::String)
+    }
+    fn execute<'scheduler>(
+        &'scheduler self,
+        scheduler: &'scheduler Scheduler,
+        inputs: &'scheduler [NodeInstanceId],
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+        Box::pin(async move {
+            let inputs = futures_util::stream::iter(inputs)
+                .map(async |input| {
+                    let res = scheduler.get_output(*input).await?;
+                    if let Data::String(res) = res {
+                        Ok(res)
+                    } else {
+                        Err(RuntimeError::internal("Type mismatch at runtime"))
+                    }
+                })
+                .buffered(inputs.len())
+                .try_collect::<Vec<_>>()
+                .await?;
+
+            scheduler
+                .context()
+                .tui
+                .send(crate::tui::TuiMessage::RunningNode);
+            Ok(Data::String(
+                inputs
+                    .into_iter()
+                    .fold(String::new(), |mut collector, input| {
+                        collector.push_str(input);
+                        collector
+                    })
+                    .into(),
+            ))
+        })
+    }
+}
+
 /// Return the list of prelude nodes
 pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     let mut nodes: HashMap<&'static str, Box<dyn NodeImpl>> = HashMap::new();
@@ -520,7 +584,7 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
     // cache reasoning: Image is at best a simple check with the docker client, which is super
     // quick, and more importantly the output is consistent.
     nodes.insert("Image", Box::new(Wrap::<_, Rc<str>>::new(image, false)));
-    // cache reasoning: Executiong command is the bulk of what serpentine does and takes the most
+    // cache reasoning: Executing command is the bulk of what serpentine does and takes the most
     // time, this is the primary target for caching
     nodes.insert(
         "ExecSh",
@@ -535,7 +599,7 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
             exec, true,
         )),
     );
-    // cache reasoning: We need to check with the host system on each run to know wether the output
+    // cache reasoning: We need to check with the host system on each run to know whether the output
     // of this is still valid, if the files didnt change on disk this will still spend some time
     // reading them, but will result in the same result aftwards and further nodes will have cache
     // hits.
@@ -553,8 +617,8 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
             export, false,
         )),
     );
-    // cache reasoning: While this operation is generaly quick it is a primary candidate for
-    // caching, not because the operation is nice to skip, but because it isnt truely pure as
+    // cache reasoning: While this operation is generally quick it is a primary candidate for
+    // caching, not because the operation is nice to skip, but because it isnt truly pure as
     // docker will likely give a new image id even when run with the same inputs.
     // Hence we use the CaC to skip this node if the input files and the input image match the
     // cache.
@@ -570,6 +634,7 @@ pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
             true,
         )),
     );
+    nodes.insert("Join", Box::new(Join));
 
     nodes
 }
