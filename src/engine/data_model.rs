@@ -116,7 +116,12 @@ impl<T> Clone for StoreId<T> {
 impl<T> Copy for StoreId<T> {}
 impl<T> std::fmt::Debug for StoreId<T> {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(fmt, "StoreId({})", self.index)
+        write!(
+            fmt,
+            "StoreId<{}>({})",
+            std::any::type_name::<T>(),
+            self.index
+        )
     }
 }
 

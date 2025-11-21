@@ -35,11 +35,41 @@ pub trait NodeImpl {
         node_span: Span,
     ) -> Result<DataType, CompileError>;
 
-    /// Execute this node, should use the scheduler to grab the value of its inputs.
-    fn execute<'scheduler>(
+    /// Execute this node
+    ///
+    /// The default implementation calls `get_output` in parallel on the scheduler,
+    /// And talks with the cache to cache the result of `execute`.
+    ///
+    /// If you want to have lazy inputs (i.e the node might not always need all its inputs),
+    /// You should overwrite this and leave `execute` empty.
+    fn execute_raw<'scheduler>(
         &'scheduler self,
         scheduler: &'scheduler Scheduler,
         inputs: &'scheduler [NodeInstanceId],
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+        Box::pin(async move {
+            let inputs = futures_util::stream::iter(inputs)
+                .map(async |input| scheduler.get_output(*input).await)
+                // buffered hangs indefinitely if size is 0
+                .buffered(inputs.len().max(1))
+                .try_collect::<Vec<_>>()
+                .await?;
+
+            scheduler
+                .context()
+                .tui
+                .send(crate::tui::TuiMessage::RunningNode);
+            log::debug!("Executing {}", std::any::type_name::<Self>());
+            self.execute(scheduler.context(), inputs).await
+        })
+    }
+
+    /// Execute the node with pre-given inputs.
+    /// This is called by `execute_raw` and can be set to empty if overwriting it.
+    fn execute<'scheduler>(
+        &'scheduler self,
+        context: &'scheduler Rc<RuntimeContext>,
+        inputs: Vec<&'scheduler Data>,
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>>;
 }
 
@@ -177,9 +207,9 @@ macro_rules! impl_node_impl {
         #[allow(warnings, reason="auto generated")]
         impl< F, R, Fut, $($arg),*> NodeImpl for Wrap<F, ($($arg),*)>
         where F: Fn(Rc<RuntimeContext>, $($arg),*) -> Fut,
-            Fut: Future<Output=Result<R, RuntimeError>>,
-            R: IntoData,
-            $($arg: UnwrappedType),*
+              Fut: Future<Output=Result<R, RuntimeError>>,
+              R: IntoData,
+              $($arg: UnwrappedType),*
         {
             fn should_be_cached(&self) -> bool {
                 self.should_be_cached
@@ -218,29 +248,26 @@ macro_rules! impl_node_impl {
 
             fn execute<'scheduler>(
                 &'scheduler self,
-                scheduler: &'scheduler Scheduler,
-                inputs: &'scheduler [NodeInstanceId],
+                context: &'scheduler Rc<RuntimeContext>,
+                inputs: Vec<&'scheduler Data>,
             ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-
-                Box::pin(async {
-                    let mut inputs = inputs.iter();
-                    let ($($arg),*,) = tokio::try_join!(
+                Box::pin(async move {
+                    let mut inputs = inputs.into_iter();
+                    let ($($arg),*,) = (
                         $({
                             #[cfg(false)]
                             {$arg;}
 
-                            scheduler.get_output(*inputs.next().ok_or_else(|| RuntimeError::internal("Missing arguments at runtime"))?)
-                        }),*
-                    )?;
+                            inputs.next().ok_or_else(|| RuntimeError::internal("Missing arguments at runtime"))?
+                        }),*,
+                    );
 
                     $(
                         let $arg = $arg::from_data($arg).ok_or_else(|| RuntimeError::internal("Type mismatch at runtime"))?;
                     )*
 
                     log::debug!("Executing {}", std::any::type_name::<F>());
-                    let context = scheduler.context();
-                    context.tui.send(crate::tui::TuiMessage::RunningNode);
-                    Ok((self.function)(context, $($arg),*).await?.into_data())
+                    Ok((self.function)(Rc::clone(context), $($arg),*).await?.into_data())
                 })
             }
         }
@@ -275,16 +302,10 @@ where
 
     fn execute<'scheduler>(
         &'scheduler self,
-        scheduler: &'scheduler Scheduler,
-        _inputs: &'scheduler [NodeInstanceId],
+        context: &'scheduler Rc<RuntimeContext>,
+        _inputs: Vec<&'scheduler Data>,
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-        Box::pin(async {
-            scheduler
-                .context()
-                .tui
-                .send(crate::tui::TuiMessage::RunningNode);
-            Ok((self.function)(scheduler.context()).await?.into_data())
-        })
+        Box::pin(async move { Ok((self.function)(Rc::clone(context)).await?.into_data()) })
     }
 }
 
@@ -321,19 +342,15 @@ impl NodeImpl for Noop {
 
     fn execute<'scheduler>(
         &'scheduler self,
-        scheduler: &'scheduler Scheduler,
-        inputs: &'scheduler [NodeInstanceId],
+        _context: &'scheduler Rc<RuntimeContext>,
+        inputs: Vec<&'scheduler Data>,
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-        Box::pin(async {
-            let input = inputs
-                .first()
-                .ok_or_else(|| RuntimeError::internal("Argument index out of bounds"))?;
-            let input = scheduler.get_output(*input).await?;
-            scheduler
-                .context()
-                .tui
-                .send(crate::tui::TuiMessage::RunningNode);
-            Ok(input.clone())
+        Box::pin(async move {
+            inputs
+                .into_iter()
+                .next()
+                .ok_or_else(|| RuntimeError::internal("Argument count mismatch at runtime"))
+                .cloned()
         })
     }
 }
@@ -357,14 +374,10 @@ impl NodeImpl for LiteralNode {
 
     fn execute<'scheduler>(
         &'scheduler self,
-        scheduler: &'scheduler Scheduler,
-        _inputs: &'scheduler [NodeInstanceId],
+        _context: &'scheduler Rc<RuntimeContext>,
+        _inputs: Vec<&'scheduler Data>,
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-        scheduler
-            .context()
-            .tui
-            .send(crate::tui::TuiMessage::RunningNode);
-        Box::pin(async { Ok(self.0.clone()) })
+        Box::pin(async move { Ok(self.0.clone()) })
     }
 }
 
@@ -539,38 +552,27 @@ impl NodeImpl for Join {
 
         Ok(DataType::String)
     }
+
     fn execute<'scheduler>(
         &'scheduler self,
-        scheduler: &'scheduler Scheduler,
-        inputs: &'scheduler [NodeInstanceId],
+        _context: &Rc<RuntimeContext>,
+        inputs: Vec<&'scheduler Data>,
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
         Box::pin(async move {
-            let inputs = futures_util::stream::iter(inputs)
-                .map(async |input| {
-                    let res = scheduler.get_output(*input).await?;
-                    if let Data::String(res) = res {
-                        Ok(res)
+            inputs
+                .into_iter()
+                .map(|data| {
+                    if let Data::String(data) = data {
+                        Ok(data)
                     } else {
                         Err(RuntimeError::internal("Type mismatch at runtime"))
                     }
                 })
-                .buffered(inputs.len())
-                .try_collect::<Vec<_>>()
-                .await?;
-
-            scheduler
-                .context()
-                .tui
-                .send(crate::tui::TuiMessage::RunningNode);
-            Ok(Data::String(
-                inputs
-                    .into_iter()
-                    .fold(String::new(), |mut collector, input| {
-                        collector.push_str(input);
-                        collector
-                    })
-                    .into(),
-            ))
+                .try_fold(String::new(), |mut result, data| {
+                    result.push_str(data?);
+                    Ok(result)
+                })
+                .map(|result| Data::String(result.into()))
         })
     }
 }

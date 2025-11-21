@@ -37,8 +37,8 @@ impl Scheduler {
     }
 
     /// Return the runtime context
-    pub fn context(&self) -> Rc<RuntimeContext> {
-        Rc::clone(&self.context)
+    pub fn context(&self) -> &Rc<RuntimeContext> {
+        &self.context
     }
 
     /// Retrieve a data from a node.
@@ -60,7 +60,7 @@ impl Scheduler {
                 let node_impl = self.nodes.get(node.kind);
 
                 log::debug!("Executing node {node_id:?}",);
-                let res = node_impl.execute(self, &node.inputs).await;
+                let res = node_impl.execute_raw(self, &node.inputs).await;
                 self.context.tui.send(crate::tui::TuiMessage::NodeFinished);
                 res
             })
