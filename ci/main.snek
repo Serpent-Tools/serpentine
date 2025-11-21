@@ -35,7 +35,7 @@ fmt = rust
     > With(source_code, ".")
     > Exec("cargo fmt --check");
 
-spelling = rust // We dont need the full rust image for this, but its easier than pulling in a extra image.
+spelling = rust // We don't need the full rust image for this, but it's easier than pulling in a extra image.
     > Binstall("typos-cli", "typos")
     > With(source_code, ".")
     > Exec("typos");
@@ -46,7 +46,4 @@ tests = Cooked("--tests")
 
 checks = !(tests, spelling, clippy, fmt) Noop(0);
 
-build = Cooked("--release") > !checks Exec("cargo build --release");
-
-export DEFAULT = build;
-
+export DEFAULT = checks;
