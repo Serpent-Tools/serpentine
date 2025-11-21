@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a4c47a8f6ef307c35d0482312b1b18fb65ac888244dd96c4674325a54b3a712f # shrinks to IfCacheUsedShouldAlwaysBeKeptArgs = IfCacheUsedShouldAlwaysBeKeptArgs { node: StoreId<alloc::boxed::Box<dyn serpentine::engine::nodes::NodeImpl>>(0), data: [], value: Int(0) }

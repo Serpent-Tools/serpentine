@@ -7,7 +7,6 @@ use tokio::sync::OnceCell;
 use super::RuntimeContext;
 use crate::engine::RuntimeError;
 use crate::engine::data_model::{Data, Graph, NodeInstanceId, NodeStorage};
-use crate::tui::TuiSender;
 
 /// Executes the various nodes
 pub struct Scheduler {
@@ -23,17 +22,13 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// Create a new scheduler to run the given graph
-    pub async fn new(
-        nodes: NodeStorage,
-        graph: Graph,
-        tui: TuiSender,
-    ) -> Result<Self, RuntimeError> {
-        Ok(Self {
+    pub fn new(nodes: NodeStorage, graph: Graph, context: Rc<RuntimeContext>) -> Self {
+        Self {
             data: vec![OnceCell::new(); graph.len()],
             nodes,
             graph,
-            context: Rc::new(RuntimeContext::new(tui).await?),
-        })
+            context,
+        }
     }
 
     /// Return the runtime context
@@ -60,7 +55,7 @@ impl Scheduler {
                 let node_impl = self.nodes.get(node.kind);
 
                 log::debug!("Executing node {node_id:?}",);
-                let res = node_impl.execute_raw(self, &node.inputs).await;
+                let res = node_impl.execute_raw(node.kind, self, &node.inputs).await;
                 self.context.tui.send(crate::tui::TuiMessage::NodeFinished);
                 res
             })

@@ -3,14 +3,15 @@
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crate::docker;
+use crate::engine::docker;
 use crate::engine::nodes::NodeImpl;
 
 /// The name of the file in the tar archives for `FileSystem` representing a single file.
 pub const FILE_SYSTEM_FILE_TAR_NAME: &str = "file";
 
 /// A exported filesystem
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, bincode::Encode, bincode::Decode)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum FileSystem {
     /// A tar entry containing a file name `FILE_SYSTEM_FILE_TAR_NAME` at `/{FILE_SYSTEM_FILE_TAR_NAME}`
     File(Rc<[u8]>),
@@ -28,7 +29,8 @@ impl std::fmt::Debug for FileSystem {
 }
 
 /// Holds the various forms of data that the node engine uses
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum Data {
     /// A numeric whole number value
     Int(i128),
@@ -49,6 +51,24 @@ impl Data {
             Data::String(_) => DataType::String,
             Data::Container(_) => DataType::Container,
             Data::FileSystem(_) => DataType::FileSystem,
+        }
+    }
+
+    /// Check if this data is still valid
+    ///
+    /// Used by caching system to know if a docker image is delete externally for example.
+    pub async fn health_check(&self, docker: &docker::DockerClient) -> bool {
+        if let Self::Container(image) = self {
+            docker.exists(image).await
+        } else {
+            true
+        }
+    }
+
+    /// Cleanup this data
+    pub async fn cleanup(self, docker: &docker::DockerClient) {
+        if let Self::Container(image) = self {
+            docker.delete_image(&image).await;
         }
     }
 }
@@ -96,6 +116,32 @@ pub struct StoreId<T> {
     index: usize,
     /// Phantom data to tie this id to the type T
     _marker: std::marker::PhantomData<T>,
+}
+
+#[cfg(test)]
+impl<T> proptest::arbitrary::Arbitrary for StoreId<T> {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
+        use proptest::prelude::Strategy;
+
+        proptest::arbitrary::any::<usize>()
+            .prop_map(|index| StoreId {
+                index,
+                _marker: std::marker::PhantomData,
+            })
+            .boxed()
+    }
+}
+
+impl<T> bincode::Encode for StoreId<T> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        self.index.encode(encoder)
+    }
 }
 
 impl<T> StoreId<T> {

@@ -34,7 +34,7 @@
               "clippy"
               "rustc"
 
-              "rust-analyzer"
+              "rust-src"
               "rustfmt"
             ])
             just

@@ -1,13 +1,17 @@
 //! Contains the node engine, as well as node type definitions.
 
+mod cache;
 pub mod data_model;
+mod docker;
 pub mod nodes;
 mod scheduler;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::docker;
 use crate::snek::CompileResult;
 use crate::tui::{TuiMessage, TuiSender};
 
@@ -29,6 +33,25 @@ pub enum RuntimeError {
         /// The inner error
         #[diagnostic_source]
         inner: Box<dyn Diagnostic + Send + Sync>,
+    },
+
+    /// A bincode deserialization error
+    #[error("Error reading cache, please report: {0}")]
+    #[diagnostic(code(bincode::decode))]
+    BincodeDe(#[from] bincode::error::DecodeError),
+
+    /// A bincode serialization error
+    #[error("Error writing cache, please report: {0}")]
+    #[diagnostic(code(bincode::encode))]
+    BincodeEn(#[from] bincode::error::EncodeError),
+
+    /// The cache was out of date.
+    #[error("Cache format version {got} doesn't match current version {current}")]
+    CacheOutOfDate {
+        /// The version in the cache file
+        got: u8,
+        /// The version of this binary
+        current: u8,
     },
 
     /// A command failed to execute
@@ -78,30 +101,60 @@ pub struct RuntimeContext {
     docker: docker::DockerClient,
     /// The update channel for the TUI
     tui: TuiSender,
+    /// Caching of values
+    cache: RefCell<cache::Cache>,
 }
 
 impl RuntimeContext {
     /// Create a new runtime context
-    async fn new(tui: TuiSender) -> Result<Self, RuntimeError> {
+    async fn new(tui: TuiSender, cli: &crate::Cli) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
+
+        let cache = match cache::Cache::load_cache(cli.cache_file().as_ref()) {
+            Ok(cache) => cache,
+            Err(error) => {
+                log::error!("{error}");
+                log::warn!("Error loading cache from disk, creating empty cache");
+                cache::Cache::new()
+            }
+        };
+
         Ok(Self {
             docker: docker::DockerClient::new(tui.clone()).await?,
             tui,
+            cache: RefCell::new(cache),
         })
     }
 
     /// Shutdown the runtime context, cleaning up any resources
-    async fn shutdown(&self) {
+    async fn shutdown(self, cli: &crate::Cli) {
         log::debug!("Shutting down runtime context");
 
-        self.tui.send(TuiMessage::ShuttingDown);
-
-        self.docker.shutdown().await;
+        let Self { docker, tui, cache } = self;
+        tui.send(TuiMessage::ShuttingDown);
+        docker.shutdown().await;
+        match cache
+            .into_inner()
+            .save_cache(cli.cache_file().as_ref(), !cli.clean_old)
+        {
+            Ok(stale) => {
+                for data in stale {
+                    data.cleanup(&docker).await;
+                }
+            }
+            Err(err) => {
+                log::error!("Failed saving cache: {err}");
+            }
+        }
     }
 }
 
 /// Run the given compilation result
-pub fn run(compile_result: CompileResult, tui: TuiSender) -> Result<(), crate::SerpentineError> {
+pub fn run(
+    compile_result: CompileResult,
+    tui: TuiSender,
+    cli: &crate::Cli,
+) -> Result<(), crate::SerpentineError> {
     let start_node = compile_result.start_node;
 
     log::debug!("Nodes: {}", compile_result.graph.len());
@@ -116,8 +169,12 @@ pub fn run(compile_result: CompileResult, tui: TuiSender) -> Result<(), crate::S
             )))
         })?
         .block_on(async {
-            let scheduler =
-                scheduler::Scheduler::new(compile_result.nodes, compile_result.graph, tui).await?;
+            let context = Rc::new(RuntimeContext::new(tui, cli).await?);
+            let scheduler = scheduler::Scheduler::new(
+                compile_result.nodes,
+                compile_result.graph,
+                Rc::clone(&context),
+            );
             let result = tokio::select!(
                 res = scheduler.get_output(start_node) => res.map(|_| ()),
                 _ = tokio::signal::ctrl_c() => {
@@ -125,7 +182,17 @@ pub fn run(compile_result: CompileResult, tui: TuiSender) -> Result<(), crate::S
                     Err(RuntimeError::CtrlC)
                 }
             );
-            scheduler.context().shutdown().await;
+
+            // Ensure the scheduler context rc is dropped.
+            drop(scheduler);
+
+            if let Some(context) = Rc::into_inner(context) {
+                context.shutdown(cli).await;
+            } else {
+                debug_assert!(false, "Context still referenced at shutdown");
+                log::warn!("Context still referenced, cant run shutdown");
+            }
+
             result
         })
         .map_err(crate::SerpentineError::Runtime)?;

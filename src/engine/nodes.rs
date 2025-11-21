@@ -1,22 +1,22 @@
 //! Contains the implementation of all the nodes
 
-use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
 
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::docker;
+use crate::engine::cache::CacheKey;
 use crate::engine::data_model::{
     Data,
     DataType,
     FILE_SYSTEM_FILE_TAR_NAME,
     FileSystem,
     NodeInstanceId,
+    NodeKindId,
 };
 use crate::engine::scheduler::Scheduler;
-use crate::engine::{RuntimeContext, RuntimeError};
+use crate::engine::{RuntimeContext, RuntimeError, docker};
 use crate::snek::CompileError;
 use crate::snek::span::{Span, Spanned};
 
@@ -44,6 +44,7 @@ pub trait NodeImpl {
     /// You should overwrite this and leave `execute` empty.
     fn execute_raw<'scheduler>(
         &'scheduler self,
+        kind: NodeKindId,
         scheduler: &'scheduler Scheduler,
         inputs: &'scheduler [NodeInstanceId],
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
@@ -59,8 +60,38 @@ pub trait NodeImpl {
                 .context()
                 .tui
                 .send(crate::tui::TuiMessage::RunningNode);
+
+            let key = CacheKey {
+                node: kind,
+                inputs: &inputs,
+            };
+            log::debug!("Checking cache with {key:?}");
+            if self.should_be_cached()
+                && let Some(cached_value) =
+                    // Brackets are to ensure `RefCell` borrow is dropped
+                    // (at least to make clippy know it is)
+                    { scheduler.context().cache.borrow_mut().get(&key)?.cloned() }
+            {
+                log::debug!("Cache hit on {}", std::any::type_name::<Self>());
+                if cached_value.health_check(&scheduler.context().docker).await {
+                    return Ok(cached_value);
+                }
+                // log::warn!("value {cached_value:?} failed health-check, not using cache.");
+            }
+            let key = key.sha256()?;
+
             log::debug!("Executing {}", std::any::type_name::<Self>());
-            self.execute(scheduler.context(), inputs).await
+            let result = self.execute(scheduler.context(), inputs).await?;
+
+            if self.should_be_cached() {
+                scheduler
+                    .context()
+                    .cache
+                    .borrow_mut()
+                    .insert(key, result.clone());
+            }
+
+            Ok(result)
         })
     }
 
@@ -74,26 +105,21 @@ pub trait NodeImpl {
 }
 
 /// Trait implemented on the raw types in `Data`
-/// Used for unwrapping inputs in the automatic function implementation for `NodeImpl`
-trait UnwrappedType: Sized {
+/// Used for unwrapping inputs in the automatic function implementation for `NodeImpl`,
+/// And for converting back.
+trait RawData: Sized {
     /// The `DataType` this would respond to
     const KIND: DataType;
 
     /// Unwrap the `Data` into this type, returning a internal error if mismatched
     /// (compiler should have ensured types match up)
     fn from_data(data: &Data) -> Option<Self>;
-}
 
-/// Convert a value back into its data variant
-trait IntoData {
-    /// The kind of this data
-    const KIND: DataType;
-
-    /// Convert this into `Data`
+    /// Convert from this into `Data`
     fn into_data(self) -> Data;
 }
 
-impl UnwrappedType for i128 {
+impl RawData for i128 {
     const KIND: DataType = DataType::Int;
 
     fn from_data(data: &Data) -> Option<Self> {
@@ -103,17 +129,13 @@ impl UnwrappedType for i128 {
             None
         }
     }
-}
-
-impl IntoData for i128 {
-    const KIND: DataType = DataType::Int;
 
     fn into_data(self) -> Data {
         Data::Int(self)
     }
 }
 
-impl UnwrappedType for Rc<str> {
+impl RawData for Rc<str> {
     const KIND: DataType = DataType::String;
 
     fn from_data(data: &Data) -> Option<Self> {
@@ -123,25 +145,12 @@ impl UnwrappedType for Rc<str> {
             None
         }
     }
-}
-
-impl IntoData for Rc<str> {
-    const KIND: DataType = DataType::String;
-
     fn into_data(self) -> Data {
         Data::String(self)
     }
 }
 
-impl IntoData for String {
-    const KIND: DataType = DataType::String;
-
-    fn into_data(self) -> Data {
-        Data::String(Rc::from(self))
-    }
-}
-
-impl UnwrappedType for docker::ContainerState {
+impl RawData for docker::ContainerState {
     const KIND: DataType = DataType::Container;
     fn from_data(data: &Data) -> Option<Self> {
         if let Data::Container(value) = data {
@@ -150,16 +159,12 @@ impl UnwrappedType for docker::ContainerState {
             None
         }
     }
-}
-
-impl IntoData for docker::ContainerState {
-    const KIND: DataType = DataType::Container;
     fn into_data(self) -> Data {
         Data::Container(self)
     }
 }
 
-impl UnwrappedType for FileSystem {
+impl RawData for FileSystem {
     const KIND: DataType = DataType::FileSystem;
 
     fn from_data(data: &Data) -> Option<Self> {
@@ -169,10 +174,6 @@ impl UnwrappedType for FileSystem {
             None
         }
     }
-}
-
-impl IntoData for FileSystem {
-    const KIND: DataType = DataType::FileSystem;
     fn into_data(self) -> Data {
         Data::FileSystem(self)
     }
@@ -184,7 +185,7 @@ struct Wrap<F, P> {
     function: F,
     /// Should this node be cached
     should_be_cached: bool,
-    /// The return type needs to exist as a generic on this type for rust trait resolution to be
+    /// The argument types needs to exist as a generic on this type for rust trait resolution to be
     /// happy.
     phantom: PhantomData<P>,
 }
@@ -208,8 +209,8 @@ macro_rules! impl_node_impl {
         impl< F, R, Fut, $($arg),*> NodeImpl for Wrap<F, ($($arg),*)>
         where F: Fn(Rc<RuntimeContext>, $($arg),*) -> Fut,
               Fut: Future<Output=Result<R, RuntimeError>>,
-              R: IntoData,
-              $($arg: UnwrappedType),*
+              R: RawData,
+              $($arg: RawData),*
         {
             fn should_be_cached(&self) -> bool {
                 self.should_be_cached
@@ -274,45 +275,9 @@ macro_rules! impl_node_impl {
     };
 }
 
-impl<F, R, Fut> NodeImpl for Wrap<F, ()>
-where
-    F: Fn(Rc<RuntimeContext>) -> Fut,
-    Fut: Future<Output = Result<R, RuntimeError>>,
-    R: IntoData,
-{
-    fn should_be_cached(&self) -> bool {
-        self.should_be_cached
-    }
-
-    fn return_type(
-        &self,
-        arguments: &[Spanned<DataType>],
-        node_span: Span,
-    ) -> Result<DataType, CompileError> {
-        let count = 0;
-        if arguments.len() != count {
-            return Err(CompileError::ArgumentCountMismatch {
-                expected: count,
-                got: arguments.len(),
-                location: node_span,
-            });
-        }
-        Ok(R::KIND)
-    }
-
-    fn execute<'scheduler>(
-        &'scheduler self,
-        context: &'scheduler Rc<RuntimeContext>,
-        _inputs: Vec<&'scheduler Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
-        Box::pin(async move { Ok((self.function)(Rc::clone(context)).await?.into_data()) })
-    }
-}
-
 impl_node_impl!(A);
 impl_node_impl!(A, B);
 impl_node_impl!(A, B, C);
-impl_node_impl!(A, B, C, D);
 
 /// A node that just returns the first input
 struct Noop;
@@ -438,7 +403,13 @@ async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSys
             let mut tar_data = Vec::new();
             {
                 let mut tar_builder = tar::Builder::new(&mut tar_data);
-                tar_builder.append_path_with_name(src, FILE_SYSTEM_FILE_TAR_NAME)?;
+                let file = std::fs::File::open(src)?;
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_mode(0o755);
+                header.set_size(file.metadata()?.len());
+                header.set_cksum();
+                tar_builder.append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, file)?;
                 tar_builder.finish()?;
             }
             Ok(tar_data)
@@ -474,12 +445,15 @@ fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Vec<u8>, RuntimeError> 
             }
 
             if path.is_file() {
-                // WARN: This might be including a lot of metadata like timestamps that we want to
-                // strip out to make the caching better.
-                tar_builder.append_path_with_name(path, relative_path)?;
+                let file = std::fs::File::open(path)?;
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_mode(0o755);
+                header.set_size(file.metadata()?.len());
+                header.set_cksum();
+                tar_builder.append_data(&mut header, relative_path, file)?;
             } else if path.is_dir() {
                 let mut header = tar::Header::new_gnu();
-                header.set_path(relative_path)?;
                 header.set_entry_type(tar::EntryType::Directory);
                 header.set_mode(0o755);
                 header.set_size(0);
@@ -578,65 +552,62 @@ impl NodeImpl for Join {
 }
 
 /// Return the list of prelude nodes
-pub fn prelude() -> HashMap<&'static str, Box<dyn NodeImpl>> {
-    let mut nodes: HashMap<&'static str, Box<dyn NodeImpl>> = HashMap::new();
-
-    nodes.insert(NOOP_NAME, Box::new(Noop));
-
-    // cache reasoning: Image is at best a simple check with the docker client, which is super
-    // quick, and more importantly the output is consistent.
-    nodes.insert("Image", Box::new(Wrap::<_, Rc<str>>::new(image, false)));
-    // cache reasoning: Executing command is the bulk of what serpentine does and takes the most
-    // time, this is the primary target for caching
-    nodes.insert(
-        "ExecSh",
-        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
-            exec_sh, true,
-        )),
-    );
-    // cache reasoning: see ExecSh
-    nodes.insert(
-        "Exec",
-        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
-            exec, true,
-        )),
-    );
-    // cache reasoning: We need to check with the host system on each run to know whether the output
-    // of this is still valid, if the files didnt change on disk this will still spend some time
-    // reading them, but will result in the same result aftwards and further nodes will have cache
-    // hits.
-    nodes.insert(
-        "FromHost",
-        Box::new(Wrap::<_, Rc<str>>::new(from_host, false)),
-    );
-    // cache reasoning: Copying the files from a container is usually a quick job, and keeping such
-    // files in the cache is just duplicating data is also stored in docker.
-    // The one downside here is that we have to spin up a container to export the data, but that
-    // should be quick enough.
-    nodes.insert(
-        "Export",
-        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
-            export, false,
-        )),
-    );
-    // cache reasoning: While this operation is generally quick it is a primary candidate for
-    // caching, not because the operation is nice to skip, but because it isnt truly pure as
-    // docker will likely give a new image id even when run with the same inputs.
-    // Hence we use the CaC to skip this node if the input files and the input image match the
-    // cache.
-    nodes.insert(
-        "With",
-        Box::new(Wrap::<_, (docker::ContainerState, FileSystem, Rc<str>)>::new(with, true)),
-    );
-    // cache reasoning: See With
-    nodes.insert(
-        "WorkingDir",
-        Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
-            with_working_dir,
-            true,
-        )),
-    );
-    nodes.insert("Join", Box::new(Join));
-
-    nodes
+pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
+    vec![
+        (NOOP_NAME, Box::new(Noop) as Box<dyn NodeImpl>),
+        // cache reasoning: Image is at best a simple check with the docker client, which is super
+        // quick, and more importantly the output is consistent.
+        ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, false))),
+        // cache reasoning: Executing command is the bulk of what serpentine does and takes the most
+        // time, this is the primary target for caching
+        (
+            "ExecSh",
+            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+                exec_sh, true,
+            )),
+        ),
+        // cache reasoning: see ExecSh
+        (
+            "Exec",
+            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+                exec, true,
+            )),
+        ),
+        // cache reasoning: We need to check with the host system on each run to know whether the output
+        // of this is still valid, if the files didn't change on disk this will still spend some time
+        // reading them, but will result in the same result afterwards and further nodes will have cache
+        // hits.
+        (
+            "FromHost",
+            Box::new(Wrap::<_, Rc<str>>::new(from_host, false)),
+        ),
+        // cache reasoning: Copying the files from a container is usually a quick job, and keeping such
+        // files in the cache is just duplicating data that is also stored in docker.
+        // The one downside here is that we have to spin up a container to export the data, but that
+        // should be quick enough.
+        (
+            "Export",
+            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+                export, false,
+            )),
+        ),
+        // cache reasoning: While this operation is generally quick it is a primary candidate for
+        // caching, not because the operation is nice to skip, but because it isn't truly pure as
+        // docker will likely give a new image id even when run with the same inputs.
+        // Hence we use the CaC to skip this node if the input files and the input image match the
+        // cache.
+        (
+            "With",
+            Box::new(Wrap::<_, (docker::ContainerState, FileSystem, Rc<str>)>::new(with, true)),
+        ),
+        // cache reasoning: See With
+        (
+            "WorkingDir",
+            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+                with_working_dir,
+                true,
+            )),
+        ),
+        ("Join", Box::new(Join)),
+    ]
 }

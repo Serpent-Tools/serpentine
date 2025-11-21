@@ -8,7 +8,6 @@ use clap::Parser;
 use miette::Diagnostic;
 use thiserror::Error;
 
-mod docker;
 mod engine;
 mod snek;
 mod tui;
@@ -16,23 +15,21 @@ mod tui;
 /// Serpentine is a build system and programming language.
 #[derive(clap::Parser)]
 struct Cli {
-    /// The pipeline to use, defaults to `./main.snek`
-    #[arg(short, long)]
-    pipeline: Option<PathBuf>,
+    /// The pipeline to use
+    #[arg(short, long, default_value = "./main.snek")]
+    pipeline: PathBuf,
     /// CI mode, disables TUI and logs directly to stdout.
     #[arg(long)]
     ci: bool,
+    /// Location of the cache file
+    #[arg(short, long)]
+    cache: Option<PathBuf>,
+    /// Delete old cache entries (also cleans out stale docker images).
+    #[arg(long)]
+    clean_old: bool,
 }
 
 impl Cli {
-    /// Get the pipeline, or fallback to defaults.
-    fn pipeline(&self) -> Cow<'_, Path> {
-        match self.pipeline.as_ref() {
-            Some(pipeline) => Cow::Borrowed(pipeline),
-            None => Cow::Owned(PathBuf::from("./main.snek")),
-        }
-    }
-
     /// Should we use the tui?
     ///
     /// This checks the `--ci` flag and whether we are in an interactive terminal
@@ -41,6 +38,20 @@ impl Cli {
             false
         } else {
             std::io::stdout().is_terminal()
+        }
+    }
+
+    /// Return the path to the cache file to use
+    fn cache_file(&self) -> Cow<'_, Path> {
+        if let Some(cache) = &self.cache {
+            Cow::Borrowed(cache)
+        } else if let Some(project_dirs) =
+            directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
+        {
+            Cow::Owned(project_dirs.cache_dir().join("cache.bincode"))
+        } else {
+            log::warn!("Failed to determine default cache location.");
+            Cow::Owned(PathBuf::from("./cache.bincode"))
         }
     }
 }
@@ -140,6 +151,8 @@ fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
 fn main() -> miette::Result<()> {
     let command = Cli::parse();
 
+    println!("Storing cache in {}", command.cache_file().display());
+
     if command.use_tui() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let res = setup_logging(tui::TuiSender(Some(sender.clone())), false);
@@ -147,13 +160,13 @@ fn main() -> miette::Result<()> {
             eprintln!("Failed to initialize logging: {error}");
         }
 
-        log::info!("Compiling pipeline: {}", command.pipeline().display());
-        let result = snek::compile_graph(&command.pipeline())?;
+        log::info!("Compiling pipeline: {}", command.pipeline.display());
+        let result = snek::compile_graph(&command.pipeline)?;
 
         log::info!("Executing pipeline");
         let total_nodes = result.graph.len();
         let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes));
-        let result = engine::run(result, tui::TuiSender(Some(sender.clone())));
+        let result = engine::run(result, tui::TuiSender(Some(sender.clone())), &command);
 
         log::info!("Executor returned, waiting for TUI to exit");
         let _ = sender.send(tui::TuiMessage::Shutdown);
@@ -167,11 +180,11 @@ fn main() -> miette::Result<()> {
             eprintln!("Failed to initialize logging: {error}");
         }
 
-        log::info!("Compiling pipeline: {}", command.pipeline().display());
-        let result = snek::compile_graph(&command.pipeline())?;
+        log::info!("Compiling pipeline: {}", command.pipeline.display());
+        let result = snek::compile_graph(&command.pipeline)?;
 
         log::info!("Executing pipeline");
-        let result = engine::run(result, tui::TuiSender(None));
+        let result = engine::run(result, tui::TuiSender(None), &command);
 
         result.map_err(Into::into)
     }
@@ -189,6 +202,12 @@ mod tests {
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     fn live_examples(#[files("test_cases/live/**/*.snek")] path: PathBuf) {
         let graph = crate::snek::compile_graph(&path).expect("Failed to compile pipeline");
-        crate::engine::run(graph, crate::tui::TuiSender(None)).expect("Failed to execute");
+        let cli = crate::Cli {
+            pipeline: PathBuf::from("."),
+            ci: true,
+            cache: None,
+            clean_old: false,
+        };
+        crate::engine::run(graph, crate::tui::TuiSender(None), &cli).expect("Failed to execute");
     }
 }

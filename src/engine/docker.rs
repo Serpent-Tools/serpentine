@@ -19,7 +19,8 @@ use crate::tui::{Task, TaskProgress, TuiSender};
 struct Container(Box<str>);
 
 /// A reference to a specific state of a container.
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerState(Rc<str>);
 
 /// A docker client wrapper
@@ -125,6 +126,11 @@ impl DockerClient {
                 }
             })
             .await;
+    }
+
+    /// Check if a image exists
+    pub async fn exists(&self, image: &ContainerState) -> bool {
+        self.client.inspect_image(&image.0).await.is_ok()
     }
 
     /// Create a new container, download the image if necessary
@@ -548,8 +554,6 @@ impl DockerClient {
 
         let container = self.get_state(image).await?;
 
-        // WARN: This might be including a lot of metadata like timestamps that we want to
-        // strip out to make the caching better.
         let docker_tar = self
             .client
             .download_from_container(
@@ -599,11 +603,12 @@ impl DockerClient {
         let mut builder = tar::Builder::new(tar_data);
 
         if is_file {
-            builder.append_data(
-                &mut first_entry.header().clone(),
-                FILE_SYSTEM_FILE_TAR_NAME,
-                first_entry,
-            )?;
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_mode(0o755);
+            header.set_cksum();
+            header.set_size(first_entry.header().size().unwrap_or(0));
+            builder.append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, first_entry)?;
 
             Ok(FileSystem::File(builder.into_inner()?.into()))
         } else {
@@ -629,7 +634,9 @@ impl DockerClient {
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|_| entry_path.into_owned());
 
-                builder.append_data(&mut entry.header().clone(), entry_path, entry)?;
+                let mut header = entry.header().clone();
+                header.set_mtime(0);
+                builder.append_data(&mut header, entry_path, entry)?;
             }
             Ok(FileSystem::Folder(builder.into_inner()?.into()))
         }
@@ -670,6 +677,31 @@ impl DockerClient {
             .insert(image.clone(), container);
 
         Ok(ContainerState(Rc::from(new_image)))
+    }
+
+    /// Delete a image.
+    /// This should only be used during cleanup.
+    ///
+    /// This ignores error (just logs them), as its intended for cleanup.
+    pub async fn delete_image(&self, image: &ContainerState) {
+        log::debug!("Deleting image {image:?}");
+
+        let result = self
+            .client
+            .remove_image(
+                &image.0,
+                Some(
+                    bollard::query_parameters::RemoveImageOptionsBuilder::new()
+                        .force(true)
+                        .build(),
+                ),
+                None,
+            )
+            .await;
+        if let Err(err) = result {
+            log::error!("Failed to delete image {image:?}");
+            log::error!("{err}");
+        }
     }
 }
 
@@ -965,19 +997,7 @@ mod tests {
             .expect("Exec failed");
 
         log::debug!("Deleting {image:?}");
-        docker_client
-            .client
-            .remove_image(
-                &image.0,
-                Some(
-                    bollard::query_parameters::RemoveImageOptionsBuilder::new()
-                        .force(true)
-                        .build(),
-                ),
-                None,
-            )
-            .await
-            .expect("Failed to remove image");
+        docker_client.delete_image(&image).await;
 
         docker_client
             .exec(&image, &["cat", "hello.txt"])
