@@ -1,3 +1,4 @@
+/*
 rust = Image("rustlang/rust:nightly");
 src = rust 
     > WorkingDir("/app") 
@@ -30,3 +31,10 @@ checks = !(tests, spelling, clippy, fmt) Noop(0);
 build = src > !checks Exec("cargo build --release");
 
 export DEFAULT = build;
+*/
+
+export DEFAULT = Image("rustlang/rust:nightly")
+    > WorkingDir("/app")
+    > With(FromHost("."), ".")
+    > Exec("cargo run -- --pipeline ci/main.snek"); // Recursion :O
+

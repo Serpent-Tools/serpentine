@@ -183,15 +183,6 @@ pub enum CompileError {
         location: Span,
     },
 
-    /// The entry point label wasnt found
-    #[error("Entry point '{name}' not found")]
-    #[diagnostic(code(compiler::entrypoint_not_found))]
-    #[diagnostic(help("Make sure its exported."))]
-    EntryPointNotFound {
-        /// The name of the entry point
-        name: String,
-    },
-
     /// A circular import was encountered.
     #[error("Circular import. Module {file} attempted to be imported while resolving.")]
     #[diagnostic(code(compiler::circular_import))]

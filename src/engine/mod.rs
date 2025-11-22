@@ -15,9 +15,21 @@ use crate::tui::{TuiMessage, TuiSender};
 #[derive(Debug, Error, Diagnostic)]
 pub enum RuntimeError {
     /// A Docker API error
-    #[error("Docker API error: {0}")]
+    #[error("Container API error: {0}")]
     #[diagnostic(code(docker_error))]
     Docker(#[from] bollard::errors::Error),
+
+    /// Error establishing connection to docker/podman
+    #[error("Docker/Podman not found")]
+    #[diagnostic(code(docker_not_found))]
+    #[diagnostic(help(
+        "If docker or podman is installed try setting `DOCKER_HOST` environment variable explicitly."
+    ))]
+    DockerNotFound {
+        /// The inner error
+        #[diagnostic_source]
+        inner: Box<dyn Diagnostic + Send + Sync>,
+    },
 
     /// A command failed to execute
     #[error("Failed to execute command (exit code {code}): {command:?} \n{output}")]
@@ -36,7 +48,7 @@ pub enum RuntimeError {
     ExecParse(#[from] shell_words::ParseError),
 
     /// A filesystem read error
-    #[error("Io error")]
+    #[error("Io error: {0}")]
     #[diagnostic(code(filesystem_read_error))]
     IoError(#[from] std::io::Error),
 
