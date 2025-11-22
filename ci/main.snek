@@ -1,4 +1,6 @@
-rust = Image("rustlang/rust:nightly") > WorkingDir("/app");
+rust = Image("rustlang/rust:nightly") 
+    > WorkingDir("/app")
+    > Exec("rustup component add clippy");
 
 def Binstall(container, crate, bin_name) {
     binary = rust 
@@ -15,19 +17,17 @@ def Cooked(build_kind) {
     recipe = rust
         > Binstall("cargo-chef", "cargo-chef")
         > With(source_code, ".")
-        > Exec("cargo chef prepare --recipe-path recipe.json")
+        > Exec(Join("cargo chef prepare --recipe-path recipe.json"))
         > Export("recipe.json");
 
     return rust 
         > Binstall("cargo-chef", "cargo-chef")
         > With(recipe, "recipe.json")
         > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
-        > Exec("rm recipe.json")
         > With(source_code, ".");
 }
 
-clippy = Cooked("")
-    > Exec("rustup component add clippy")
+clippy = Cooked("--clippy")
     > Exec("cargo clippy -- -Dwarnings");
 
 fmt = rust
