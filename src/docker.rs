@@ -37,7 +37,11 @@ pub struct DockerClient {
 impl DockerClient {
     /// Create a new Docker client
     pub async fn new(tui: TuiSender) -> Result<Self, RuntimeError> {
-        let client = Self::connect_docker().await?;
+        let client = Self::connect_docker()
+            .await
+            .map_err(|err| RuntimeError::DockerNotFound {
+                inner: Box::new(err),
+            })?;
         Ok(Self {
             client,
             containers: RefCell::new(HashMap::new()),

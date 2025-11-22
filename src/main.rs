@@ -61,6 +61,7 @@ enum SerpentineError {
 
     /// Something failed at runtime.
     #[error(transparent)]
+    #[diagnostic(transparent)]
     Runtime(engine::RuntimeError),
 }
 

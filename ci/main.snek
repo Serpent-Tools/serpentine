@@ -30,3 +30,4 @@ checks = !(tests, spelling, clippy, fmt) Noop(0);
 build = src > !checks Exec("cargo build --release");
 
 export DEFAULT = build;
+
