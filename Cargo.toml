@@ -25,11 +25,13 @@ shell-words = "1.1.0"
 strip-ansi-escapes = "0.2.1"
 tar = "0.4.44"
 thiserror = "2.0.16"
-tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "time", "test-util", "signal"] }
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "signal"] }
 tokio-util = { version = "0.7.16", default-features = false, features = ["io"] }
 uuid = { version = "1.18.1", features = ["v4"] }
 
 [dev-dependencies]
+tokio = { version = "1.47.1", default-features = false, features = ["test-util"] }
+tokio-util = { version = "0.7.16", default-features = false, features = ["io"] }
 insta = { version = "1.43.2", features = ["filters"] }
 proptest = { version = "1.8.0", features = ["attr-macro"] }
 proptest-derive = "0.6.0"

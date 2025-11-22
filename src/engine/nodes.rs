@@ -68,9 +68,7 @@ pub trait NodeImpl {
             log::debug!("Checking cache with {key:?}");
             if self.should_be_cached()
                 && let Some(cached_value) =
-                    // Brackets are to ensure `RefCell` borrow is dropped
-                    // (at least to make clippy know it is)
-                    { scheduler.context().cache.borrow_mut().get(&key)?.cloned() }
+                    scheduler.context().cache.lock().await.get(&key)?.cloned()
             {
                 log::debug!("Cache hit on {}", std::any::type_name::<Self>());
                 if cached_value.health_check(&scheduler.context().docker).await {
@@ -87,7 +85,8 @@ pub trait NodeImpl {
                 scheduler
                     .context()
                     .cache
-                    .borrow_mut()
+                    .lock()
+                    .await
                     .insert(key, result.clone());
             }
 
