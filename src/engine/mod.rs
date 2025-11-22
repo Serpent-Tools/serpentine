@@ -6,11 +6,11 @@ mod docker;
 pub mod nodes;
 mod scheduler;
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use miette::Diagnostic;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 use crate::snek::CompileResult;
 use crate::tui::{TuiMessage, TuiSender};
@@ -102,7 +102,7 @@ pub struct RuntimeContext {
     /// The update channel for the TUI
     tui: TuiSender,
     /// Caching of values
-    cache: RefCell<cache::Cache>,
+    cache: Mutex<cache::Cache>,
 }
 
 impl RuntimeContext {
@@ -122,7 +122,7 @@ impl RuntimeContext {
         Ok(Self {
             docker: docker::DockerClient::new(tui.clone()).await?,
             tui,
-            cache: RefCell::new(cache),
+            cache: Mutex::new(cache),
         })
     }
 
@@ -132,7 +132,6 @@ impl RuntimeContext {
 
         let Self { docker, tui, cache } = self;
         tui.send(TuiMessage::ShuttingDown);
-        docker.shutdown().await;
         match cache
             .into_inner()
             .save_cache(cli.cache_file().as_ref(), !cli.clean_old)
@@ -146,6 +145,7 @@ impl RuntimeContext {
                 log::error!("Failed saving cache: {err}");
             }
         }
+        docker.shutdown().await;
     }
 }
 

@@ -1,6 +1,5 @@
 //! Wrapper around bollard Docker API client
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,6 +9,7 @@ use std::sync::Arc;
 use bollard::API_DEFAULT_VERSION;
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::AsyncBufReadExt;
+use tokio::sync::Mutex;
 
 use crate::engine::RuntimeError;
 use crate::engine::data_model::{FILE_SYSTEM_FILE_TAR_NAME, FileSystem};
@@ -28,9 +28,9 @@ pub struct DockerClient {
     /// The underlying bollard Docker client
     client: bollard::Docker,
     /// Cache of containers at the specified image state
-    containers: RefCell<HashMap<ContainerState, Container>>,
+    containers: Mutex<HashMap<ContainerState, Container>>,
     /// List of all containers created by this client, never removed from to ensure cleanup
-    cleanup_list: RefCell<Vec<Container>>,
+    cleanup_list: Mutex<Vec<Container>>,
     /// Sender to the TUI
     tui: TuiSender,
 }
@@ -45,8 +45,8 @@ impl DockerClient {
             })?;
         Ok(Self {
             client,
-            containers: RefCell::new(HashMap::new()),
-            cleanup_list: RefCell::new(Vec::new()),
+            containers: Mutex::new(HashMap::new()),
+            cleanup_list: Mutex::new(Vec::new()),
             tui,
         })
     }
@@ -98,14 +98,21 @@ impl DockerClient {
     }
 
     /// Stop and remove all containers created by this client
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(self) {
+        let Self {
+            client,
+            cleanup_list,
+            ..
+        } = self;
+        let client = &client;
+
         let mut futures = Vec::new();
 
-        for container in self.cleanup_list.take() {
+        for container in cleanup_list.into_inner() {
             log::debug!("Stopping and removing container {}", container.0);
 
             let future = async move {
-                self.client
+                client
                     .remove_container(
                         &container.0,
                         Some(
@@ -193,7 +200,8 @@ impl DockerClient {
 
         let state = ContainerState(Rc::from(id));
         self.containers
-            .borrow_mut()
+            .lock()
+            .await
             .insert(state.clone(), container);
         Ok(state)
     }
@@ -202,7 +210,7 @@ impl DockerClient {
     /// This removes the container from the cache of containers at that given image,
     /// with the assumption that it's about to be modified.
     async fn get_state(&self, state: &ContainerState) -> Result<Container, RuntimeError> {
-        if let Some(container) = { self.containers.borrow_mut().remove(state) } {
+        if let Some(container) = self.containers.lock().await.remove(state) {
             log::trace!("Reusing existing container {}", container.0);
 
             if let Ok(status) = self
@@ -263,7 +271,8 @@ impl DockerClient {
             .id;
 
         self.cleanup_list
-            .borrow_mut()
+            .lock()
+            .await
             .push(Container(id.clone().into_boxed_str()));
 
         log::trace!("Starting container {id}");
@@ -577,7 +586,8 @@ impl DockerClient {
 
         // Put the container back in the cache, as we didn't modify it
         self.containers
-            .borrow_mut()
+            .lock()
+            .await
             .insert(image.clone(), container);
 
         // We need to construct a new archive to match what `FileSystem` expects.
@@ -673,7 +683,8 @@ impl DockerClient {
 
         // Put the container back in the cache, as we didn't modify it
         self.containers
-            .borrow_mut()
+            .lock()
+            .await
             .insert(image.clone(), container);
 
         Ok(ContainerState(Rc::from(new_image)))
@@ -701,18 +712,6 @@ impl DockerClient {
         if let Err(err) = result {
             log::error!("Failed to delete image {image:?}");
             log::error!("{err}");
-        }
-    }
-}
-
-impl Drop for DockerClient {
-    fn drop(&mut self) {
-        let containers = std::mem::take(&mut *self.cleanup_list.borrow_mut());
-        if !containers.is_empty() {
-            log::warn!(
-                "DockerClient dropped without calling shutdown(), leaving {} containers running",
-                containers.len()
-            );
         }
     }
 }
