@@ -221,6 +221,15 @@ impl<T> Store<T> {
     }
 }
 
+impl<T> IntoIterator for Store<T> {
+    type IntoIter = std::vec::IntoIter<T>;
+    type Item = T;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
 /// Id for referencing the node implementation
 pub type NodeKindId = StoreId<Box<dyn NodeImpl>>;
 

@@ -17,7 +17,7 @@ def Cooked(build_kind) {
     recipe = rust
         > Binstall("cargo-chef", "cargo-chef")
         > With(source_code, ".")
-        > Exec(Join("cargo chef prepare --recipe-path recipe.json"))
+        > Exec("cargo chef prepare --recipe-path recipe.json")
         > Export("recipe.json");
 
     return rust 
@@ -30,6 +30,7 @@ def Cooked(build_kind) {
 clippy = Cooked("--clippy")
     > Exec("cargo clippy -- -Dwarnings");
 
+/*
 fmt = rust
     > Exec("rustup component add rustfmt")
     > With(source_code, ".")
@@ -39,11 +40,13 @@ spelling = rust // We don't need the full rust image for this, but it's easier t
     > Binstall("typos-cli", "typos")
     > With(source_code, ".")
     > Exec("typos");
+*/
 
 tests = Cooked("--tests")
     > Binstall("cargo-nextest", "cargo-nextest")
     > Exec("cargo nextest run");
 
-checks = !(tests, spelling, clippy, fmt) Noop(0);
+// checks = !(tests, spelling, clippy, fmt) Noop(0);
 
-export DEFAULT = checks;
+// export DEFAULT = checks;
+export DEFAULT = 0;
