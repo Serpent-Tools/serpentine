@@ -2,7 +2,7 @@ run:
     cargo run -p serpentine -- --pipeline ci/main.snek
 
 run_ci:
-    cargo run -p serpentine -- --pipeline ci/main.snek --ci --delete-old
+    cargo run -p serpentine -- --pipeline ci/main.snek --ci --clean-old
 
 snapshot:
     cargo insta test --review --unreferenced delete

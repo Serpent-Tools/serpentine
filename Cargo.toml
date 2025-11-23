@@ -10,28 +10,32 @@ categories = ["command-line-utilities", "compilers", "development-tools::build-u
 repository = "https://github.com/Serpent-Tools/serpentine"
 
 [dependencies]
-bincode = "2.0.1"
+# Runtime
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "signal"] }
+tokio-util = { version = "0.7.16", default-features = false, features = ["io"] }
 bollard = { version = "0.19.3", default-features = false, features = ["http", "pipe"] }
-clap = { version = "4.5.47", features = ["derive"] }
-directories = { version = "6.0.0", default-features = false }
-fern = { version = "0.7.1", default-features = false }
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
+tar = "0.4.44"
+shell-words = "1.1.0"
+uuid = { version = "1.18.1", features = ["v4"] }
 ignore = "0.4.23"
+
+# Cache
+sha2 = { version = "0.10.9", default-features = false, features = ["asm-aarch64", "std"] }
+bincode = "2.0.1"
+
+# UX
+thiserror = "2.0.16"
+strip-ansi-escapes = "0.2.1"
 log = "0.4.28"
 miette = { version = "7.6.0", features = ["fancy"] }
 ratatui = "0.29.0"
-sha2 = { version = "0.10.9", default-features = false, features = ["asm-aarch64", "std"] }
-shell-words = "1.1.0"
-strip-ansi-escapes = "0.2.1"
-tar = "0.4.44"
-thiserror = "2.0.16"
-tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "signal"] }
-tokio-util = { version = "0.7.16", default-features = false, features = ["io"] }
-uuid = { version = "1.18.1", features = ["v4"] }
+clap = { version = "4.5.47", features = ["derive"] }
+directories = { version = "6.0.0", default-features = false }
+fern = { version = "0.7.1", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.47.1", default-features = false, features = ["test-util"] }
-tokio-util = { version = "0.7.16", default-features = false, features = ["io"] }
 insta = { version = "1.43.2", features = ["filters"] }
 proptest = { version = "1.8.0", features = ["attr-macro"] }
 proptest-derive = "0.6.0"
