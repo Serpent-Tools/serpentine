@@ -6,6 +6,7 @@ mod docker;
 pub mod nodes;
 mod scheduler;
 
+use std::path::Path;
 use std::rc::Rc;
 
 use miette::Diagnostic;
@@ -107,10 +108,10 @@ pub struct RuntimeContext {
 
 impl RuntimeContext {
     /// Create a new runtime context
-    async fn new(tui: TuiSender, cli: &crate::Cli) -> Result<Self, RuntimeError> {
+    async fn new(tui: TuiSender, cli: &crate::Run) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
 
-        let cache = match cache::Cache::load_cache(cli.cache_file().as_ref()) {
+        let cache = match cache::Cache::load_cache(&cli.get_cache()) {
             Ok(cache) => cache,
             Err(error) => {
                 log::error!("{error}");
@@ -127,14 +128,14 @@ impl RuntimeContext {
     }
 
     /// Shutdown the runtime context, cleaning up any resources
-    async fn shutdown(self, cli: &crate::Cli) {
+    async fn shutdown(self, cli: &crate::Run) {
         log::debug!("Shutting down runtime context");
 
         let Self { docker, tui, cache } = self;
         tui.send(TuiMessage::ShuttingDown);
         match cache
             .into_inner()
-            .save_cache(cli.cache_file().as_ref(), !cli.clean_old)
+            .save_cache(&cli.get_cache(), !cli.clean_old)
         {
             Ok(stale) => {
                 for data in stale {
@@ -153,7 +154,7 @@ impl RuntimeContext {
 pub fn run(
     compile_result: CompileResult,
     tui: TuiSender,
-    cli: &crate::Cli,
+    cli: &crate::Run,
 ) -> Result<(), crate::SerpentineError> {
     let start_node = compile_result.start_node;
 
@@ -196,6 +197,32 @@ pub fn run(
             result
         })
         .map_err(crate::SerpentineError::Runtime)?;
+
+    Ok(())
+}
+
+/// Clear out the given cache file
+pub fn clear_cache(cache_file: &Path) -> Result<(), RuntimeError> {
+    let cache = cache::Cache::load_cache(cache_file)?;
+
+    // `Cache::save_cache` returns the list of cache entries which we use to cleanup.
+    // it also largely clears out the file, but we delete that afterwards anyways.
+    let stale = cache.save_cache(cache_file, false)?;
+    std::fs::remove_file(cache_file)?;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| RuntimeError::internal(format!("Failed to start tokio {err}")))?
+        .block_on(async move {
+            let docker = docker::DockerClient::new(TuiSender(None)).await?;
+            for data in stale {
+                data.cleanup(&docker).await;
+            }
+            docker.shutdown().await;
+
+            Ok::<_, RuntimeError>(())
+        })?;
 
     Ok(())
 }

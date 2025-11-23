@@ -1,8 +1,8 @@
 run:
-    cargo run -p serpentine
+    cargo run -p serpentine -- run
 
 run_ci:
-    cargo run -p serpentine -- --ci --clean-old
+    cargo run -p serpentine -- run --ci --clean-old
 
 snapshot:
     cargo insta test --review --unreferenced delete
@@ -22,6 +22,7 @@ test:
 # WARNING: This might stop/delete other images on your system
 # Its only recommended to be run if you don't have other running important containers
 clean:
+    cargo run -p serpentine -- clean
     docker stop --all
     docker rm --all
     docker system prune --all

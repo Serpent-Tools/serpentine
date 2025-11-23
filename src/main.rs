@@ -15,6 +15,37 @@ mod tui;
 /// Serpentine is a build system and programming language.
 #[derive(clap::Parser)]
 struct Cli {
+    /// Action to take
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// Return the path to the cache file to use
+fn get_default_cache_file() -> PathBuf {
+    if let Some(project_dirs) = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
+    {
+        project_dirs.cache_dir().join("cache.bincode")
+    } else {
+        log::warn!("Failed to determine default cache location.");
+        PathBuf::from("./cache.bincode")
+    }
+}
+
+/// Subcommands for serpentine
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Run a serpentine pipeline
+    Run(Run),
+    /// Clear out serpentine's cache.
+    Clean {
+        /// The cache file to clean
+        cache: Option<PathBuf>,
+    },
+}
+
+/// Arguments for the run command
+#[derive(clap::Args)]
+struct Run {
     /// The pipeline to use
     #[arg(short, long, default_value = "./main.snek")]
     pipeline: PathBuf,
@@ -29,7 +60,7 @@ struct Cli {
     clean_old: bool,
 }
 
-impl Cli {
+impl Run {
     /// Should we use the tui?
     ///
     /// This checks the `--ci` flag and whether we are in an interactive terminal
@@ -41,21 +72,15 @@ impl Cli {
         }
     }
 
-    /// Return the path to the cache file to use
-    fn cache_file(&self) -> Cow<'_, Path> {
+    /// Get the cache to use
+    fn get_cache(&self) -> Cow<'_, Path> {
         if let Some(cache) = &self.cache {
-            Cow::Borrowed(cache)
-        } else if let Some(project_dirs) =
-            directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
-        {
-            Cow::Owned(project_dirs.cache_dir().join("cache.bincode"))
+            Cow::Borrowed(cache.as_ref())
         } else {
-            log::warn!("Failed to determine default cache location.");
-            Cow::Owned(PathBuf::from("./cache.bincode"))
+            Cow::Owned(get_default_cache_file())
         }
     }
 }
-
 /// An error produced by serpentine
 #[derive(Debug, Error, Diagnostic)]
 enum SerpentineError {
@@ -157,7 +182,20 @@ fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
 fn main() -> miette::Result<()> {
     let command = Cli::parse();
 
-    println!("Storing cache in {}", command.cache_file().display());
+    match command.command {
+        Command::Run(run) => handle_run(&run),
+        Command::Clean { cache } => {
+            setup_logging(tui::TuiSender(None), true)?;
+            engine::clear_cache(&cache.unwrap_or_else(get_default_cache_file))?;
+            println!("Cleaned out the cache.");
+            Ok(())
+        }
+    }
+}
+
+/// Handle the `run` subcommand
+fn handle_run(command: &Run) -> Result<(), miette::Error> {
+    println!("Storing cache in {}", command.get_cache().display());
 
     if command.use_tui() {
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -172,7 +210,7 @@ fn main() -> miette::Result<()> {
         log::info!("Executing pipeline");
         let total_nodes = result.graph.len();
         let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes));
-        let result = engine::run(result, tui::TuiSender(Some(sender.clone())), &command);
+        let result = engine::run(result, tui::TuiSender(Some(sender.clone())), command);
 
         log::info!("Executor returned, waiting for TUI to exit");
         let _ = sender.send(tui::TuiMessage::Shutdown);
@@ -190,7 +228,7 @@ fn main() -> miette::Result<()> {
         let result = snek::compile_graph(&command.pipeline)?;
 
         log::info!("Executing pipeline");
-        let result = engine::run(result, tui::TuiSender(None), &command);
+        let result = engine::run(result, tui::TuiSender(None), command);
 
         result.map_err(Into::into)
     }
@@ -208,7 +246,7 @@ mod tests {
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     fn live_examples(#[files("test_cases/live/**/*.snek")] path: PathBuf) {
         let graph = crate::snek::compile_graph(&path).expect("Failed to compile pipeline");
-        let cli = crate::Cli {
+        let cli = crate::Run {
             pipeline: PathBuf::from("."),
             ci: true,
             cache: None,
