@@ -41,6 +41,15 @@ enum Command {
         /// The cache file to clean
         cache: Option<PathBuf>,
     },
+    /// Render a graph of the given pipeline.
+    Graph {
+        /// The pipeline to use
+        #[arg(short, long, default_value = "./main.snek")]
+        pipeline: PathBuf,
+        /// The output file
+        #[arg(short, long, default_value = "./serpentine.svg")]
+        output: PathBuf,
+    },
 }
 
 /// Arguments for the run command
@@ -190,6 +199,12 @@ fn main() -> miette::Result<()> {
             println!("Cleaned out the cache.");
             Ok(())
         }
+        Command::Graph { pipeline, output } => {
+            setup_logging(tui::TuiSender(None), true)?;
+            let graph = snek::compile_graph(&pipeline)?;
+            render_graph(graph, &output)?;
+            Ok(())
+        }
     }
 }
 
@@ -232,6 +247,68 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
 
         result.map_err(Into::into)
     }
+}
+
+/// Render the given compile result to a svg graph.
+fn render_graph(graph: snek::CompileResult, output: &Path) -> Result<(), engine::RuntimeError> {
+    use layout::backends::svg::SVGWriter;
+    use layout::core::base::Orientation;
+    use layout::core::geometry::get_size_for_str;
+    use layout::core::style::{LineStyleKind, StyleAttr};
+    use layout::std_shapes::shapes::{Arrow, Element, ShapeKind};
+    use layout::topo::layout::VisualGraph;
+
+    let mut nodes = Vec::new();
+    let mut vg = VisualGraph::new(Orientation::TopToBottom);
+    let arrow = Arrow::simple("");
+    let mut phantom_arrow = Arrow::simple("");
+    phantom_arrow.line_style = LineStyleKind::Dotted;
+    let mut look = StyleAttr::simple();
+    look.font_size = 16;
+
+    for node in graph.graph {
+        let node_impl = graph.nodes.get(node.kind);
+
+        let label = node_impl.describe();
+
+        let mut size = get_size_for_str(&label, look.font_size);
+        size.x /= 2.0;
+        size.y += 10.0;
+        size.x += 10.0;
+
+        let shape = ShapeKind::new_box(&label);
+        let handle = vg.add_node(Element::create(
+            shape,
+            look.clone(),
+            Orientation::TopToBottom,
+            size,
+        ));
+
+        nodes.push(handle);
+
+        for input in node.inputs {
+            if let Some(input) = nodes.get(input.index()) {
+                vg.add_edge(arrow.clone(), *input, handle);
+            } else {
+                debug_assert!(false, "Missing node for connection {input:?}");
+            }
+        }
+
+        for input in node.phantom_inputs {
+            if let Some(input) = nodes.get(input.index()) {
+                vg.add_edge(phantom_arrow.clone(), *input, handle);
+            } else {
+                debug_assert!(false, "Missing node for connection {input:?}");
+            }
+        }
+    }
+
+    log::info!("Writing graph to {}", output.display());
+    let mut writer = SVGWriter::new();
+    vg.do_it(false, false, false, &mut writer);
+    std::fs::write(output, writer.finalize())?;
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -4,6 +4,9 @@ run:
 run_ci:
     cargo run -p serpentine -- run --ci --clean-old
 
+graph:
+    cargo run -p serpentine -- graph
+
 snapshot:
     cargo insta test --review --unreferenced delete
 

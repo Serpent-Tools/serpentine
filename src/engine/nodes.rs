@@ -1,5 +1,6 @@
 //! Contains the implementation of all the nodes
 
+use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -26,6 +27,9 @@ pub trait NodeImpl {
     /// In general quick to execute pure nodes should not be cached.
     /// As well as nodes that read external resources should not be cached.
     fn should_be_cached(&self) -> bool;
+
+    /// Describe this node, used by the graph builder.
+    fn describe(&self) -> Cow<'static, str>;
 
     /// Given the input types return the return type of the node.
     /// Error on invalid types
@@ -70,7 +74,7 @@ pub trait NodeImpl {
                 && let Some(cached_value) =
                     scheduler.context().cache.lock().await.get(&key)?.cloned()
             {
-                log::debug!("Cache hit on {}", std::any::type_name::<Self>());
+                log::debug!("Cache hit on {}", self.describe());
                 if cached_value.health_check(&scheduler.context().docker).await {
                     return Ok(cached_value);
                 }
@@ -78,7 +82,7 @@ pub trait NodeImpl {
             }
             let key = key.sha256()?;
 
-            log::debug!("Executing {}", std::any::type_name::<Self>());
+            log::debug!("Executing {}", self.describe());
             let result = self.execute(scheduler.context(), inputs).await?;
 
             if self.should_be_cached() {
@@ -215,6 +219,10 @@ macro_rules! impl_node_impl {
                 self.should_be_cached
             }
 
+            fn describe(&self) -> Cow<'static, str> {
+                std::any::type_name::<F>().into()
+            }
+
             fn return_type(&self, arguments: &[Spanned<DataType>], node_span: Span) -> Result<DataType, CompileError> {
                 let count = $({
                     #[cfg(false)]
@@ -286,6 +294,10 @@ impl NodeImpl for Noop {
         false
     }
 
+    fn describe(&self) -> Cow<'static, str> {
+        "Noop".into()
+    }
+
     fn return_type(
         &self,
         arguments: &[Spanned<DataType>],
@@ -325,6 +337,10 @@ pub struct LiteralNode(pub Data);
 impl NodeImpl for LiteralNode {
     fn should_be_cached(&self) -> bool {
         false
+    }
+
+    fn describe(&self) -> Cow<'static, str> {
+        format!("{:?}", self.0).into()
     }
 
     fn return_type(
@@ -505,6 +521,10 @@ struct Join;
 impl NodeImpl for Join {
     fn should_be_cached(&self) -> bool {
         false
+    }
+
+    fn describe(&self) -> Cow<'static, str> {
+        "Join".into()
     }
 
     fn return_type(
