@@ -134,7 +134,7 @@ impl UiState {
             TuiMessage::UpdateTask(task) => {
                 if let TaskProgress::Log(msg) = &task.progress {
                     self.task_logs.push(msg.clone());
-                    if self.task_logs.len() > 20 {
+                    if self.task_logs.len() > 40 {
                         self.task_logs.remove(0);
                     }
                 }
@@ -183,6 +183,11 @@ impl UiState {
         frame.render_widget(progress, progress_area);
         self.draw_progress_bar(progress_inner, frame);
 
+        let [task_area, task_logs_area] = Layout::new(
+            Direction::Horizontal,
+            [Constraint::Min(100), Constraint::Fill(1)],
+        )
+        .areas(task_area);
         let tasks = Block::default()
             .borders(Borders::ALL)
             .title(" Tasks ")
@@ -195,6 +200,11 @@ impl UiState {
         let tasks_inner = tasks.inner(task_area);
         frame.render_widget(tasks, task_area);
         self.draw_tasks(tasks_inner, frame);
+
+        let task_logs = Block::default().borders(Borders::ALL).title(" Task Logs ");
+        let task_logs_inner = task_logs.inner(task_logs_area);
+        frame.render_widget(task_logs, task_logs_area);
+        frame.render_widget(Paragraph::new(self.task_logs.join("\n")), task_logs_inner);
 
         self.draw_status(status_area, frame);
     }
@@ -342,8 +352,8 @@ impl UiState {
 
     /// Draw the various status readouts
     fn draw_status(&self, area: Rect, frame: &mut ratatui::Frame) {
-        let [log_area, task_area, container_area] =
-            Layout::new(Direction::Horizontal, [Constraint::Fill(1); 3]).areas(area);
+        let [log_area, container_area] =
+            Layout::new(Direction::Horizontal, [Constraint::Fill(1); 2]).areas(area);
 
         let logs = Block::default()
             .borders(Borders::ALL)
@@ -351,11 +361,6 @@ impl UiState {
         let log_inner = logs.inner(log_area);
         frame.render_widget(logs, log_area);
         frame.render_widget(Paragraph::new(self.logs.join("\n")), log_inner);
-
-        let tasks = Block::default().borders(Borders::ALL).title(" Task Logs ");
-        let task_inner = tasks.inner(task_area);
-        frame.render_widget(tasks, task_area);
-        frame.render_widget(Paragraph::new(self.task_logs.join("\n")), task_inner);
 
         let containers = Block::default().borders(Borders::ALL).title(" Containers ");
         let container_inner = containers.inner(container_area);
