@@ -130,7 +130,11 @@ impl Compiler {
                     self.compile_node(context, function_node)?;
                 }
                 let return_value = self.get_symbol(*return_value).clone();
-                let node_id = self.create_phantom_noop(context, return_value.node, phantom_inputs);
+                let node_id = if phantom_inputs.is_empty() {
+                    return_value.node
+                } else {
+                    self.create_phantom_noop(context, return_value.node, phantom_inputs)
+                };
 
                 (node_id, return_value.type_)
             }
@@ -172,13 +176,7 @@ impl Compiler {
             phantom_inputs: phantom_inputs.into_vec().into(),
         };
 
-        let instance_id = if let Some(cached_value) = self.node_cache.get(&node) {
-            *cached_value
-        } else {
-            let instance_id = self.graph.push(node.clone());
-            self.node_cache.insert(node, instance_id);
-            instance_id
-        };
+        let instance_id = self.push_node_with_cache(node);
 
         Ok((instance_id, return_type))
     }
@@ -212,11 +210,23 @@ impl Compiler {
         function_output: NodeInstanceId,
         phantom_inputs: Box<[NodeInstanceId]>,
     ) -> NodeInstanceId {
-        self.graph.push(Node {
+        self.push_node_with_cache(Node {
             kind: context.noop,
             inputs: Box::new([function_output]),
             phantom_inputs: phantom_inputs.into_vec().into(),
         })
+    }
+
+    /// Push a node onto the graph or return a cached value.
+    /// Returns the node id of the result.
+    fn push_node_with_cache(&mut self, node: Node) -> NodeInstanceId {
+        if let Some(cached_value) = self.node_cache.get(&node) {
+            *cached_value
+        } else {
+            let instance_id = self.graph.push(node.clone());
+            self.node_cache.insert(node, instance_id);
+            instance_id
+        }
     }
 
     /// Retrieve the node pointed to by a symbol at this point in time

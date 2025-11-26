@@ -30,7 +30,6 @@ def Cooked(build_kind) {
 clippy = Cooked("--clippy")
     > Exec("cargo clippy -- -Dwarnings");
 
-/*
 fmt = rust
     > Exec("rustup component add rustfmt")
     > With(source_code, ".")
@@ -40,13 +39,11 @@ spelling = rust // We don't need the full rust image for this, but it's easier t
     > Binstall("typos-cli", "typos")
     > With(source_code, ".")
     > Exec("typos");
-*/
 
 tests = Cooked("--tests")
     > Binstall("cargo-nextest", "cargo-nextest")
     > Exec("cargo nextest run");
 
-// checks = !(tests, spelling, clippy, fmt) Noop(0);
+checks = !(tests, spelling, clippy, fmt) Noop(0);
 
-// export DEFAULT = checks;
-export DEFAULT = 0;
+export DEFAULT = checks;
