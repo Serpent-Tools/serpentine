@@ -207,8 +207,11 @@ impl CompileError {
 }
 
 /// Compile the given file into a compile result
-pub fn compile_graph(file: &Path) -> Result<CompileResult, crate::SerpentineError> {
-    let resolved = resolver::resolve(file)?;
+pub fn compile_graph(
+    file: &Path,
+    entry_point: &str,
+) -> Result<CompileResult, crate::SerpentineError> {
+    let resolved = resolver::resolve(file, entry_point)?;
     let compiled = compiler::compile(resolved)?;
     Ok(compiled)
 }
@@ -223,7 +226,7 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn compile_positive(#[files("test_cases/positive/**/*.snek")] path: PathBuf) {
-        let res = compile_graph(&path);
+        let res = compile_graph(&path, "DEFAULT");
         match res {
             Ok(_) => {}
             Err(err) => {
@@ -237,7 +240,7 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn compile_negative(#[files("test_cases/negative/**/*.snek")] path: PathBuf) {
-        let res = compile_graph(&path);
+        let res = compile_graph(&path, "DEFAULT");
         match res {
             Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),
             Err(err) => {

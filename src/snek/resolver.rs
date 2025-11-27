@@ -270,7 +270,7 @@ pub struct ResolveResult {
 }
 
 /// Compile the given file to a IR
-pub fn resolve(file: &Path) -> Result<ResolveResult, crate::SerpentineError> {
+pub fn resolve(file: &Path, entry_point: &str) -> Result<ResolveResult, crate::SerpentineError> {
     let mut resolver = Resolver {
         modules: ModuleStore::new(),
         module_cache: HashMap::new(),
@@ -282,7 +282,6 @@ pub fn resolve(file: &Path) -> Result<ResolveResult, crate::SerpentineError> {
     };
     let (prelude, noop) = resolver.create_prelude();
 
-    let entry_point = "DEFAULT";
     let cli_file_id = resolver.file.push("<cli>".into(), entry_point);
     let cli_span = Span::new(cli_file_id, 0, entry_point.len());
 

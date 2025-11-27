@@ -27,20 +27,20 @@ def Cooked(build_kind) {
         > With(source_code, ".");
 }
 
-clippy = Cooked("--clippy")
+export clippy = Cooked("--clippy")
     > Exec("cargo clippy -- -Dwarnings");
 
-fmt = rust
+export fmt = rust
     > Exec("rustup component add rustfmt")
     > With(source_code, ".")
     > Exec("cargo fmt --check");
 
-spelling = rust // We don't need the full rust image for this, but it's easier than pulling in a extra image.
+export spelling = rust // We don't need the full rust image for this, but it's easier than pulling in a extra image.
     > Binstall("typos-cli", "typos")
     > With(source_code, ".")
     > Exec("typos");
 
-tests = Cooked("--tests")
+export tests = Cooked("--tests")
     > Binstall("cargo-nextest", "cargo-nextest")
     > Exec("cargo nextest run");
 

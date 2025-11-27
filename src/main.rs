@@ -58,6 +58,9 @@ struct Run {
     /// The pipeline to use
     #[arg(short, long, default_value = "./main.snek")]
     pipeline: PathBuf,
+    /// The entry point to use for the pipeline
+    #[arg(short, long, default_value = "DEFAULT")]
+    entry_point: String,
     /// CI mode, disables TUI and logs directly to stdout.
     #[arg(long)]
     ci: bool,
@@ -201,7 +204,7 @@ fn main() -> miette::Result<()> {
         }
         Command::Graph { pipeline, output } => {
             setup_logging(tui::TuiSender(None), true)?;
-            let graph = snek::compile_graph(&pipeline)?;
+            let graph = snek::compile_graph(&pipeline, "DEFAULT")?;
             render_graph(graph, &output)?;
             Ok(())
         }
@@ -220,7 +223,7 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
         }
 
         log::info!("Compiling pipeline: {}", command.pipeline.display());
-        let result = snek::compile_graph(&command.pipeline)?;
+        let result = snek::compile_graph(&command.pipeline, &command.entry_point)?;
 
         log::info!("Executing pipeline");
         let total_nodes = result.graph.len();
@@ -240,7 +243,7 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
         }
 
         log::info!("Compiling pipeline: {}", command.pipeline.display());
-        let result = snek::compile_graph(&command.pipeline)?;
+        let result = snek::compile_graph(&command.pipeline, &command.entry_point)?;
 
         log::info!("Executing pipeline");
         let result = engine::run(result, tui::TuiSender(None), command);
@@ -322,12 +325,14 @@ mod tests {
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     fn live_examples(#[files("test_cases/live/**/*.snek")] path: PathBuf) {
-        let graph = crate::snek::compile_graph(&path).expect("Failed to compile pipeline");
+        let graph =
+            crate::snek::compile_graph(&path, "DEFAULT").expect("Failed to compile pipeline");
         let cli = crate::Run {
-            pipeline: PathBuf::from("."),
+            pipeline: path,
             ci: true,
             cache: None,
             clean_old: false,
+            entry_point: "DEFAULT".into(),
         };
         crate::engine::run(graph, crate::tui::TuiSender(None), &cli).expect("Failed to execute");
     }
