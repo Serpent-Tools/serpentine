@@ -1,5 +1,8 @@
 import "./ci/tests.snek" as tests;
 import "./ci/lints.snek" as lints;
+import "./ci/build.snek" as build;
 
 export DEFAULT = !(tests::full_tests, lints::full_lints) Noop(0);
 export LIGHT = !(tests::light_tests, lints::light_lints) Noop(0);
+
+export BUILD = ToHost(build::bundle, "./target/out");

@@ -1,0 +1,19 @@
+import "./lib.snek" as lib;
+
+license_file = lib::rust
+    > lib::Binstall("cargo-about", "cargo-about")
+    > With(lib::source_code, ".")
+    > ExecSh("cargo about generate about.hbs > license.html")
+    > Export("license.html");
+
+binary = lib::rust
+    > lib::Cooked("--release")
+    > Exec("cargo build --release")
+    > Export("./target/release/serpentine");
+
+export bundle = Image("alpine:latest")
+    > WorkingDir("/serpentine")
+    > With(license_file, "license.html")
+    > With(binary, "serpentine")
+    > Export("/serpentine");
+
