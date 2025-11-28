@@ -1,4 +1,4 @@
-export DEFAULT = Image("alpine:latest")
+export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox")
     > With(FromHost("justfile"), "justfile")
     > Exec("cat justfile")
     > With(FromHost("src"), "src")

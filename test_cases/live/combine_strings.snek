@@ -1,4 +1,4 @@
-export DEFAULT = Image("alpine:latest")
+export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox")
      > Exec(Join("touch ", "'hello world 123.txt'"))
      > Exec(Join("c", "a", "t", " 'hello world 123.txt'"));
 

@@ -50,14 +50,27 @@ def WithPath(container, path) {
 
 docker_with_rust = Image("docker:dind")
     > WorkingDir("/app")
-    > Exec("apk add curl")
-    > Exec("apk add rust") // we do this to ensure needed dependencies are installed.
+    > Exec("apk add curl rust")
     > ExecSh("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
-export tests = docker_with_rust 
+export tests_docker = docker_with_rust 
     > WithPath(Join(GetEnv(docker_with_rust, "HOME"), "/.cargo/bin"))
-    > Cooked("--tests")
     > Env("DOCKER_HOST", "unix:///var/run/docker.sock")
-    > ExecSh("dockerd & RUST_LOG='serpentine=trace' cargo test");
+    > Exec("cargo install cargo-nextest") // Binstall uses the wrong target
+    > Cooked("--tests")
+    > ExecSh("dockerd --log-level error & RUST_LOG='serpentine=trace' cargo nextest run");
+
+podman_with_rust = Image("quay.io/podman/stable")
+    > WorkingDir("/app")
+    > Exec("dnf install -y make automake gcc gcc-c++ kernel-devel")
+    > ExecSh("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
+export tests_podman = podman_with_rust 
+    > WithPath(Join(GetEnv(podman_with_rust, "HOME"), "/.cargo/bin"))
+    > Env("DOCKER_HOST", "unix:///var/run/podman.sock")
+    > Cooked("--tests")
+    > Binstall("cargo-nextest", "cargo-nextest")
+    > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run");
+
+export tests = !(tests_docker, tests_podman) Noop(0);
 
 checks = !(tests, spelling, clippy, fmt) Noop(0);
 

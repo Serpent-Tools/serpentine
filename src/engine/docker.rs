@@ -33,6 +33,8 @@ pub struct DockerClient {
     cleanup_list: Mutex<Vec<Container>>,
     /// Sender to the TUI
     tui: TuiSender,
+    /// A mutex for pulling images to avoid spawning multiple pull tasks at once
+    pull_mutex: Mutex<()>,
 }
 
 impl DockerClient {
@@ -47,6 +49,7 @@ impl DockerClient {
             client,
             containers: Mutex::new(HashMap::new()),
             cleanup_list: Mutex::new(Vec::new()),
+            pull_mutex: Mutex::new(()),
             tui,
         })
     }
@@ -154,6 +157,7 @@ impl DockerClient {
             let task_id: Arc<str> = Arc::from(format!("pull-{image}"));
             let task_title: Arc<str> = Arc::from(format!("docker pull {image}"));
 
+            let lock = self.pull_mutex.lock().await;
             let mut stream = self.client.create_image(
                 Some(
                     bollard::query_parameters::CreateImageOptionsBuilder::new()
@@ -175,6 +179,7 @@ impl DockerClient {
                 }
             }
 
+            drop(lock);
             self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
 
             Ok(ContainerState(Rc::from(image)))
@@ -190,6 +195,7 @@ impl DockerClient {
                     .container(&container.0)
                     .repo("serpentine-worker-commit")
                     .tag(uuid::Uuid::new_v4().to_string().as_str())
+                    .pause(false)
                     .build(),
                 bollard::secret::ContainerConfig::default(),
             )
@@ -615,6 +621,7 @@ impl DockerClient {
                     .container(&container.0)
                     .repo("serpentine-worker-commit")
                     .tag(uuid::Uuid::new_v4().to_string().as_str())
+                    .pause(false)
                     .build(),
                 bollard::secret::ContainerConfig {
                     working_dir: Some(dir.to_owned()),
@@ -655,6 +662,7 @@ impl DockerClient {
                     .container(&container.0)
                     .repo("serpentine-worker-commit")
                     .tag(uuid::Uuid::new_v4().to_string().as_str())
+                    .pause(false)
                     .build(),
                 bollard::secret::ContainerConfig {
                     env: Some(vec![format!("{env}={value}")]),
@@ -707,7 +715,7 @@ mod tests {
     use super::*;
     use crate::tui::TuiMessage;
 
-    const TEST_IMAGE: &str = "alpine:latest";
+    const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:latest";
 
     #[fixture]
     async fn docker_client() -> DockerClient {

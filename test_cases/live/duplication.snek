@@ -1,4 +1,4 @@
-foo = Image("alpine:latest") > Exec("echo hello") > Exec("echo world");
-bar = Image("alpine:latest") > Exec("echo hello") > Exec("echo world");
+foo = Image("quay.io/toolbx-images/alpine-toolbox") > Exec("echo hello") > Exec("echo world");
+bar = Image("quay.io/toolbx-images/alpine-toolbox") > Exec("echo hello") > Exec("echo world");
 
 export DEFAULT = !(foo, bar) Noop(0);

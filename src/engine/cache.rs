@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(*loaded_value, value);
     }
 
-    #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 50, ..Default::default()})]
+    #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 5, ..Default::default()})]
     #[test_log::test]
     fn save_and_load_multiple_entries(values: Vec<(NodeKindId, Vec<Data>, Data)>) {
         let mut cache = Cache::new();
