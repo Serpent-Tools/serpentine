@@ -510,6 +510,23 @@ async fn export(
     context.docker.export_path(&container, &path).await
 }
 
+/// Write the given file to the host
+async fn to_host(
+    _context: Rc<RuntimeContext>,
+    fs: FileSystem,
+    path: Rc<str>,
+) -> Result<i128, RuntimeError> {
+    let data = match fs {
+        FileSystem::File(data) | FileSystem::Folder(data) => data,
+    };
+
+    let mut archive = tar::Archive::new(&*data);
+    log::info!("Writing fs to {path}");
+    archive.unpack(&*path)?;
+
+    Ok(0)
+}
+
 /// Copy a `FileSystem` into a container at the given path
 async fn with(
     context: Rc<RuntimeContext>,
@@ -645,6 +662,10 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
                 export, false,
             )),
+        ),
+        (
+            "ToHost",
+            Box::new(Wrap::<_, (FileSystem, Rc<str>)>::new(to_host, false)),
         ),
         // cache reasoning: While this operation is generally quick it is a primary candidate for
         // caching, not because the operation is nice to skip, but because it isn't truly pure as

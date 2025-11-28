@@ -1,0 +1,17 @@
+[bans]
+multiple-versions = "allow" # we cant avoid this due to dependencies
+wildcards = "deny"
+
+[advisories]
+yanked = "deny"
+unmaintained = "workspace"
+
+[licenses]
+allow = [
+    "MIT",
+    "Unicode-3.0",
+    "Apache-2.0",
+    "MPL-2.0",
+    "Zlib",
+    "ISC"
+]

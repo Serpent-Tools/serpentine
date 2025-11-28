@@ -14,5 +14,16 @@ spelling = Image("debian")
     > With(lib::source_code, ".")
     > Exec("typos");
 
+unused = lib::rust
+    > lib::Binstall("cargo-udeps", "cargo-udeps")
+    > With(lib::source_code, ".")
+    > Exec("cargo udeps");
+
+deny = lib::rust
+    > lib::Binstall("cargo-deny", "cargo-deny")
+    > With(lib::source_code, ".")
+    > Exec("cargo deny check all");
+
+
 export light_lints = !(clippy) Noop(0);
-export full_lints = !(clippy, fmt, spelling) Noop(0);
+export full_lints = !(clippy, fmt, spelling, unused, deny) Noop(0);

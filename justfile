@@ -4,6 +4,9 @@ run:
 run_full:
     cargo run -p serpentine -- run
 
+build:
+    cargo run -p serpentine -- run --entry-point BUILD
+
 graph:
     cargo run -p serpentine -- graph
 
