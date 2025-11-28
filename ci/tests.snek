@@ -1,0 +1,31 @@
+import "./lib.snek" as lib;
+
+docker_with_rust = Image("docker:dind")
+    > WorkingDir("/app")
+    > Exec("apk add curl rust")
+    > ExecSh("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
+tests_docker = docker_with_rust 
+    > lib::WithPath(Join(lib::GetEnv(docker_with_rust, "HOME"), "/.cargo/bin"))
+    > Env("DOCKER_HOST", "unix:///var/run/docker.sock")
+    > Exec("cargo install cargo-nextest") // Binstall uses the wrong target
+    > lib::Cooked("--tests")
+    > ExecSh("dockerd --log-level error & RUST_LOG='serpentine=trace' cargo nextest run");
+
+podman_with_rust = Image("quay.io/podman/stable")
+    > WorkingDir("/app")
+    > Exec("dnf install -y make automake gcc gcc-c++ kernel-devel")
+    > ExecSh("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
+tests_podman = podman_with_rust 
+    > lib::WithPath(Join(lib::GetEnv(podman_with_rust, "HOME"), "/.cargo/bin"))
+    > Env("DOCKER_HOST", "unix:///var/run/podman.sock")
+    > lib::Cooked("--tests")
+    > lib::Binstall("cargo-nextest", "cargo-nextest")
+    > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run");
+
+basic_tests = lib::rust
+    > lib::Binstall("cargo-nextest", "cargo-nextest")
+    > lib::Cooked("--tests")
+    > Exec("cargo nextest run");
+
+export full_tests = !(tests_docker, tests_podman) Noop(0);
+export light_tests = !(basic_tests) Noop(0);

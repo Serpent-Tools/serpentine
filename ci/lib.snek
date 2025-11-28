@@ -1,0 +1,38 @@
+// Most of this will be moved into the stdlib
+
+export rust = Image("rustlang/rust:nightly") 
+    > WorkingDir("/app")
+    > Exec("rustup component add clippy");
+
+export def Binstall(container, crate, bin_name) {
+    binary = rust 
+        > Exec("cargo install cargo-binstall")
+        > Exec(Join("cargo binstall ", crate, " --install-path out"))
+        > Export(Join("out/", bin_name));
+
+    return container > With(binary, Join("/bin/", bin_name));
+}
+
+export source_code = FromHost(".");
+
+export def Cooked(container, build_kind) {
+    recipe = rust
+        > Binstall("cargo-chef", "cargo-chef")
+        > With(source_code, ".")
+        > Exec("cargo chef prepare --recipe-path recipe.json")
+        > Export("recipe.json");
+
+    return container 
+        > Binstall("cargo-chef", "cargo-chef")
+        > With(recipe, "recipe.json")
+        > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
+        > With(source_code, ".");
+}
+
+export def GetEnv(container, env) {
+    return container > ExecOutput(Join("sh -c 'echo $", env, "'"));
+}
+
+export def WithPath(container, path) {
+    return container > Env("PATH", Join(path, ":", GetEnv(container, "PATH")));
+}

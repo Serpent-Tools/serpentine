@@ -1,8 +1,8 @@
 run:
-    cargo run -p serpentine -- run
+    cargo run -p serpentine -- run --entry-point LIGHT
 
-run_ci:
-    cargo run -p serpentine -- run --ci --clean-old
+run_full:
+    cargo run -p serpentine -- run
 
 graph:
     cargo run -p serpentine -- graph
