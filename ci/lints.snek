@@ -1,0 +1,18 @@
+import "./lib.snek" as lib;
+
+clippy = lib::rust > lib::Cooked("--clippy")
+    > Exec("cargo clippy -- -Dwarnings");
+
+fmt = lib::rust
+    > Exec("rustup component add rustfmt")
+    > With(lib::source_code, ".")
+    > Exec("cargo fmt --check");
+
+spelling = Image("debian")
+    > WorkingDir("/app")
+    > lib::Binstall("typos-cli", "typos")
+    > With(lib::source_code, ".")
+    > Exec("typos");
+
+export light_lints = !(clippy) Noop(0);
+export full_lints = !(clippy, fmt, spelling) Noop(0);
