@@ -1,0 +1,5 @@
+export DEFAULT = Image("alpine:latest")
+    // Serpentine used to assume various binaries were on path, such as mv and sleep.
+    > Env("PATH", "BROKEN")
+    > Exec("/bin/ls")
+    > ExecSh("/bin/ls");

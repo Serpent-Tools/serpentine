@@ -26,6 +26,7 @@ test:
 # Its only recommended to be run if you don't have other running important containers
 clean:
     cargo run -p serpentine -- clean
+    cargo clean
     docker stop --all
     docker rm --all
     docker system prune --all

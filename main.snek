@@ -13,21 +13,21 @@ def Binstall(container, crate, bin_name) {
 
 source_code = FromHost(".");
 
-def Cooked(build_kind) {
+def Cooked(container, build_kind) {
     recipe = rust
         > Binstall("cargo-chef", "cargo-chef")
         > With(source_code, ".")
         > Exec("cargo chef prepare --recipe-path recipe.json")
         > Export("recipe.json");
 
-    return rust 
+    return container 
         > Binstall("cargo-chef", "cargo-chef")
         > With(recipe, "recipe.json")
         > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
         > With(source_code, ".");
 }
 
-export clippy = Cooked("--clippy")
+export clippy = rust > Cooked("--clippy")
     > Exec("cargo clippy -- -Dwarnings");
 
 export fmt = rust
@@ -40,9 +40,24 @@ export spelling = rust // We don't need the full rust image for this, but it's e
     > With(source_code, ".")
     > Exec("typos");
 
-export tests = Cooked("--tests")
-    > Binstall("cargo-nextest", "cargo-nextest")
-    > Exec("cargo nextest run");
+def GetEnv(container, env) {
+    return container > ExecOutput(Join("sh -c 'echo $", env, "'"));
+}
+
+def WithPath(container, path) {
+    return container > Env("PATH", Join(path, ":", GetEnv(container, "PATH")));
+}
+
+docker_with_rust = Image("docker:dind")
+    > WorkingDir("/app")
+    > Exec("apk add curl")
+    > Exec("apk add rust") // we do this to ensure needed dependencies are installed.
+    > ExecSh("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
+export tests = docker_with_rust 
+    > WithPath(Join(GetEnv(docker_with_rust, "HOME"), "/.cargo/bin"))
+    > Cooked("--tests")
+    > Env("DOCKER_HOST", "unix:///var/run/docker.sock")
+    > ExecSh("dockerd & RUST_LOG='serpentine=trace' cargo test");
 
 checks = !(tests, spelling, clippy, fmt) Noop(0);
 

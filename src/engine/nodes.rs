@@ -402,6 +402,24 @@ async fn exec(
         .await
 }
 
+/// Run a command in a container, getting its output
+async fn exec_output(
+    context: Rc<RuntimeContext>,
+    container: docker::ContainerState,
+    command: Rc<str>,
+) -> Result<Rc<str>, RuntimeError> {
+    let command = shell_words::split(&command)?;
+
+    context
+        .docker
+        .exec_get_output(
+            &container,
+            &command.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+        )
+        .await
+        .map(Into::into)
+}
+
 /// Read a file/folder into a tar from the host system.
 // PERF: Rewrite to use `tar_async`?
 async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSystem, RuntimeError> {
@@ -515,6 +533,16 @@ async fn with_working_dir(
     context.docker.set_working_dir(&container, &dir).await
 }
 
+/// Set a environment variable.
+async fn env(
+    context: Rc<RuntimeContext>,
+    container: docker::ContainerState,
+    env: Rc<str>,
+    value: Rc<str>,
+) -> Result<docker::ContainerState, RuntimeError> {
+    context.docker.set_env_var(&container, &env, &value).await
+}
+
 /// A node for joining strings
 struct Join;
 
@@ -592,6 +620,14 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
                 exec, true,
             )),
         ),
+        // cache reasoning: see ExecSh
+        (
+            "ExecOutput",
+            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+                exec_output,
+                true,
+            )),
+        ),
         // cache reasoning: We need to check with the host system on each run to know whether the output
         // of this is still valid, if the files didn't change on disk this will still spend some time
         // reading them, but will result in the same result afterwards and further nodes will have cache
@@ -625,6 +661,13 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
                 with_working_dir,
                 true,
+            )),
+        ),
+        // cache reasoning: See With
+        (
+            "Env",
+            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>, Rc<str>)>::new(
+                env, true,
             )),
         ),
         ("Join", Box::new(Join)),

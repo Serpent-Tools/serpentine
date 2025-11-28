@@ -56,9 +56,9 @@ impl DockerClient {
         log::info!("Connecting to Docker daemon");
         let client = match bollard::Docker::connect_with_defaults() {
             Ok(client) => client,
-            Err(bollard::errors::Error::SocketNotFoundError(_)) => {
+            Err(bollard::errors::Error::SocketNotFoundError(err)) => {
                 // Fallback to podman
-                log::info!("Docker socket not found, trying podman");
+                log::info!("Docker socket {err} not found, trying podman");
                 return Self::try_podman_connection();
             }
             Err(err) => return Err(err.into()),
@@ -257,11 +257,12 @@ impl DockerClient {
                 ),
                 bollard::secret::ContainerCreateBody {
                     image: Some(state.0.to_string()),
-                    cmd: Some(vec!["sleep".into(), "infinity".into()]),
+                    cmd: Some(vec!["/bin/sleep".into(), "infinity".into()]),
                     tty: Some(false),
                     open_stdin: Some(false),
                     host_config: Some(bollard::secret::HostConfig {
                         init: Some(true),
+                        privileged: Some(true),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -296,11 +297,37 @@ impl DockerClient {
         container: &ContainerState,
         cmd: &[&str],
     ) -> Result<ContainerState, RuntimeError> {
-        log::debug!("Executing command {:?} in image {}", cmd, container.0);
+        let container = self.get_state(container).await?;
+
+        self.exec_internal(&container, cmd).await?;
+
+        let image = self.commit_container(container).await?;
+        Ok(image)
+    }
+
+    /// Execute a command and its stdout and stderr.
+    pub async fn exec_get_output(
+        &self,
+        container: &ContainerState,
+        cmd: &[&str],
+    ) -> Result<String, RuntimeError> {
+        let container = self.get_state(container).await?;
+
+        let output = self.exec_internal(&container, cmd).await?;
+
+        Ok(output)
+    }
+
+    /// Execute a command in a container directly without progress logging etc.
+    /// For internal use
+    async fn exec_internal(
+        &self,
+        container: &Container,
+        cmd: &[&str],
+    ) -> Result<String, RuntimeError> {
+        log::debug!("Executing command {:?} in container {}", cmd, container.0);
         let task_title: Arc<str> = Arc::from(cmd.join(" "));
         let task_id: Arc<str> = Arc::from(format!("docker-exec-{}-{}", container.0, task_title));
-
-        let container = self.get_state(container).await?;
 
         self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
             identifier: Arc::clone(&task_id),
@@ -389,90 +416,9 @@ impl DockerClient {
             ));
         }
 
-        let image = self.commit_container(container).await?;
         self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
-        Ok(image)
-    }
 
-    /// Execute a command in a container directly without progress logging etc.
-    /// For internal use
-    async fn exec_internal(&self, container: &Container, cmd: &[&str]) -> Result<(), RuntimeError> {
-        let exec = self
-            .client
-            .create_exec(
-                &container.0,
-                bollard::exec::CreateExecOptions {
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    cmd: Some(cmd.iter().map(ToString::to_string).collect()),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        let res = self.client.start_exec(&exec.id, None).await?;
-        let mut all_output = Vec::new();
-        match res {
-            bollard::exec::StartExecResults::Detached => {
-                return Err(RuntimeError::internal(
-                    "Exec detached, this should not happen",
-                ));
-            }
-            bollard::exec::StartExecResults::Attached { output, .. } => {
-                let output = tokio_util::io::StreamReader::new(
-                    output
-                        .map_err(|err| {
-                            if let bollard::errors::Error::IOError { err } = err {
-                                err
-                            } else {
-                                std::io::Error::other(err)
-                            }
-                        })
-                        .try_filter_map(|msg| match msg {
-                            bollard::container::LogOutput::StdErr { message }
-                            | bollard::container::LogOutput::StdOut { message }
-                            | bollard::container::LogOutput::Console { message } => {
-                                futures_util::future::ok(Some(message))
-                            }
-                            bollard::container::LogOutput::StdIn { .. } => {
-                                futures_util::future::ok(None)
-                            }
-                        }),
-                );
-
-                let mut output = tokio::io::BufReader::new(output).lines();
-
-                while let Some(line) = output.next_line().await? {
-                    let line = strip_ansi_escapes::strip_str(line);
-
-                    log::trace!(
-                        "{} ({}): {}",
-                        cmd.first().unwrap_or(&"<unknown>"),
-                        container.0.get(0..12).unwrap_or("<invalid>"),
-                        line
-                    );
-
-                    all_output.push(line);
-                }
-            }
-        }
-
-        let exec_info = self.client.inspect_exec(&exec.id).await?;
-        if let Some(code) = exec_info.exit_code {
-            if code != 0 {
-                return Err(RuntimeError::CommandExecution {
-                    code,
-                    command: cmd.iter().map(ToString::to_string).collect(),
-                    output: all_output.join("\n"),
-                });
-            }
-        } else {
-            return Err(RuntimeError::internal(
-                "Exec exit code is None, this should not happen",
-            ));
-        }
-
-        Ok(())
+        Ok(all_output.join("\n"))
     }
 
     /// Copy the given file/directory into the container
@@ -497,6 +443,9 @@ impl DockerClient {
 
         match src {
             FileSystem::File(tar_data) => {
+                self.exec_internal(&container, &["/bin/mkdir", "-p", FILE_TEMP_DIR])
+                    .await?;
+
                 self.client
                     .upload_to_container(
                         &container.0,
@@ -517,23 +466,17 @@ impl DockerClient {
                 self.exec_internal(
                     &container,
                     &[
-                        "cp",
+                        "/bin/mv",
                         &format!("{FILE_TEMP_DIR}/{FILE_SYSTEM_FILE_TAR_NAME}"),
                         dest,
-                    ],
-                )
-                .await?;
-                self.exec_internal(
-                    &container,
-                    &[
-                        "rm",
-                        &format!("{FILE_TEMP_DIR}/{FILE_SYSTEM_FILE_TAR_NAME}"),
                     ],
                 )
                 .await?;
             }
             FileSystem::Folder(tar_data) => {
                 log::debug!("Is folder, uploading directly");
+                self.exec_internal(&container, &["/bin/mkdir", "-p", dest])
+                    .await?;
                 self.client
                     .upload_to_container(
                         &container.0,
@@ -675,6 +618,46 @@ impl DockerClient {
                     .build(),
                 bollard::secret::ContainerConfig {
                     working_dir: Some(dir.to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .id;
+
+        // Put the container back in the cache, as we didn't modify it
+        self.containers
+            .lock()
+            .await
+            .insert(image.clone(), container);
+
+        Ok(ContainerState(Rc::from(new_image)))
+    }
+
+    /// Set a environment variable in the container
+    pub async fn set_env_var(
+        &self,
+        image: &ContainerState,
+        env: &str,
+        value: &str,
+    ) -> Result<ContainerState, RuntimeError> {
+        log::debug!(
+            "Setting env variable of container {} to {}={}",
+            image.0,
+            env,
+            value
+        );
+        let container = self.get_state(image).await?;
+
+        let new_image = self
+            .client
+            .commit_container(
+                bollard::query_parameters::CommitContainerOptionsBuilder::new()
+                    .container(&container.0)
+                    .repo("serpentine-worker-commit")
+                    .tag(uuid::Uuid::new_v4().to_string().as_str())
+                    .build(),
+                bollard::secret::ContainerConfig {
+                    env: Some(vec![format!("{env}={value}")]),
                     ..Default::default()
                 },
             )
@@ -846,6 +829,25 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn exec_output(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+        let image = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let output = docker_client
+            .exec_get_output(&image, &["echo", "hello world"])
+            .await
+            .expect("Failed to exec in container");
+        docker_client.shutdown().await;
+
+        assert_eq!(output, "hello world");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn copy_file_between_containers(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let base = docker_client
@@ -966,6 +968,28 @@ mod tests {
             .expect("Failed to set working dir");
         docker_client
             .exec(&image, &["ls", "bar"])
+            .await
+            .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn set_env_var(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+        let image = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let image = docker_client
+            .set_env_var(&image, "HELLO", "WORLD")
+            .await
+            .expect("Failed to set env");
+        docker_client
+            .exec(&image, &["sh", "-c", "echo $HELLO | grep -q WORLD"])
             .await
             .expect("Exec failed");
 
