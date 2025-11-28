@@ -1,4 +1,4 @@
-base = Image("alpine:latest")
+base = Image("quay.io/toolbx-images/alpine-toolbox")
     > Exec("touch hello.txt")
     > Exec("mkdir foo")
     > Exec("touch foo/hello.txt");
@@ -6,11 +6,11 @@ base = Image("alpine:latest")
 hello = base > Export("hello.txt");
 foo = base > Export("foo");
 
-check_hello = Image("alpine:latest")
+check_hello = Image("quay.io/toolbx-images/alpine-toolbox")
     > With(hello, "nice.txt")
     > Exec("cat nice.txt");
 
-check_foo = Image("alpine:latest")
+check_foo = Image("quay.io/toolbx-images/alpine-toolbox")
     > With(foo, "bar")
     > Exec("cat bar/hello.txt");
 
