@@ -316,8 +316,12 @@ impl UiState {
     fn create_bar_widget(&self, area: Rect, frame: &mut ratatui::Frame) {
         let total_width = area.width as usize;
 
-        let finished_width = fraction_of(self.finished_nodes, self.total_nodes, total_width);
-        let pending_width = fraction_of(self.pending_nodes, self.total_nodes, total_width);
+        let total_nodes = self
+            .pending_nodes
+            .saturating_add(self.running_nodes)
+            .saturating_add(self.finished_nodes);
+        let finished_width = fraction_of(self.finished_nodes, total_nodes, total_width);
+        let pending_width = fraction_of(self.pending_nodes, total_nodes, total_width);
         let running_width = total_width
             .saturating_sub(finished_width)
             .saturating_sub(pending_width);
