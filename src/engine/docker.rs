@@ -33,8 +33,6 @@ pub struct DockerClient {
     cleanup_list: Mutex<Vec<Container>>,
     /// Sender to the TUI
     tui: TuiSender,
-    /// A mutex for pulling images to avoid spawning multiple pull tasks at once
-    pull_mutex: Mutex<()>,
 }
 
 impl DockerClient {
@@ -49,7 +47,6 @@ impl DockerClient {
             client,
             containers: Mutex::new(HashMap::new()),
             cleanup_list: Mutex::new(Vec::new()),
-            pull_mutex: Mutex::new(()),
             tui,
         })
     }
@@ -157,7 +154,6 @@ impl DockerClient {
             let task_id: Arc<str> = Arc::from(format!("pull-{image}"));
             let task_title: Arc<str> = Arc::from(format!("docker pull {image}"));
 
-            let lock = self.pull_mutex.lock().await;
             let mut stream = self.client.create_image(
                 Some(
                     bollard::query_parameters::CreateImageOptionsBuilder::new()
@@ -179,7 +175,6 @@ impl DockerClient {
                 }
             }
 
-            drop(lock);
             self.tui.send(crate::tui::TuiMessage::FinishTask(task_id));
 
             Ok(ContainerState(Rc::from(image)))
@@ -236,19 +231,24 @@ impl DockerClient {
                 }
 
                 log::error!("Container {} stopped externally, re-starting", container.0);
-                self.client
+                let res = self
+                    .client
                     .start_container(
                         &container.0,
                         Some(
                             bollard::query_parameters::StartContainerOptionsBuilder::new().build(),
                         ),
                     )
-                    .await?;
+                    .await;
 
-                return Ok(container);
+                if res.is_ok() {
+                    return Ok(container);
+                }
+
+                log::error!("Failed to start container, re-creating");
+            } else {
+                log::error!("Container {} deleted externally, re-creating", container.0);
             }
-
-            log::error!("Container {} deleted externally, re-creating", container.0);
         }
 
         log::trace!("Creating container from image {}", state.0);
@@ -269,6 +269,7 @@ impl DockerClient {
                     host_config: Some(bollard::secret::HostConfig {
                         init: Some(true),
                         privileged: Some(true),
+                        auto_remove: Some(true),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -297,6 +298,29 @@ impl DockerClient {
         Ok(container)
     }
 
+    /// Stop the given container.
+    ///
+    /// This should be called when its known the container wont be used again.
+    /// Or when the container required temporary exclusive access, but no semantic change.
+    /// Its rare to fork on such operations, so as such we spin down the container.
+    async fn stop_container(&self, container: Container) {
+        log::debug!("Stopping {}", container.0);
+        let _ = self
+            .client
+            .stop_container(
+                &container.0,
+                Some(
+                    bollard::query_parameters::StopContainerOptionsBuilder::new()
+                        .t(1)
+                        .build(),
+                ),
+            )
+            .await;
+
+        self.tui
+            .send(crate::tui::TuiMessage::StopContainer(container.0));
+    }
+
     /// Execute a command in a container
     pub async fn exec(
         &self,
@@ -320,6 +344,8 @@ impl DockerClient {
         let container = self.get_state(container).await?;
 
         let output = self.exec_internal(&container, cmd).await?;
+
+        self.stop_container(container).await;
 
         Ok(output)
     }
@@ -532,12 +558,7 @@ impl DockerClient {
             .try_flatten()
             .try_collect::<Vec<u8>>()
             .await?;
-
-        // Put the container back in the cache, as we didn't modify it
-        self.containers
-            .lock()
-            .await
-            .insert(image.clone(), container);
+        self.stop_container(container).await;
 
         // We need to construct a new archive to match what `FileSystem` expects.
         // Docker returns a tar containing the path as an entry.
@@ -631,11 +652,7 @@ impl DockerClient {
             .await?
             .id;
 
-        // Put the container back in the cache, as we didn't modify it
-        self.containers
-            .lock()
-            .await
-            .insert(image.clone(), container);
+        self.stop_container(container).await;
 
         Ok(ContainerState(Rc::from(new_image)))
     }
@@ -672,11 +689,7 @@ impl DockerClient {
             .await?
             .id;
 
-        // Put the container back in the cache, as we didn't modify it
-        self.containers
-            .lock()
-            .await
-            .insert(image.clone(), container);
+        self.stop_container(container).await;
 
         Ok(ContainerState(Rc::from(new_image)))
     }
