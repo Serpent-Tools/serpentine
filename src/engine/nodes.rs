@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
+use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -438,9 +439,10 @@ async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSys
                 let mut tar_builder = tar::Builder::new(&mut tar_data);
                 let file = std::fs::File::open(src)?;
                 let mut header = tar::Header::new_gnu();
+                let metadata = file.metadata()?;
                 header.set_entry_type(tar::EntryType::Regular);
-                header.set_mode(0o755);
-                header.set_size(file.metadata()?.len());
+                header.set_mode(metadata.mode());
+                header.set_size(metadata.len());
                 header.set_cksum();
                 tar_builder.append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, file)?;
                 tar_builder.finish()?;
@@ -480,15 +482,16 @@ fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Vec<u8>, RuntimeError> 
             if path.is_file() {
                 let file = std::fs::File::open(path)?;
                 let mut header = tar::Header::new_gnu();
+                let metadata = file.metadata()?;
                 header.set_entry_type(tar::EntryType::Regular);
-                header.set_mode(0o755);
-                header.set_size(file.metadata()?.len());
+                header.set_mode(metadata.mode());
+                header.set_size(metadata.len());
                 header.set_cksum();
                 tar_builder.append_data(&mut header, relative_path, file)?;
             } else if path.is_dir() {
                 let mut header = tar::Header::new_gnu();
                 header.set_entry_type(tar::EntryType::Directory);
-                header.set_mode(0o755);
+                header.set_mode(path.metadata()?.mode());
                 header.set_size(0);
                 header.set_cksum();
                 tar_builder.append(&header, std::io::empty())?;

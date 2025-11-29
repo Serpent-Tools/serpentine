@@ -585,7 +585,7 @@ impl DockerClient {
         if is_file {
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Regular);
-            header.set_mode(0o755);
+            header.set_mode(first_entry.header().mode().unwrap_or(0o755));
             header.set_cksum();
             header.set_size(first_entry.header().size().unwrap_or(0));
             builder.append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, first_entry)?;
