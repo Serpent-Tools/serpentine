@@ -34,6 +34,8 @@ pub enum TuiMessage {
     Log(Box<str>),
     /// A new container was created
     Container(Box<str>),
+    /// A new container was created
+    StopContainer(Box<str>),
 }
 
 #[derive(Clone)]
@@ -158,6 +160,9 @@ impl UiState {
             }
             TuiMessage::Container(id) => {
                 self.containers.push(id);
+            }
+            TuiMessage::StopContainer(id) => {
+                self.containers.retain(|container| *container != id);
             }
         }
     }
