@@ -1,0 +1,14 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: parsing::unknown_char
+
+  x unknown character '$' encountered in source code
+   ,-[<redacted-path>:1:9]
+ 1 | hello = $world;
+   :         |
+   :         `-- This character was not understood by the lexer
+   `----

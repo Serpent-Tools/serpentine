@@ -38,12 +38,6 @@
               "rustfmt"
             ])
             just
-            bacon
-            cargo-edit
-            cargo-nextest
-            cargo-insta
-            cargo-watch
-            typos
           ];
         };
       }

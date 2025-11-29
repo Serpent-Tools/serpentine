@@ -23,9 +23,16 @@ tests_podman = podman_with_rust
     > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run");
 
 basic_tests = lib::rust
-    > lib::Binstall("cargo-nextest", "cargo-nextest")
     > lib::Cooked("--tests")
+    > lib::Binstall("cargo-nextest", "cargo-nextest")
     > Exec("cargo nextest run");
 
 export full_tests = !(tests_docker, tests_podman) Noop(0);
 export light_tests = !(basic_tests) Noop(0);
+
+export update_snapshot = lib::rust
+    > lib::Cooked("--tests")
+    > lib::Binstall("cargo-insta", "cargo-insta")
+    > Exec("cargo insta test --accept --unreferenced delete")
+    > Export("./src")
+    > ToHost("./src");

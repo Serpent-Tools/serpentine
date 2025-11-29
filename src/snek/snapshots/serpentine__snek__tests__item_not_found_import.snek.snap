@@ -4,13 +4,16 @@ expression: err
 ---
   x Compile Error
 
-Error: compiler::item_not_found
-
-  x 'secret' not found in scope
-   ,-[<redacted-path>:3:23]
+Error: 
+  x Importing module '<redacted-path>' failed
+  |-> file_error
+  |   
+  |     x Could not read file <redacted-path>
+  |   
+  `-> No such file or directory (os error 2)
+   ,-[<redacted-path>:1:8]
+ 1 | import "..<redacted-path>" as lib;
+   :        ^^^^^^|^^^^^^
+   :              `-- In this import statement
  2 | 
- 3 | export DEFAULT = lib::secret;
-   :                       ^^^|^^
-   :                          `-- Item with this name not found
    `----
-  help: Serpentine cannot reference items (including functions) before they are defined.

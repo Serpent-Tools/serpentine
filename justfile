@@ -1,24 +1,9 @@
-run:
-    cargo run -p serpentine -- run --entry-point LIGHT
-
-run_full:
-    cargo run -p serpentine -- run
-
-build:
-    cargo run -p serpentine -- run --entry-point BUILD
+run entry_point="DEFAULT":
+    cargo run -- run --entry-point {{entry_point}}
 
 graph:
-    cargo run -p serpentine -- graph
+    cargo run -- graph
 
-snapshot:
-    cargo insta test --review --unreferenced delete
-
-# WARNING: If a `DOCKER_HOST` env is set serpentine will run its docker test suite.
-# This test suite, like serpentine itself, will spawn containers and create images on your host.
-# Similarly, running test suite without this env set might cause important integration tests to be skipped.
-# (Stuff like the stdlib requires docker access)
-test:
-    RUST_LOG="serpentine=trace" cargo nextest run --no-fail-fast
 
 # A failing test from serpentine might leave containers running
 # To be clear we mean a failing test in serpentine's test suite,
