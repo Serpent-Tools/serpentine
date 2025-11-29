@@ -1,8 +1,6 @@
 // Most of this will be moved into the stdlib
 
-export rust = Image("rustlang/rust:nightly") 
-    > WorkingDir("/app")
-    > Exec("rustup component add clippy");
+export rust = Image("rustlang/rust:nightly") > WorkingDir("/app");
 
 export def Binstall(container, crate, bin_name) {
     binary = rust 

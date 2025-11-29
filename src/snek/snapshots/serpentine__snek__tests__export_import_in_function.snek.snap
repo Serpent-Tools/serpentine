@@ -4,14 +4,17 @@ expression: err
 ---
   x Compile Error
 
-Error: compiler::invalid_statement
-
-  x export not allowed in function
-   ,-[<redacted-path>:2:5]
+Error: 
+  x Importing module '<redacted-path>' failed
+  |-> file_error
+  |   
+  |     x Could not read file <redacted-path>
+  |   
+  `-> No such file or directory (os error 2)
+   ,-[<redacted-path>:2:19]
  1 | def Foo() {
  2 |     export import "..<redacted-path>" as lib;
-   :     ^^^|^^
-   :        `-- This statement is not allowed here
+   :                   ^^^^^^|^^^^^^
+   :                         `-- In this import statement
  3 |     return Image("rust:latest");
    `----
-  help: Maybe you meant to use `return` instead?

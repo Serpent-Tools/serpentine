@@ -1,0 +1,14 @@
+---
+source: src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: parsing::unexpected_token
+
+  x Expected `identifier`
+   ,-[<redacted-path>:1:9]
+ 1 | hello = export;
+   :         ^^^|^^
+   :            `-- Got `export`
+   `----

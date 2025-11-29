@@ -1,6 +1,8 @@
 import "./lib.snek" as lib;
 
-clippy = lib::rust > lib::Cooked("--clippy")
+clippy = lib::rust 
+    > Exec("rustup component add clippy")
+    > lib::Cooked("--clippy")
     > Exec("cargo clippy -- -Dwarnings");
 
 fmt = lib::rust
