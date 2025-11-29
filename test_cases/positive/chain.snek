@@ -1,1 +1,1 @@
-export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox") > Exec("echo nice");
+export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox:latest") > Exec("echo nice");

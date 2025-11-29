@@ -222,7 +222,12 @@ impl UiState {
         )
         .split(area);
 
-        for (task, task_area) in self.tasks.iter().zip(areas.iter()) {
+        for (task, task_area) in self
+            .tasks
+            .iter()
+            .skip(self.tasks.len().saturating_sub(areas.len()))
+            .zip(areas.iter())
+        {
             match &task.progress {
                 TaskProgress::Measurable { completed, total } => {
                     #[expect(

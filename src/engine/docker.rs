@@ -43,6 +43,7 @@ impl DockerClient {
             .map_err(|err| RuntimeError::DockerNotFound {
                 inner: Box::new(err),
             })?;
+
         Ok(Self {
             client,
             containers: Mutex::new(HashMap::new()),
@@ -54,6 +55,7 @@ impl DockerClient {
     /// Attempt to connect to docker
     async fn connect_docker() -> Result<bollard::Docker, RuntimeError> {
         log::info!("Connecting to Docker daemon");
+        log::debug!("DOCKER_HOST={:?}", std::env::var("DOCKER_HOST"));
         let client = match bollard::Docker::connect_with_defaults() {
             Ok(client) => client,
             Err(bollard::errors::Error::SocketNotFoundError(err)) => {
@@ -154,19 +156,20 @@ impl DockerClient {
             let task_id: Arc<str> = Arc::from(format!("pull-{image}"));
             let task_title: Arc<str> = Arc::from(format!("docker pull {image}"));
 
-            let mut stream = self.client.create_image(
-                Some(
-                    bollard::query_parameters::CreateImageOptionsBuilder::new()
-                        .from_image(image)
-                        .build(),
-                ),
-                None,
-                None,
-            );
+            let mut create_image_options_builder =
+                bollard::query_parameters::CreateImageOptionsBuilder::new().from_image(image);
+            if !image.contains(':') {
+                // If not set causes docker to pull all tags of image
+                create_image_options_builder = create_image_options_builder.tag("latest");
+            }
+
+            let mut stream =
+                self.client
+                    .create_image(Some(create_image_options_builder.build()), None, None);
 
             while let Some(status) = stream.try_next().await? {
-                log::debug!("{status:?}");
                 if let Some(status) = status.status {
+                    log::trace!("{image}: {status}");
                     self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
                         identifier: Arc::clone(&task_id),
                         title: Arc::clone(&task_title),

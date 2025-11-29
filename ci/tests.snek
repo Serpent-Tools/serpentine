@@ -1,15 +1,21 @@
 import "./lib.snek" as lib;
 
+def WithDocker(command) {
+    return Join("if [ ! -S /var/run/docker.sock ]; then (dockerd --log-level error & sleep 10); fi; ", command);
+}
+
 docker_with_rust = Image("docker:dind")
     > WorkingDir("/app")
     > Exec("apk add curl rust")
     > ExecSh("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
-tests_docker = docker_with_rust 
+docker_with_rust = docker_with_rust 
     > lib::WithPath(Join(lib::GetEnv(docker_with_rust, "HOME"), "/.cargo/bin"))
-    > Env("DOCKER_HOST", "unix:///var/run/docker.sock")
+    > Env("DOCKER_HOST", "unix:///var/run/docker.sock");
+
+tests_docker = docker_with_rust
     > Exec("cargo install cargo-nextest") // Binstall uses the wrong target
     > lib::Cooked("--tests")
-    > ExecSh("dockerd --log-level error & RUST_LOG='serpentine=trace' cargo nextest run");
+    > ExecSh(WithDocker("RUST_LOG='serpentine=trace' cargo nextest run"));
 
 podman_with_rust = Image("quay.io/podman/stable")
     > WorkingDir("/app")
@@ -22,12 +28,28 @@ tests_podman = podman_with_rust
     > lib::Binstall("cargo-nextest", "cargo-nextest")
     > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run");
 
+cached_test_base = docker_with_rust
+    > lib::Cooked("")
+    > Exec("cargo install --path . --profile dev");
+cached_run = cached_test_base
+    > ExecSh(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
+
+def Timeout(container, command) {
+    return container > Exec(Join("timeout 10s sh -c '", command, "'"));
+}
+
+run_with_cache = cached_run
+    > Timeout(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
+cache_images_deleted = cached_test_base
+    > With(Export(cached_run, "./cache"), "./cache")
+    > ExecSh(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
+
 basic_tests = lib::rust
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-nextest", "cargo-nextest")
-    > Exec("cargo nextest run");
+    > ExecSh("RUST_LOG='serpentine=trace' cargo nextest run");
 
-export full_tests = !(tests_docker, tests_podman) Noop(0);
+export full_tests = !(tests_docker, tests_podman, run_with_cache, cache_images_deleted) Noop(0);
 export light_tests = !(basic_tests) Noop(0);
 
 export update_snapshot = lib::rust

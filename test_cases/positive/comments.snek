@@ -7,6 +7,6 @@ isnt it neat.
 */
 
 // This is a comment
-export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox")
+export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox:latest")
     // they can be in the middle of expression
     > Exec("hello world");    

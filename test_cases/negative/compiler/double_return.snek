@@ -3,4 +3,4 @@ def Foo(value) {
     return value > Exec("hello");
 }
 
-export DEFAULT = Foo(Image("quay.io/toolbx-images/alpine-toolbox"));
+export DEFAULT = Foo(Image("quay.io/toolbx-images/alpine-toolbox:latest"));
