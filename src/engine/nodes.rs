@@ -78,7 +78,7 @@ pub trait NodeImpl {
                 if cached_value.health_check(&scheduler.context().docker).await {
                     return Ok(cached_value);
                 }
-                // log::warn!("value {cached_value:?} failed health-check, not using cache.");
+                log::warn!("value {cached_value:?} failed health-check, not using cache.");
             }
             let key = key.sha256()?;
 
