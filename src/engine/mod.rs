@@ -121,7 +121,7 @@ impl RuntimeContext {
         };
 
         Ok(Self {
-            docker: docker::DockerClient::new(tui.clone()).await?,
+            docker: docker::DockerClient::new(tui.clone(), cli.jobs).await?,
             tui,
             cache: Mutex::new(cache),
         })
@@ -215,7 +215,7 @@ pub fn clear_cache(cache_file: &Path) -> Result<(), RuntimeError> {
         .build()
         .map_err(|err| RuntimeError::internal(format!("Failed to start tokio {err}")))?
         .block_on(async move {
-            let docker = docker::DockerClient::new(TuiSender(None)).await?;
+            let docker = docker::DockerClient::new(TuiSender(None), 1).await?;
             for data in stale {
                 data.cleanup(&docker).await;
             }

@@ -209,7 +209,20 @@ impl UiState {
         let task_logs = Block::default().borders(Borders::ALL).title(" Task Logs ");
         let task_logs_inner = task_logs.inner(task_logs_area);
         frame.render_widget(task_logs, task_logs_area);
-        frame.render_widget(Paragraph::new(self.task_logs.join("\n")), task_logs_inner);
+        frame.render_widget(
+            Paragraph::new(
+                self.task_logs
+                    .get(
+                        (self
+                            .task_logs
+                            .len()
+                            .saturating_sub(task_logs_inner.height.into()))..,
+                    )
+                    .unwrap_or(&self.task_logs)
+                    .join("\n"),
+            ),
+            task_logs_inner,
+        );
 
         self.draw_status(status_area, frame);
     }
@@ -222,12 +235,7 @@ impl UiState {
         )
         .split(area);
 
-        for (task, task_area) in self
-            .tasks
-            .iter()
-            .skip(self.tasks.len().saturating_sub(areas.len()))
-            .zip(areas.iter())
-        {
+        for (task, task_area) in self.tasks.iter().zip(areas.iter()) {
             match &task.progress {
                 TaskProgress::Measurable { completed, total } => {
                     #[expect(

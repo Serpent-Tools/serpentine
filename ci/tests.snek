@@ -1,7 +1,7 @@
 import "./lib.snek" as lib;
 
 def WithDocker(command) {
-    return Join("if [ ! -S /var/run/docker.sock ]; then (dockerd --log-level error & sleep 10); fi; ", command);
+    return Join("if [ ! -S /var/run/docker.sock ]; then (dockerd --log-level error & sleep 2); fi; ", command);
 }
 
 docker_with_rust = Image("docker:dind")

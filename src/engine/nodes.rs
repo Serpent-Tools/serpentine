@@ -6,8 +6,6 @@ use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use futures_util::{StreamExt, TryStreamExt};
-
 use crate::engine::cache::CacheKey;
 use crate::engine::data_model::{
     Data,
@@ -54,12 +52,12 @@ pub trait NodeImpl {
         inputs: &'scheduler [NodeInstanceId],
     ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
         Box::pin(async move {
-            let inputs = futures_util::stream::iter(inputs)
-                .map(async |input| scheduler.get_output(*input).await)
-                // buffered hangs indefinitely if size is 0
-                .buffered(inputs.len().max(1))
-                .try_collect::<Vec<_>>()
-                .await?;
+            let inputs = futures_util::future::try_join_all(
+                inputs
+                    .iter()
+                    .map(async |input| scheduler.get_output(*input).await),
+            )
+            .await?;
 
             scheduler
                 .context()

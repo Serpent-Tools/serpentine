@@ -7,3 +7,4 @@ export FULL = !(tests::full_tests, lints::full_lints) Noop(0);
 
 export BUILD = ToHost(build::bundle, "./target/out");
 export SNAPSHOT = tests::update_snapshot;
+export FIX = lints::fix;

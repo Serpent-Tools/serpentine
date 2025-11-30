@@ -70,6 +70,12 @@ struct Run {
     /// Delete old cache entries (also cleans out stale docker images).
     #[arg(long)]
     clean_old: bool,
+    /// Limit of the number of parallel exec jobs allowed to run
+    ///
+    /// Due to most build systems already using all available cores it usually smart to set this to
+    /// a smaller value, at least when first priming caches.
+    #[arg(short, long, default_value_t = 2)]
+    jobs: usize,
 }
 
 impl Run {
@@ -333,6 +339,7 @@ mod tests {
             cache: None,
             clean_old: false,
             entry_point: "DEFAULT".into(),
+            jobs: 1,
         };
         crate::engine::run(graph, crate::tui::TuiSender(None), &cli).expect("Failed to execute");
     }

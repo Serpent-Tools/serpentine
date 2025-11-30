@@ -33,11 +33,13 @@ pub struct DockerClient {
     cleanup_list: Mutex<Vec<Container>>,
     /// Sender to the TUI
     tui: TuiSender,
+    /// Limiter on the amount of exec jobs running at once
+    exec_lock: tokio::sync::Semaphore,
 }
 
 impl DockerClient {
     /// Create a new Docker client
-    pub async fn new(tui: TuiSender) -> Result<Self, RuntimeError> {
+    pub async fn new(tui: TuiSender, exec_permits: usize) -> Result<Self, RuntimeError> {
         let client = Self::connect_docker()
             .await
             .map_err(|err| RuntimeError::DockerNotFound {
@@ -49,6 +51,7 @@ impl DockerClient {
             containers: Mutex::new(HashMap::new()),
             cleanup_list: Mutex::new(Vec::new()),
             tui,
+            exec_lock: tokio::sync::Semaphore::new(exec_permits),
         })
     }
 
@@ -332,7 +335,13 @@ impl DockerClient {
     ) -> Result<ContainerState, RuntimeError> {
         let container = self.get_state(container).await?;
 
+        let lock = self
+            .exec_lock
+            .acquire()
+            .await
+            .map_err(|_| RuntimeError::internal("Failed to acquire lock"));
         self.exec_internal(&container, cmd).await?;
+        drop(lock);
 
         let image = self.commit_container(container).await?;
         Ok(image)
@@ -346,7 +355,13 @@ impl DockerClient {
     ) -> Result<String, RuntimeError> {
         let container = self.get_state(container).await?;
 
+        let lock = self
+            .exec_lock
+            .acquire()
+            .await
+            .map_err(|_| RuntimeError::internal("Failed to acquire lock"));
         let output = self.exec_internal(&container, cmd).await?;
+        drop(lock);
 
         self.stop_container(container).await;
 
@@ -437,6 +452,7 @@ impl DockerClient {
         }
 
         let exec_info = self.client.inspect_exec(&exec.id).await?;
+
         if let Some(code) = exec_info.exit_code {
             if code != 0 {
                 return Err(RuntimeError::CommandExecution {
@@ -729,14 +745,12 @@ mod tests {
     use rstest::{fixture, rstest};
 
     use super::*;
-    use crate::tui::TuiMessage;
 
     const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:latest";
 
     #[fixture]
     async fn docker_client() -> DockerClient {
-        let (sender, _receiver) = std::sync::mpsc::channel::<TuiMessage>();
-        DockerClient::new(TuiSender(Some(sender)))
+        DockerClient::new(TuiSender(None), 1)
             .await
             .expect("Failed to create Docker client")
     }
