@@ -235,9 +235,22 @@ impl UiState {
                     frame.render_widget(widget, *task_area);
                 }
                 TaskProgress::Log(message) => {
+                    const MAX_LENGTH: usize = 30;
+                    let title = if task.title.len() > MAX_LENGTH {
+                        format!(
+                            "{}...",
+                            task.title
+                                .chars()
+                                .take(MAX_LENGTH.saturating_sub(3))
+                                .collect::<String>()
+                        )
+                    } else {
+                        format!("{:<width$}", task.title, width = MAX_LENGTH)
+                    };
+
                     let widget = Line::from(vec![
                         Span {
-                            content: format!("{:<30}  ", task.title).into(),
+                            content: title.into(),
                             style: Style::default().fg(Color::Yellow),
                         },
                         Span {
