@@ -129,7 +129,7 @@ fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
     let project_dirs = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
         .ok_or_else(|| miette::miette!("Failed to determine log directory"))?;
 
-    let log_dir = project_dirs.cache_dir().join("logs");
+    let log_dir = project_dirs.data_local_dir().join("logs");
 
     let current_timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
