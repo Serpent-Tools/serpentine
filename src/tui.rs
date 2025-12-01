@@ -38,8 +38,10 @@ pub enum TuiMessage {
     StopContainer(Box<str>),
 }
 
+/// Wrapper around a threaded channel, always channel to not be set.
 #[derive(Clone)]
 pub struct TuiSender(pub Option<std::sync::mpsc::Sender<TuiMessage>>);
+
 impl TuiSender {
     /// Send a message over the channel.
     ///
