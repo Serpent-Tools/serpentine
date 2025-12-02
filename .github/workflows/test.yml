@@ -1,0 +1,27 @@
+name: Serpentine Tests
+on: [push]
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: dtolnay/rust-toolchain@6d9817901c499d6b02debbb57edb38d33daa680b
+      # - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      #   with:
+      #       cache-on-failure: true
+      # - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      #   with:
+      #     path: /tmp/serpentine_cache
+      #     key: ${{ runner. os }}-serpentine_cache-${{ hashFiles('src/**', 'Cargo.lock') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-serpentine_cache-
+
+      - name: Run serpentine pipeline
+        run: cargo run -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point FULL --jobs 1 
+
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: always()
+        with:
+          path: /tmp/serpentine_cache
+          key: ${{ runner. os }}-serpentine_cache-${{ hashFiles('src/**', 'Cargo.lock') }}
+
