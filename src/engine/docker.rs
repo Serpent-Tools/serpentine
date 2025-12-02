@@ -737,6 +737,54 @@ impl DockerClient {
             log::error!("{err}");
         }
     }
+
+    /// Export the given images to the target file
+    pub async fn export(
+        &self,
+        images: impl Iterator<Item = &ContainerState>,
+        mut target: impl std::io::Write,
+    ) -> Result<(), RuntimeError> {
+        self.client
+            .export_images(&images.map(|image| image.0.as_ref()).collect::<Vec<_>>())
+            .map(|item| {
+                target.write_all(&item?)?;
+                Ok::<_, RuntimeError>(())
+            })
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
+    }
+
+    /// Import the given docker export to this docker client.
+    pub async fn import(
+        &self,
+        mut file: impl std::io::Read + Send + 'static,
+    ) -> Result<(), RuntimeError> {
+        self.client
+            .import_image(
+                bollard::query_parameters::ImportImageOptionsBuilder::new()
+                    .quiet(true)
+                    .build(),
+                bollard::body_stream(futures_util::stream::poll_fn(move |_| {
+                    let mut buffer = tokio_util::bytes::BytesMut::with_capacity(2048);
+                    match file.read(&mut buffer) {
+                        Ok(bytes_read) => std::task::Poll::Ready(Some(
+                            Vec::from(buffer.get(..bytes_read).unwrap_or(&[])).into(),
+                        )),
+                        Err(err) => {
+                            log::error!("{err}");
+                            std::task::Poll::Ready(None)
+                        }
+                    }
+                })),
+                None,
+            )
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

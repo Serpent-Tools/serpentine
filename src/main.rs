@@ -67,6 +67,13 @@ struct Run {
     /// Location of the cache file
     #[arg(short, long)]
     cache: Option<PathBuf>,
+    /// Also export docker images, and any other external data referenced by the cache to the cache
+    /// file.
+    ///
+    /// This is intended for use with CI, or generally when the cache needs to be transferred
+    /// between systems.
+    #[arg(long)]
+    standalone_cache: bool,
     /// Delete old cache entries (also cleans out stale docker images).
     #[arg(long)]
     clean_old: bool,
@@ -337,6 +344,7 @@ mod tests {
             pipeline: path,
             ci: true,
             cache: None,
+            standalone_cache: false,
             clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 1,

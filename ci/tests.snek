@@ -44,12 +44,19 @@ cache_images_deleted = cached_test_base
     > With(Export(cached_run, "./cache"), "./cache")
     > ExecSh(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
 
+standalone_cache = cached_test_base
+    > ExecSh(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache --standalone-cache"))
+    > Export("cache");
+import_standalone_cache = cached_test_base
+    > With(standalone_cache, "cache")
+    > Timeout(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
+
 basic_tests = lib::rust
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-nextest", "cargo-nextest")
     > ExecSh("RUST_LOG='serpentine=trace' cargo nextest run");
 
-export full_tests = !(tests_docker, tests_podman, run_with_cache, cache_images_deleted) Noop(0);
+export full_tests = !(tests_docker, tests_podman, run_with_cache, cache_images_deleted, import_standalone_cache) Noop(0);
 export light_tests = !(basic_tests) Noop(0);
 
 export update_snapshot = lib::rust
