@@ -23,7 +23,7 @@ export def Cooked(container, build_kind) {
     return container 
         > Binstall("cargo-chef", "cargo-chef")
         > With(recipe, "recipe.json")
-        > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
+        > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json --locked"))
         > With(source_code, ".");
 }
 

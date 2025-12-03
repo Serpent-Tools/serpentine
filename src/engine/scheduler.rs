@@ -36,7 +36,7 @@ impl Scheduler {
         &self.context
     }
 
-    /// Retrieve a data from a node. AAAAAAAAAA BBBBBBBBBBBBBB CCCCC
+    /// Retrieve a data from a node.
     /// If the node hasn't started starts running it, then awaits on the result.
     pub async fn get_output(&self, node_id: NodeInstanceId) -> Result<&Data, RuntimeError> {
         let Some(cell) = self.data.get(node_id.index()) else {

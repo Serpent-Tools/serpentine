@@ -12,25 +12,25 @@ docker_with_rust = docker_with_rust
     > lib::WithPath(Join(lib::GetEnv(docker_with_rust, "HOME"), "/.cargo/bin"))
     > Env("DOCKER_HOST", "unix:///var/run/docker.sock");
 
-tests_docker = docker_with_rust
+export tests_docker = docker_with_rust
     > Exec("cargo install cargo-nextest") // Binstall uses the wrong target
     > lib::Cooked("--tests")
-    > ExecSh(WithDocker("RUST_LOG='serpentine=trace' cargo nextest run"));
+    > ExecSh(WithDocker("RUST_LOG='serpentine=trace' cargo nextest run --frozen"));
 
 podman_with_rust = Image("quay.io/podman/stable")
     > WorkingDir("/app")
     > Exec("dnf install -y make automake gcc gcc-c++ kernel-devel")
     > ExecSh("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
-tests_podman = podman_with_rust 
+export tests_podman = podman_with_rust 
     > lib::WithPath(Join(lib::GetEnv(podman_with_rust, "HOME"), "/.cargo/bin"))
     > Env("DOCKER_HOST", "unix:///var/run/podman.sock")
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-nextest", "cargo-nextest")
-    > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run");
+    > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run --frozen");
 
 cached_test_base = docker_with_rust
     > lib::Cooked("")
-    > Exec("cargo install --path . --profile dev");
+    > Exec("cargo install --path . --profile dev --frozen");
 cached_run = cached_test_base
     > ExecSh(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
 
@@ -54,7 +54,7 @@ import_standalone_cache = cached_test_base
 basic_tests = lib::rust
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-nextest", "cargo-nextest")
-    > ExecSh("RUST_LOG='serpentine=trace' cargo nextest run");
+    > ExecSh("RUST_LOG='serpentine=trace' cargo nextest run --frozen");
 
 export full_tests = !(tests_docker, tests_podman, run_with_cache, cache_images_deleted, import_standalone_cache) Noop(0);
 export light_tests = !(basic_tests) Noop(0);
@@ -62,6 +62,6 @@ export light_tests = !(basic_tests) Noop(0);
 export update_snapshot = lib::rust
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-insta", "cargo-insta")
-    > Exec("cargo insta test --accept --unreferenced delete")
+    > Exec("cargo insta test --accept --unreferenced delete --frozen")
     > Export("./src")
     > ToHost("./src");
