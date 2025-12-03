@@ -557,13 +557,31 @@ impl DockerClient {
 
         let container = self.get_state(image).await?;
 
+        let docker_path = if docker_path.starts_with('/') {
+            PathBuf::from(docker_path)
+        } else {
+            // Docker doesnt handle relative paths in `download_from_container` (podman does).
+            let working_dir = self
+                .client
+                .inspect_container(
+                    &container.0,
+                    Some(bollard::query_parameters::InspectContainerOptionsBuilder::new().build()),
+                )
+                .await?
+                .config
+                .and_then(|config| config.working_dir)
+                .unwrap_or_else(|| "/".into());
+
+            PathBuf::from(working_dir).join(docker_path)
+        };
+
         let docker_tar = self
             .client
             .download_from_container(
                 &container.0,
                 Some(
                     bollard::query_parameters::DownloadFromContainerOptionsBuilder::new()
-                        .path(docker_path)
+                        .path(&docker_path.to_string_lossy())
                         .build(),
                 ),
             )
@@ -611,7 +629,6 @@ impl DockerClient {
 
             Ok(FileSystem::File(builder.into_inner()?.into()))
         } else {
-            let docker_path = PathBuf::from(docker_path);
             let dot_path = std::ffi::OsString::from(".");
             let suffix: &std::ffi::OsStr = docker_path
                 .components()
