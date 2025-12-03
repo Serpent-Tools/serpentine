@@ -3,7 +3,7 @@ import "./lib.snek" as lib;
 clippy = lib::rust 
     > Exec("rustup component add clippy")
     > lib::Cooked("--clippy")
-    > Exec("cargo clippy -- -Dwarnings");
+    > Exec("cargo clippy --frozen -- -Dwarnings");
 
 fmt = lib::rust
     > Exec("rustup component add rustfmt")
@@ -19,7 +19,7 @@ spelling = Image("debian")
 unused = lib::rust
     > lib::Binstall("cargo-udeps", "cargo-udeps")
     > With(lib::source_code, ".")
-    > Exec("cargo udeps");
+    > Exec("cargo udeps --locked");
 
 deny = lib::rust
     > lib::Binstall("cargo-deny", "cargo-deny")
@@ -27,7 +27,7 @@ deny = lib::rust
     > Exec("cargo deny check all");
 
 
-export light_lints = !(clippy) Noop(0);
+export light_lints = !(clippy, fmt, spelling) Noop(0);
 export full_lints = !(clippy, fmt, spelling, unused, deny) Noop(0);
 export fix = lib::rust
     > Exec("rustup component add rustfmt")

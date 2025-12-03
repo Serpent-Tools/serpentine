@@ -763,11 +763,10 @@ impl DockerClient {
     ) -> Result<(), RuntimeError> {
         self.client
             .export_images(&images.map(|image| image.0.as_ref()).collect::<Vec<_>>())
-            .map(|item| {
-                target.write_all(&item?)?;
-                Ok::<_, RuntimeError>(())
+            .try_for_each(move |item| {
+                let result = target.write_all(&item);
+                std::future::ready(result.map_err(Into::into))
             })
-            .try_collect::<Vec<_>>()
             .await?;
 
         Ok(())
@@ -779,22 +778,28 @@ impl DockerClient {
         mut file: impl std::io::Read + Send + 'static,
     ) -> Result<(), RuntimeError> {
         self.client
-            .import_image(
+            .import_image_stream(
                 bollard::query_parameters::ImportImageOptionsBuilder::new()
                     .quiet(true)
                     .build(),
-                bollard::body_stream(futures_util::stream::poll_fn(move |_| {
-                    let mut buffer = tokio_util::bytes::BytesMut::with_capacity(2048);
+                futures_util::stream::poll_fn(move |_| {
+                    let mut buffer = [0; 2048];
                     match file.read(&mut buffer) {
-                        Ok(bytes_read) => std::task::Poll::Ready(Some(
-                            Vec::from(buffer.get(..bytes_read).unwrap_or(&[])).into(),
-                        )),
+                        Ok(bytes_read) => {
+                            if bytes_read == 0 {
+                                std::task::Poll::Ready(None)
+                            } else {
+                                std::task::Poll::Ready(Some(
+                                    Vec::from(buffer.get(..bytes_read).unwrap_or(&[])).into(),
+                                ))
+                            }
+                        }
                         Err(err) => {
                             log::error!("{err}");
                             std::task::Poll::Ready(None)
                         }
                     }
-                })),
+                }),
                 None,
             )
             .try_collect::<Vec<_>>()
@@ -1095,6 +1100,40 @@ mod tests {
             .exec(&image, &["sh", "-c", "echo $HELLO | grep -q WORLD"])
             .await
             .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn export_import(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+        let image = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let image = docker_client
+            .exec(&image, &["touch", "hello.txt"])
+            .await
+            .expect("Failed to create file");
+
+        let mut data = Vec::new();
+        docker_client
+            .export(std::iter::once(&image), &mut data)
+            .await
+            .expect("Failed to export");
+        docker_client.delete_image(&image).await;
+        docker_client
+            .import(std::io::Cursor::new(data))
+            .await
+            .expect("Failed to import");
+
+        docker_client
+            .exec(&image, &["cat", "hello.txt"])
+            .await
+            .expect("Failed to find file");
 
         docker_client.shutdown().await;
     }

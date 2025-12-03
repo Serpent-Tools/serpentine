@@ -105,6 +105,7 @@ impl Cache {
         let mut has_standalone_cache = [0; 1];
         file.read_exact(&mut has_standalone_cache)?;
         if has_standalone_cache[0] == 1 {
+            log::info!("Loading standalone cache");
             docker.import(file).await?;
         } else {
             log::info!("No standalone cache found.");
@@ -171,6 +172,7 @@ impl Cache {
                     None
                 }
             });
+            log::info!("Exporting standalone cache");
             docker.export(images, file).await?;
         } else {
             file.write_all(&[0])?;
@@ -188,19 +190,18 @@ impl Cache {
     /// Get a value from the cache
     ///
     /// This also moves the value from `old_cache` to `new_cache`
-    pub fn get(&mut self, key: &CacheKey<'_>) -> Result<Option<&Data>, RuntimeError> {
-        let key = key.sha256()?;
+    pub fn get(&mut self, key: &[u8; 32]) -> Option<&Data> {
         log::debug!("Reading {key:?}");
-        if let Some(data) = self.old_cache.remove(&key) {
+        if let Some(data) = self.old_cache.remove(key) {
             log::debug!("Got {data:?}, moving to new_cache");
-            let data = self.new_cache.entry(key).insert_entry(data).into_mut();
-            Ok(Some(data))
-        } else if let Some(data) = self.new_cache.get(&key) {
+            let data = self.new_cache.entry(*key).insert_entry(data).into_mut();
+            Some(data)
+        } else if let Some(data) = self.new_cache.get(key) {
             log::debug!("Got {data:?}");
-            Ok(Some(data))
+            Some(data)
         } else {
             log::debug!("Key {key:?} not in cache");
-            Ok(None)
+            None
         }
     }
 }
@@ -249,7 +250,9 @@ mod tests {
             .unwrap();
 
         let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
-        let loaded_value = loaded_cache.get(&key).unwrap().expect("Value not found");
+        let loaded_value = loaded_cache
+            .get(&key.sha256().unwrap())
+            .expect("Value not found");
 
         assert_eq!(*loaded_value, value);
     }
@@ -292,7 +295,9 @@ mod tests {
                 inputs: &data,
             };
 
-            let _ = loaded_cache.get(&key).unwrap().expect("Value not found");
+            let _ = loaded_cache
+                .get(&key.sha256().unwrap())
+                .expect("Value not found");
             // We do not check what the value is as proptest might (and likely will) generate
             // duplicate keys.
         }
@@ -330,7 +335,9 @@ mod tests {
             .unwrap();
 
         let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
-        loaded_cache.get(&key).unwrap().expect("Value not found");
+        loaded_cache
+            .get(&key.sha256().unwrap())
+            .expect("Value not found");
 
         // Even tho `keep_old_cache` is false it should still keep the entry in there since we used
         // it.
@@ -341,8 +348,7 @@ mod tests {
 
         let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
         second_loaded_cache
-            .get(&key)
-            .unwrap()
+            .get(&key.sha256().unwrap())
             .expect("Value not found");
     }
 
@@ -382,7 +388,7 @@ mod tests {
             .unwrap();
 
         let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
-        let result = second_loaded_cache.get(&key).unwrap();
+        let result = second_loaded_cache.get(&key.sha256().unwrap());
         assert!(result.is_none(), "unused old_cache value was saved.");
     }
 
@@ -423,8 +429,7 @@ mod tests {
 
         let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
         second_loaded_cache
-            .get(&key)
-            .unwrap()
+            .get(&key.sha256().unwrap())
             .expect("Value not found");
     }
 }

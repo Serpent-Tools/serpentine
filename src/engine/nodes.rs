@@ -68,10 +68,11 @@ pub trait NodeImpl {
                 node: kind,
                 inputs: &inputs,
             };
+            let key = key.sha256()?;
             log::debug!("Checking cache with {key:?}");
             if self.should_be_cached()
                 && let Some(cached_value) =
-                    scheduler.context().cache.lock().await.get(&key)?.cloned()
+                    scheduler.context().cache.lock().await.get(&key).cloned()
             {
                 log::debug!("Cache hit on {}", self.describe());
                 if cached_value.health_check(&scheduler.context().docker).await {
@@ -79,7 +80,6 @@ pub trait NodeImpl {
                 }
                 log::warn!("value {cached_value:?} failed health-check, not using cache.");
             }
-            let key = key.sha256()?;
 
             log::debug!("Executing {}", self.describe());
             let result = self.execute(scheduler.context(), inputs).await?;
