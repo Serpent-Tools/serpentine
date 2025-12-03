@@ -27,7 +27,7 @@ deny = lib::rust
     > Exec("cargo deny check all");
 
 
-export light_lints = !(clippy) Noop(0);
+export light_lints = !(clippy, fmt, spelling) Noop(0);
 export full_lints = !(clippy, fmt, spelling, unused, deny) Noop(0);
 export fix = lib::rust
     > Exec("rustup component add rustfmt")

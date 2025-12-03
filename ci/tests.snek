@@ -49,7 +49,7 @@ standalone_cache = cached_test_base
     > Export("cache");
 import_standalone_cache = cached_test_base
     > With(standalone_cache, "cache")
-    > Timeout(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
+    > ExecSh(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
 
 basic_tests = lib::rust
     > lib::Cooked("--tests")
