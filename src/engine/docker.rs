@@ -557,13 +557,31 @@ impl DockerClient {
 
         let container = self.get_state(image).await?;
 
+        let docker_path = if docker_path.starts_with('/') {
+            PathBuf::from(docker_path)
+        } else {
+            // Docker doesnt handle relative paths in `download_from_container` (podman does).
+            let working_dir = self
+                .client
+                .inspect_container(
+                    &container.0,
+                    Some(bollard::query_parameters::InspectContainerOptionsBuilder::new().build()),
+                )
+                .await?
+                .config
+                .and_then(|config| config.working_dir)
+                .unwrap_or_else(|| "/".into());
+
+            PathBuf::from(working_dir).join(docker_path)
+        };
+
         let docker_tar = self
             .client
             .download_from_container(
                 &container.0,
                 Some(
                     bollard::query_parameters::DownloadFromContainerOptionsBuilder::new()
-                        .path(docker_path)
+                        .path(&docker_path.to_string_lossy())
                         .build(),
                 ),
             )
@@ -611,7 +629,6 @@ impl DockerClient {
 
             Ok(FileSystem::File(builder.into_inner()?.into()))
         } else {
-            let docker_path = PathBuf::from(docker_path);
             let dot_path = std::ffi::OsString::from(".");
             let suffix: &std::ffi::OsStr = docker_path
                 .components()
@@ -736,6 +753,54 @@ impl DockerClient {
             log::error!("Failed to delete image {image:?}");
             log::error!("{err}");
         }
+    }
+
+    /// Export the given images to the target file
+    pub async fn export(
+        &self,
+        images: impl Iterator<Item = &ContainerState>,
+        mut target: impl std::io::Write,
+    ) -> Result<(), RuntimeError> {
+        self.client
+            .export_images(&images.map(|image| image.0.as_ref()).collect::<Vec<_>>())
+            .map(|item| {
+                target.write_all(&item?)?;
+                Ok::<_, RuntimeError>(())
+            })
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
+    }
+
+    /// Import the given docker export to this docker client.
+    pub async fn import(
+        &self,
+        mut file: impl std::io::Read + Send + 'static,
+    ) -> Result<(), RuntimeError> {
+        self.client
+            .import_image(
+                bollard::query_parameters::ImportImageOptionsBuilder::new()
+                    .quiet(true)
+                    .build(),
+                bollard::body_stream(futures_util::stream::poll_fn(move |_| {
+                    let mut buffer = tokio_util::bytes::BytesMut::with_capacity(2048);
+                    match file.read(&mut buffer) {
+                        Ok(bytes_read) => std::task::Poll::Ready(Some(
+                            Vec::from(buffer.get(..bytes_read).unwrap_or(&[])).into(),
+                        )),
+                        Err(err) => {
+                            log::error!("{err}");
+                            std::task::Poll::Ready(None)
+                        }
+                    }
+                })),
+                None,
+            )
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(())
     }
 }
 

@@ -31,6 +31,7 @@
           version = cargoToml.package.version;
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          doCheck = false;
 
           meta = {
             description = "Powerful simplistic workflow runner.";

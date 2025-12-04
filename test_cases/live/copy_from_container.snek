@@ -1,4 +1,5 @@
 base = Image("quay.io/toolbx-images/alpine-toolbox:latest")
+    > WorkingDir("/app")
     > Exec("touch hello.txt")
     > Exec("mkdir foo")
     > Exec("touch foo/hello.txt");

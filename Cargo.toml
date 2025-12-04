@@ -22,7 +22,8 @@ ignore = "0.4.23"
 
 # Cache
 sha2 = { version = "0.10.9", default-features = false, features = ["asm-aarch64", "std"] }
-bincode = "2.0.1"
+# We pin the version to ensure it doesnt upgrade without also bumping `CACHE_COMPATABILITY_VERSION` in src/engine/cache.rs
+bincode = "=2.0.1"
 
 # UX
 thiserror = "2.0.16"

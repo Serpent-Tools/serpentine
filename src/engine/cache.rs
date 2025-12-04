@@ -8,6 +8,14 @@ use sha2::Digest;
 
 use crate::engine::RuntimeError;
 use crate::engine::data_model::{Data, NodeKindId};
+use crate::engine::docker::DockerClient;
+
+// ==== CACHE FILE FORMAT ====
+// The first byte is the `CACHE_COMPATIBILITY_VERSION`, written as a pure u8.
+// Followed by a `CacheHashMap` encoded using `bincode`
+//
+// Then if the cache contains a standalone cache the next byte is a `1`, otherwise its a `0`.
+// if there is a standalone cache then the rest of then the bytes of the docker export follows.
 
 /// Version number for the cache.
 ///
@@ -74,9 +82,13 @@ impl Cache {
     }
 
     /// Load the cache from the given path.
-    pub fn load_cache(cache_file: &Path) -> Result<Self, RuntimeError> {
+    pub async fn load_cache(
+        cache_file: &Path,
+        docker: &DockerClient,
+    ) -> Result<Self, RuntimeError> {
         log::info!("Attempting to load cache from {}", cache_file.display());
         let mut file = std::fs::File::open(cache_file)?;
+        file.lock()?;
 
         let mut version = [0];
         file.read_exact(&mut version)?;
@@ -90,6 +102,19 @@ impl Cache {
 
         let old_cache = bincode::decode_from_std_read(&mut file, bincode_config())?;
 
+        let mut has_standalone_cache = [0; 1];
+        file.read_exact(&mut has_standalone_cache)?;
+        if has_standalone_cache[0] == 1 {
+            docker.import(file).await?;
+        } else {
+            log::info!("No standalone cache found.");
+            debug_assert_eq!(
+                has_standalone_cache[0], 0,
+                "hash_standalone_cache not 0 or 1"
+            );
+            debug_assert_eq!(file.read(&mut [0; 1])?, 0, "Not at end of file");
+        }
+
         Ok(Self {
             old_cache,
             new_cache: CacheHashMap::new(),
@@ -100,16 +125,19 @@ impl Cache {
     ///
     /// If `keep_old_cache` is false will only write caches generated from this session.
     /// Returns a vector of stale data that can be safely deleted.
-    pub fn save_cache(
+    pub async fn save_cache(
         self,
         cache_file: &Path,
+        docker: &DockerClient,
         keep_old_cache: bool,
-    ) -> Result<Vec<Data>, RuntimeError> {
+        export_standalone: bool,
+    ) -> Result<(), RuntimeError> {
         log::info!("Saving cache to {}", cache_file.display());
         if let Some(parent) = cache_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut file = std::fs::File::create(cache_file)?;
+        file.lock()?;
         file.write_all(&[CACHE_COMPATIBILITY_VERSION])?;
 
         let Self {
@@ -117,22 +145,38 @@ impl Cache {
             new_cache: mut cache,
         } = self;
 
-        let stale_data = if keep_old_cache {
+        if keep_old_cache {
             // Entries in old_cache can overwrite entries in new cache.
             // But it would be a larger bug if the two values werent semantically equivalent.
             cache.extend(old_cache);
-            vec![]
         } else {
             let in_use: HashSet<_> = cache.values().collect();
-            old_cache
+            for value in old_cache
                 .into_values()
                 .filter(|value| !in_use.contains(value))
-                .collect()
-        };
+            {
+                value.cleanup(docker).await;
+            }
+        }
 
-        bincode::encode_into_std_write(cache, &mut file, bincode_config())?;
+        bincode::encode_into_std_write(&cache, &mut file, bincode_config())?;
 
-        Ok(stale_data)
+        if export_standalone {
+            file.write_all(&[1])?;
+
+            let images = cache.values().filter_map(|data| {
+                if let Data::Container(image) = data {
+                    Some(image)
+                } else {
+                    None
+                }
+            });
+            docker.export(images, file).await?;
+        } else {
+            file.write_all(&[0])?;
+        }
+
+        Ok(())
     }
 
     /// Store a value in the cache
@@ -164,11 +208,30 @@ impl Cache {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
+    use rstest::{fixture, rstest};
+
     use super::*;
 
+    #[fixture]
+    async fn docker_client() -> DockerClient {
+        DockerClient::new(crate::tui::TuiSender(None), 1)
+            .await
+            .expect("Failed to create Docker client")
+    }
+
+    #[tokio::test]
+    #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    fn save_and_load_one_entry(node: NodeKindId, data: Vec<Data>, value: Data) {
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn save_and_load_one_entry(
+        #[future] docker_client: DockerClient,
+        #[ignore] node: NodeKindId,
+        #[ignore] data: Vec<Data>,
+        #[ignore] value: Data,
+    ) {
+        let docker_client = docker_client.await;
+
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -176,21 +239,32 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256()?, value.clone());
+        cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new()?;
+        let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
-        cache.save_cache(cache_file, false)?;
+        cache
+            .save_cache(cache_file, &docker_client, false, false)
+            .await
+            .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file)?;
-        let loaded_value = loaded_cache.get(&key)?.expect("Value not found");
+        let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let loaded_value = loaded_cache.get(&key).unwrap().expect("Value not found");
 
         assert_eq!(*loaded_value, value);
     }
 
+    #[tokio::test]
+    #[rstest]
     #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 5, ..Default::default()})]
     #[test_log::test]
-    fn save_and_load_multiple_entries(values: Vec<(NodeKindId, Vec<Data>, Data)>) {
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn save_and_load_multiple_entries(
+        #[future] docker_client: DockerClient,
+        #[ignore] values: Vec<(NodeKindId, Vec<Data>, Data)>,
+    ) {
+        let docker_client = docker_client.await;
+
         let mut cache = Cache::new();
         for (node, data, value) in &values {
             let data = data.iter().collect::<Vec<_>>();
@@ -199,14 +273,17 @@ mod tests {
                 inputs: &data,
             };
 
-            cache.insert(key.sha256()?, value.clone());
+            cache.insert(key.sha256().unwrap(), value.clone());
         }
 
-        let cache_file = tempfile::NamedTempFile::new()?;
+        let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
-        cache.save_cache(cache_file, false)?;
+        cache
+            .save_cache(cache_file, &docker_client, false, false)
+            .await
+            .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file)?;
+        let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
 
         for (node, data, _) in &values {
             let data = data.iter().collect::<Vec<_>>();
@@ -215,7 +292,7 @@ mod tests {
                 inputs: &data,
             };
 
-            let _ = loaded_cache.get(&key)?.expect("Value not found");
+            let _ = loaded_cache.get(&key).unwrap().expect("Value not found");
             // We do not check what the value is as proptest might (and likely will) generate
             // duplicate keys.
         }
@@ -223,9 +300,19 @@ mod tests {
 
     /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
     /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
+    #[tokio::test]
+    #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    fn if_cache_used_should_always_be_kept(node: NodeKindId, data: Vec<Data>, value: Data) {
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn if_cache_used_should_always_be_kept(
+        #[future] docker_client: DockerClient,
+        #[ignore] node: NodeKindId,
+        #[ignore] data: Vec<Data>,
+        #[ignore] value: Data,
+    ) {
+        let docker_client = docker_client.await;
+
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -233,26 +320,45 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256()?, value.clone());
+        cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new()?;
+        let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
-        cache.save_cache(cache_file, false)?;
+        cache
+            .save_cache(cache_file, &docker_client, false, false)
+            .await
+            .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file)?;
-        loaded_cache.get(&key)?.expect("Value not found");
+        let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        loaded_cache.get(&key).unwrap().expect("Value not found");
 
         // Even tho `keep_old_cache` is false it should still keep the entry in there since we used
         // it.
-        loaded_cache.save_cache(cache_file, false)?;
+        loaded_cache
+            .save_cache(cache_file, &docker_client, false, false)
+            .await
+            .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file)?;
-        second_loaded_cache.get(&key)?.expect("Value not found");
+        let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        second_loaded_cache
+            .get(&key)
+            .unwrap()
+            .expect("Value not found");
     }
 
+    #[tokio::test]
+    #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    fn old_entry_cleared_if_not_used(node: NodeKindId, data: Vec<Data>, value: Data) {
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn old_entry_cleared_if_not_used(
+        #[future] docker_client: DockerClient,
+        #[ignore] node: NodeKindId,
+        #[ignore] data: Vec<Data>,
+        #[ignore] value: Data,
+    ) {
+        let docker_client = docker_client.await;
+
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -260,27 +366,39 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256()?, value.clone());
+        cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new()?;
+        let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
-        cache.save_cache(cache_file, false)?;
+        cache
+            .save_cache(cache_file, &docker_client, false, false)
+            .await
+            .unwrap();
 
-        let loaded_cache = Cache::load_cache(cache_file)?;
-        loaded_cache.save_cache(cache_file, false)?;
+        let loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        loaded_cache
+            .save_cache(cache_file, &docker_client, false, false)
+            .await
+            .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file)?;
-        let result = second_loaded_cache.get(&key)?;
+        let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let result = second_loaded_cache.get(&key).unwrap();
         assert!(result.is_none(), "unused old_cache value was saved.");
     }
 
+    #[tokio::test]
+    #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    fn old_entry_kept_if_keep_old_true_even_if_not_used(
-        node: NodeKindId,
-        data: Vec<Data>,
-        value: Data,
+    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    async fn old_entry_kept_if_keep_old_true_even_if_not_used(
+        #[future] docker_client: DockerClient,
+        #[ignore] node: NodeKindId,
+        #[ignore] data: Vec<Data>,
+        #[ignore] value: Data,
     ) {
+        let docker_client = docker_client.await;
+
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -288,90 +406,25 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256()?, value.clone());
+        cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new()?;
+        let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
-        cache.save_cache(cache_file, false)?;
+        cache
+            .save_cache(cache_file, &docker_client, false, false)
+            .await
+            .unwrap();
 
-        let loaded_cache = Cache::load_cache(cache_file)?;
-        loaded_cache.save_cache(cache_file, true)?;
+        let loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        loaded_cache
+            .save_cache(cache_file, &docker_client, true, false)
+            .await
+            .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file)?;
-        second_loaded_cache.get(&key)?.expect("Value not found");
-    }
-
-    /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
-    /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
-    #[proptest::property_test]
-    #[test_log::test]
-    fn stale_entries_doesnt_include_re_generated_values(
-        node_1: NodeKindId,
-        data_1: Vec<Data>,
-        node_2: NodeKindId,
-        data_2: Vec<Data>,
-        value: Data,
-    ) {
-        let data_1 = data_1.iter().collect::<Vec<_>>();
-        let key_1 = CacheKey {
-            node: node_1,
-            inputs: &data_1,
-        };
-        let data_2 = data_2.iter().collect::<Vec<_>>();
-        let key_2 = CacheKey {
-            node: node_2,
-            inputs: &data_2,
-        };
-
-        let mut cache = Cache::new();
-        cache.insert(key_1.sha256()?, value.clone());
-
-        let cache_file = tempfile::NamedTempFile::new()?;
-        let cache_file = cache_file.path();
-        cache.save_cache(cache_file, false)?;
-
-        let mut loaded_cache = Cache::load_cache(cache_file)?;
-        loaded_cache.insert(key_2.sha256()?, value);
-        let stale = loaded_cache.save_cache(cache_file, false)?;
-        assert_eq!(stale.len(), 0, "Data should not have been in stale vec");
-    }
-
-    /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
-    /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
-    #[proptest::property_test]
-    #[test_log::test]
-    fn stale_entries_returned(
-        node_1: NodeKindId,
-        data_1: Vec<Data>,
-        node_2: NodeKindId,
-        data_2: Vec<Data>,
-        value_1: Data,
-        value_2: Data,
-    ) {
-        proptest::prop_assume!(value_1 != value_2);
-
-        let data_1 = data_1.iter().collect::<Vec<_>>();
-        let key_1 = CacheKey {
-            node: node_1,
-            inputs: &data_1,
-        };
-        let data_2 = data_2.iter().collect::<Vec<_>>();
-        let key_2 = CacheKey {
-            node: node_2,
-            inputs: &data_2,
-        };
-
-        let mut cache = Cache::new();
-        cache.insert(key_1.sha256()?, value_1.clone());
-        cache.insert(key_2.sha256()?, value_2.clone());
-
-        let cache_file = tempfile::NamedTempFile::new()?;
-        let cache_file = cache_file.path();
-        cache.save_cache(cache_file, false)?;
-
-        let mut loaded_cache = Cache::load_cache(cache_file)?;
-        loaded_cache.get(&key_1)?;
-        let stale = loaded_cache.save_cache(cache_file, false)?;
-        assert_eq!(stale, vec![value_2], "value_2 should be in stale entries.");
+        let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        second_loaded_cache
+            .get(&key)
+            .unwrap()
+            .expect("Value not found");
     }
 }
