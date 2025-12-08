@@ -207,6 +207,7 @@ impl Cache {
 }
 
 #[cfg(test)]
+#[cfg(feature = "_test_docker")]
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use rstest::{fixture, rstest};
@@ -224,7 +225,6 @@ mod tests {
     #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn save_and_load_one_entry(
         #[future] docker_client: DockerClient,
         #[ignore] node: NodeKindId,
@@ -261,7 +261,6 @@ mod tests {
     #[rstest]
     #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 5, ..Default::default()})]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn save_and_load_multiple_entries(
         #[future] docker_client: DockerClient,
         #[ignore] values: Vec<(NodeKindId, Vec<Data>, Data)>,
@@ -309,7 +308,6 @@ mod tests {
     #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn if_cache_used_should_always_be_kept(
         #[future] docker_client: DockerClient,
         #[ignore] node: NodeKindId,
@@ -356,7 +354,6 @@ mod tests {
     #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn old_entry_cleared_if_not_used(
         #[future] docker_client: DockerClient,
         #[ignore] node: NodeKindId,
@@ -396,7 +393,6 @@ mod tests {
     #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn old_entry_kept_if_keep_old_true_even_if_not_used(
         #[future] docker_client: DockerClient,
         #[ignore] node: NodeKindId,
