@@ -1,3 +1,3 @@
 export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox:latest") 
-    > Exec("sleep 20")
-    > Exec("sleep 20");
+    > Exec("sleep 10")
+    > Exec("sleep 10");

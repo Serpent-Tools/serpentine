@@ -329,6 +329,7 @@ fn render_graph(graph: snek::CompileResult, output: &Path) -> Result<(), engine:
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Tests")]
+#[cfg(feature = "_test_docker")]
 mod tests {
     use std::path::PathBuf;
 
@@ -336,7 +337,6 @@ mod tests {
 
     #[rstest]
     #[test_log::test]
-    #[cfg(feature = "_test_docker")]
     fn live_examples(#[files("test_cases/live/**/*.snek")] path: PathBuf) {
         let graph =
             crate::snek::compile_graph(&path, "DEFAULT").expect("Failed to compile pipeline");

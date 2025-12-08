@@ -170,6 +170,11 @@ impl DockerClient {
                 self.client
                     .create_image(Some(create_image_options_builder.build()), None, None);
 
+            self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
+                identifier: Arc::clone(&task_id),
+                title: Arc::clone(&task_title),
+                progress: TaskProgress::Log("".into()),
+            }));
             while let Some(status) = stream.try_next().await? {
                 if let Some(status) = status.status {
                     log::trace!("{image}: {status}");
@@ -189,19 +194,22 @@ impl DockerClient {
 
     /// Commit the current state of a container and return a reference to it
     async fn commit_container(&self, container: Container) -> Result<ContainerState, RuntimeError> {
-        let id = self
-            .client
+        let repo = "serpentine-worker-commit";
+        let tag = uuid::Uuid::new_v4().to_string();
+
+        self.client
             .commit_container(
                 bollard::query_parameters::CommitContainerOptionsBuilder::new()
                     .container(&container.0)
-                    .repo("serpentine-worker-commit")
-                    .tag(uuid::Uuid::new_v4().to_string().as_str())
+                    .repo(repo)
+                    .tag(tag.as_str())
                     .pause(false)
                     .build(),
                 bollard::secret::ContainerConfig::default(),
             )
-            .await?
-            .id;
+            .await?;
+
+        let id = format!("{repo}:{tag}");
 
         log::trace!("Committed container {} to image {}", container.0, id);
 
