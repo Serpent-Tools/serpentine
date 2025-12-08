@@ -47,6 +47,7 @@ test-log = "0.2.18"
 
 [features]
 default = []
+_test_docker = []
 
 [profile.release]
 opt-level = 3

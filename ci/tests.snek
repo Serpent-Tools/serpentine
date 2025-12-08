@@ -15,7 +15,7 @@ docker_with_rust = docker_with_rust
 export tests_docker = docker_with_rust
     > Exec("cargo install cargo-nextest") // Binstall uses the wrong target
     > lib::Cooked("--tests")
-    > ExecSh(WithDocker("RUST_LOG='serpentine=trace' cargo nextest run --frozen"));
+    > ExecSh(WithDocker("RUST_LOG='serpentine=trace' cargo nextest run --frozen --features _test_docker"));
 
 podman_with_rust = Image("quay.io/podman/stable")
     > WorkingDir("/app")
@@ -26,7 +26,7 @@ export tests_podman = podman_with_rust
     > Env("DOCKER_HOST", "unix:///var/run/podman.sock")
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-nextest", "cargo-nextest")
-    > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run --frozen");
+    > ExecSh("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run --frozen --features _test_docker");
 
 cached_test_base = docker_with_rust
     > lib::Cooked("")

@@ -336,7 +336,7 @@ mod tests {
 
     #[rstest]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
+    #[cfg(feature = "_test_docker")]
     fn live_examples(#[files("test_cases/live/**/*.snek")] path: PathBuf) {
         let graph =
             crate::snek::compile_graph(&path, "DEFAULT").expect("Failed to compile pipeline");

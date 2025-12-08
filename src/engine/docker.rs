@@ -810,6 +810,7 @@ impl DockerClient {
 }
 
 #[cfg(test)]
+#[cfg(feature = "_test_docker")]
 #[expect(clippy::expect_used, reason = "Tests")]
 mod tests {
     use rstest::{fixture, rstest};
@@ -828,7 +829,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn ping_client(#[future] docker_client: DockerClient) {
         docker_client.await.client.ping().await.unwrap();
     }
@@ -836,7 +836,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn pull_image(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         docker_client
@@ -849,7 +848,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn exec_in_container(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -866,7 +864,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn exec_in_container_fail(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -883,7 +880,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn chained_exec(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -907,7 +903,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn forked_image(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -936,7 +931,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn exec_output(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -955,7 +949,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn copy_file_between_containers(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let base = docker_client
@@ -989,7 +982,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn copy_folder_between_containers(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let base = docker_client
@@ -1039,7 +1031,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn export_path_not_found(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let base = docker_client
@@ -1059,7 +1050,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn set_working_dir(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -1085,7 +1075,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn set_env_var(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -1107,7 +1096,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn export_import(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -1149,7 +1137,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn external_interference_image_deleted(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let image = docker_client
@@ -1181,7 +1168,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn external_interference_container_deleted(#[future] docker_client: DockerClient) {
         let mut docker_client = docker_client.await;
         let image = docker_client
@@ -1223,7 +1209,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    #[cfg_attr(not(docker_available), ignore = "Docker host not available")]
     async fn external_interference_container_stopped(#[future] docker_client: DockerClient) {
         let mut docker_client = docker_client.await;
         let image = docker_client
