@@ -472,6 +472,34 @@ impl DockerClient {
         Ok(all_output.join("\n"))
     }
 
+    /// Return a absolute path into a container from the maybe relative path.
+    ///
+    /// This is because while podman supports relative paths in a lot of apis, docker doesnt.
+    /// So if given a relative path this will grab the working directory from the container and
+    /// create a absolute path
+    async fn resolve_path(
+        &self,
+        container: &Container,
+        path: &str,
+    ) -> Result<PathBuf, RuntimeError> {
+        if path.starts_with('/') {
+            Ok(PathBuf::from(path))
+        } else {
+            let working_dir = self
+                .client
+                .inspect_container(
+                    &container.0,
+                    Some(bollard::query_parameters::InspectContainerOptionsBuilder::new().build()),
+                )
+                .await?
+                .config
+                .and_then(|config| config.working_dir)
+                .unwrap_or_else(|| "/".into());
+
+            Ok(PathBuf::from(working_dir).join(path))
+        }
+    }
+
     /// Copy the given file/directory into the container
     pub async fn copy_fs_into_container(
         &self,
@@ -485,6 +513,7 @@ impl DockerClient {
         let task_id: Arc<str> = Arc::from(format!("docker-copy-{}-to-{dest}", container.0));
         let task_title: Arc<str> = Arc::from(format!("cp -r <input> {dest}"));
         let container = self.get_state(container).await?;
+        let dest = self.resolve_path(&container, dest).await?;
 
         self.tui.send(crate::tui::TuiMessage::UpdateTask(Task {
             identifier: Arc::clone(&task_id),
@@ -519,21 +548,21 @@ impl DockerClient {
                     &[
                         "/bin/mv",
                         &format!("{FILE_TEMP_DIR}/{FILE_SYSTEM_FILE_TAR_NAME}"),
-                        dest,
+                        &dest.to_string_lossy(),
                     ],
                 )
                 .await?;
             }
             FileSystem::Folder(tar_data) => {
                 log::debug!("Is folder, uploading directly");
-                self.exec_internal(&container, &["/bin/mkdir", "-p", dest])
+                self.exec_internal(&container, &["/bin/mkdir", "-p", &dest.to_string_lossy()])
                     .await?;
                 self.client
                     .upload_to_container(
                         &container.0,
                         Some(
                             bollard::query_parameters::UploadToContainerOptionsBuilder::new()
-                                .path(dest)
+                                .path(&dest.to_string_lossy())
                                 .build(),
                         ),
                         bollard::body_full(tar_data.as_ref().to_vec().into()),
@@ -556,24 +585,7 @@ impl DockerClient {
         log::debug!("Exporting {docker_path} from {}", image.0);
 
         let container = self.get_state(image).await?;
-
-        let docker_path = if docker_path.starts_with('/') {
-            PathBuf::from(docker_path)
-        } else {
-            // Docker doesnt handle relative paths in `download_from_container` (podman does).
-            let working_dir = self
-                .client
-                .inspect_container(
-                    &container.0,
-                    Some(bollard::query_parameters::InspectContainerOptionsBuilder::new().build()),
-                )
-                .await?
-                .config
-                .and_then(|config| config.working_dir)
-                .unwrap_or_else(|| "/".into());
-
-            PathBuf::from(working_dir).join(docker_path)
-        };
+        let docker_path = self.resolve_path(&container, docker_path).await?;
 
         let docker_tar = self
             .client
@@ -679,6 +691,7 @@ impl DockerClient {
                     .repo("serpentine-worker-commit")
                     .tag(uuid::Uuid::new_v4().to_string().as_str())
                     .pause(false)
+                    // .changes(&format!("WORKDIR {dir}"))
                     .build(),
                 bollard::secret::ContainerConfig {
                     working_dir: Some(dir.to_owned()),
@@ -1031,6 +1044,60 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
+    async fn copy_folder_between_containers_relative_paths(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+        let base = docker_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let base = docker_client
+            .set_working_dir(&base, "/testing")
+            .await
+            .expect("Failed to set working dir");
+
+        let from = docker_client
+            .exec(&base, &["mkdir", "-p", "./foo/bar/baz"])
+            .await
+            .expect("Exec failed");
+
+        let from = docker_client
+            .exec(&from, &["sh", "-c", "echo hello > ./foo/bar/baz/nice.txt"])
+            .await
+            .expect("Exec failed");
+
+        let file = docker_client
+            .export_path(&from, "./foo")
+            .await
+            .expect("Export failed");
+
+        let to = docker_client
+            .copy_fs_into_container(&base, file, "./hello")
+            .await
+            .expect("Failed to copy into container");
+
+        docker_client
+            .exec(&to, &["ls", "./hello/bar/baz"])
+            .await
+            .expect("Exec failed");
+
+        docker_client
+            .exec(
+                &to,
+                &[
+                    "sh",
+                    "-c",
+                    "grep -q hello ./hello/bar/baz/nice.txt || exit 1",
+                ],
+            )
+            .await
+            .expect("Exec failed");
+
+        docker_client.shutdown().await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
     async fn export_path_not_found(#[future] docker_client: DockerClient) {
         let docker_client = docker_client.await;
         let base = docker_client
@@ -1069,7 +1136,14 @@ mod tests {
             .await
             .expect("Exec failed");
 
-        docker_client.shutdown().await;
+        let working_dir_pwd = docker_client
+            .exec_get_output(&image, &["pwd"])
+            .await
+            .expect("Exec failed");
+        assert_eq!(
+            working_dir_pwd, "/foo",
+            "pwd reported wrong working directory"
+        );
     }
 
     #[rstest]
