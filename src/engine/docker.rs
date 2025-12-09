@@ -782,8 +782,11 @@ impl DockerClient {
         images: impl Iterator<Item = &ContainerState>,
         mut target: impl std::io::Write,
     ) -> Result<(), RuntimeError> {
+        let images = images.map(|image| image.0.as_ref()).collect::<Vec<_>>();
+        log::debug!("Exporting {} images from docker", images.len());
+
         self.client
-            .export_images(&images.map(|image| image.0.as_ref()).collect::<Vec<_>>())
+            .export_images(&images)
             .try_for_each(move |item| {
                 let result = target.write_all(&item);
                 std::future::ready(result.map_err(Into::into))
@@ -804,7 +807,7 @@ impl DockerClient {
                     .quiet(true)
                     .build(),
                 futures_util::stream::poll_fn(move |_| {
-                    let mut buffer = [0; 2048];
+                    let mut buffer = vec![0; 1024 * 1024].into_boxed_slice();
                     match file.read(&mut buffer) {
                         Ok(bytes_read) => {
                             if bytes_read == 0 {

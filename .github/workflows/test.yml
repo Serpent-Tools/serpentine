@@ -5,25 +5,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
-      # - uses: docker/setup-docker-action@e61617a16c407a86262fb923c35a616ddbe070b3
-      #   with:
-      #     set-host: true
-      - uses: dtolnay/rust-toolchain@6d9817901c499d6b02debbb57edb38d33daa680b
-      # - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
-      #   with:
-      #       cache-on-failure: true
+      - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
+        with:
+            toolchain: stable
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+            cache-on-failure: true
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: cache-restore
         with:
-          path: /tmp/serpentine_cache
+          path: ./serpentine_cache
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
 
       - name: Run serpentine pipeline
-        run: cargo run -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point DEFAULT --jobs 1 
+        run: cargo run --locked -- run --cache ./serpentine_cache --standalone-cache --clean-old --ci --entry-point DEFAULT --jobs 1 
 
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         if: always()
         with:
-          path: /tmp/serpentine_cache
+          path: ./serpentine_cache
           key: ${{ steps.cache-restore.outputs.cache-primary-key }} 
