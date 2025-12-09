@@ -173,10 +173,12 @@ impl Cache {
                 }
             });
             log::info!("Exporting standalone cache");
-            docker.export(images, file).await?;
+            docker.export(images, &mut file).await?;
         } else {
             file.write_all(&[0])?;
         }
+
+        file.flush()?;
 
         Ok(())
     }
@@ -427,5 +429,34 @@ mod tests {
         second_loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[test_log::test]
+    async fn export_standalone_to_existing_file(#[future] docker_client: DockerClient) {
+        let docker_client = docker_client.await;
+
+        let mut cache = Cache::new();
+        let image = docker_client
+            .pull_image("quay.io/toolbx-images/alpine-toolbox:latest")
+            .await
+            .unwrap();
+        cache.insert([0; 32], Data::Container(image));
+
+        let cache_file = tempfile::NamedTempFile::new().unwrap();
+        let cache_file = cache_file.path();
+        cache
+            .save_cache(cache_file, &docker_client, true, true)
+            .await
+            .unwrap();
+
+        let loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        loaded_cache
+            .save_cache(cache_file, &docker_client, true, true)
+            .await
+            .unwrap();
+
+        Cache::load_cache(cache_file, &docker_client).await.unwrap();
     }
 }

@@ -114,7 +114,11 @@ impl RuntimeContext {
         let docker = docker::DockerClient::new(tui.clone(), cli.jobs).await?;
 
         let cache = match cache::Cache::load_cache(&cli.get_cache(), &docker).await {
-            Ok(cache) => cache,
+            Ok(cache) => {
+                log::info!("Cache loaded, deleting cache file");
+                std::fs::remove_file(cli.get_cache())?;
+                cache
+            }
             Err(error) => {
                 log::error!("{error}");
                 log::warn!("Error loading cache from disk, creating empty cache");
