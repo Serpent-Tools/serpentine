@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use tokio::sync::OnceCell;
+use smol::lock::OnceCell;
 
 use super::RuntimeContext;
 use crate::engine::RuntimeError;
@@ -15,7 +15,7 @@ pub struct Scheduler {
     /// Node implementations
     nodes: NodeStorage,
     /// The list of outputs of nodes, indexes by node instance ids
-    data: Vec<OnceCell<Data>>,
+    data: Box<[OnceCell<Data>]>,
     /// The runtime context
     context: Rc<RuntimeContext>,
 }
@@ -24,7 +24,9 @@ impl Scheduler {
     /// Create a new scheduler to run the given graph
     pub fn new(nodes: NodeStorage, graph: Graph, context: Rc<RuntimeContext>) -> Self {
         Self {
-            data: vec![OnceCell::new(); graph.len()],
+            data: std::iter::repeat_with(OnceCell::new)
+                .take(graph.len())
+                .collect(),
             nodes,
             graph,
             context,
