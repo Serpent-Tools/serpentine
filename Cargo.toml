@@ -11,14 +11,14 @@ repository = "https://github.com/Serpent-Tools/serpentine"
 
 [dependencies]
 # Runtime
-tokio = { version = "1.47.1", default-features = false, features = ["rt", "sync", "macros", "signal"] }
-tokio-util = { version = "0.7.16", default-features = false, features = ["io"] }
 bollard = { version = "0.19.3", default-features = false, features = ["http", "pipe"] }
-futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
-tar = "0.4.44"
+async-tar = { version = "0.5.1", default-features = false }
+futures-util = { version = "0.3.31", default-features = false, features = ["std", "io"] }
 shell-words = "1.1.0"
 uuid = { version = "1.18.1", features = ["v4"] }
 ignore = "0.4.23"
+smol = { version = "2.0.2", default-features = false }
+async-compat = "0.2.5"
 
 # Cache
 sha2 = { version = "0.10.9", default-features = false, features = ["asm-aarch64", "std"] }
@@ -35,15 +35,17 @@ clap = { version = "4.5.47", features = ["derive"] }
 directories = { version = "6.0.0", default-features = false }
 fern = { version = "0.7.1", default-features = false }
 layout-rs = "0.1.3"
+bytes = { version = "1.11.0", default-features = false, features = ["std"] }
+ctrlc = "3.5.1"
 
 [dev-dependencies]
-tokio = { version = "1.47.1", default-features = false, features = ["test-util"] }
 insta = { version = "1.43.2", features = ["filters"] }
 proptest = { version = "1.8.0", features = ["attr-macro"] }
 proptest-derive = "0.7.0"
 rstest = "0.26.1"
 tempfile = "3.23.0"
 test-log = "0.2.18"
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "test-util"] }
 
 [features]
 default = []

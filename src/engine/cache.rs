@@ -1,10 +1,10 @@
 //! A content addressable cache.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
 use std::path::Path;
 
 use sha2::Digest;
+use smol::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::engine::RuntimeError;
 use crate::engine::data_model::{Data, NodeKindId};
@@ -12,6 +12,7 @@ use crate::engine::docker::DockerClient;
 
 // ==== CACHE FILE FORMAT ====
 // The first byte is the `CACHE_COMPATIBILITY_VERSION`, written as a pure u8.
+// Followed by a `u64` in big-endian denoting the following sections size.
 // Followed by a `CacheHashMap` encoded using `bincode`
 //
 // Then if the cache contains a standalone cache the next byte is a `1`, otherwise its a `0`.
@@ -35,7 +36,7 @@ use crate::engine::docker::DockerClient;
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-const CACHE_COMPATIBILITY_VERSION: u8 = 0;
+const CACHE_COMPATIBILITY_VERSION: u8 = 1;
 
 /// The bincode config to use
 const fn bincode_config() -> impl bincode::config::Config {
@@ -87,33 +88,39 @@ impl Cache {
         docker: &DockerClient,
     ) -> Result<Self, RuntimeError> {
         log::info!("Attempting to load cache from {}", cache_file.display());
-        let mut file = std::fs::File::open(cache_file)?;
-        file.lock()?;
+        let file = smol::fs::File::open(cache_file).await?;
+        let mut file = smol::io::BufReader::new(file);
 
-        let mut version = [0];
-        file.read_exact(&mut version)?;
+        let mut version = [0_u8; 1];
+        file.read_exact(&mut version).await?;
+        let version = version[0];
 
-        if version[0] != CACHE_COMPATIBILITY_VERSION {
+        if version != CACHE_COMPATIBILITY_VERSION {
             return Err(RuntimeError::CacheOutOfDate {
-                got: version[0],
+                got: version,
                 current: CACHE_COMPATIBILITY_VERSION,
             });
         }
 
-        let old_cache = bincode::decode_from_std_read(&mut file, bincode_config())?;
+        let mut cache_size = [0_u8; 8];
+        file.read_exact(&mut cache_size).await?;
+        let cache_size = u64::from_be_bytes(cache_size);
 
-        let mut has_standalone_cache = [0; 1];
-        file.read_exact(&mut has_standalone_cache)?;
-        if has_standalone_cache[0] == 1 {
+        let mut cache_data =
+            vec![0; cache_size.try_into().unwrap_or(usize::MAX)].into_boxed_slice();
+        file.read_exact(&mut cache_data).await?;
+        let old_cache = bincode::decode_from_std_read(&mut &*cache_data, bincode_config())?;
+
+        let mut has_standalone_cache = [0_u8; 1];
+        file.read_exact(&mut has_standalone_cache).await?;
+        let has_standalone_cache = has_standalone_cache[0];
+
+        if has_standalone_cache == 1 {
             log::info!("Loading standalone cache");
             docker.import(file).await?;
         } else {
             log::info!("No standalone cache found.");
-            debug_assert_eq!(
-                has_standalone_cache[0], 0,
-                "hash_standalone_cache not 0 or 1"
-            );
-            debug_assert_eq!(file.read(&mut [0; 1])?, 0, "Not at end of file");
+            debug_assert_eq!(has_standalone_cache, 0, "hash_standalone_cache not 0 or 1");
         }
 
         Ok(Self {
@@ -137,9 +144,10 @@ impl Cache {
         if let Some(parent) = cache_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut file = std::fs::File::create(cache_file)?;
-        file.lock()?;
-        file.write_all(&[CACHE_COMPATIBILITY_VERSION])?;
+        let file = smol::fs::File::create(cache_file).await?;
+        let mut file = smol::io::BufWriter::new(file);
+
+        file.write_all(&[CACHE_COMPATIBILITY_VERSION]).await?;
 
         let Self {
             old_cache,
@@ -160,10 +168,19 @@ impl Cache {
             }
         }
 
-        bincode::encode_into_std_write(&cache, &mut file, bincode_config())?;
+        let cache_data = bincode::encode_to_vec(&cache, bincode_config())?;
+        file.write_all(
+            &cache_data
+                .len()
+                .try_into()
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        )
+        .await?;
+        file.write_all(&cache_data).await?;
 
         if export_standalone {
-            file.write_all(&[1])?;
+            file.write_all(&[1]).await?;
 
             let images = cache.values().filter_map(|data| {
                 if let Data::Container(image) = data {
@@ -175,10 +192,10 @@ impl Cache {
             log::info!("Exporting standalone cache");
             docker.export(images, &mut file).await?;
         } else {
-            file.write_all(&[0])?;
+            file.write_all(&[0]).await?;
         }
 
-        file.flush()?;
+        file.flush().await?;
 
         Ok(())
     }

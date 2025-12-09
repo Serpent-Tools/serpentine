@@ -425,38 +425,30 @@ async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSys
     let src: std::path::PathBuf = src.to_string().into();
 
     if src.is_dir() {
-        let tar_data = tokio::task::spawn_blocking(move || read_folder_to_tar(src))
-            .await
-            .map_err(|_| RuntimeError::internal("Tokio join error"))??;
-
-        Ok(FileSystem::Folder(tar_data.into()))
+        let tar_data = read_folder_to_tar(src).await?;
+        Ok(FileSystem::Folder(tar_data))
     } else {
-        let tar_data = tokio::task::spawn_blocking(move || -> Result<_, RuntimeError> {
-            let mut tar_data = Vec::new();
-            {
-                let mut tar_builder = tar::Builder::new(&mut tar_data);
-                let file = std::fs::File::open(src)?;
-                let mut header = tar::Header::new_gnu();
-                let metadata = file.metadata()?;
-                header.set_entry_type(tar::EntryType::Regular);
-                header.set_mode(metadata.mode());
-                header.set_size(metadata.len());
-                header.set_cksum();
-                tar_builder.append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, file)?;
-                tar_builder.finish()?;
-            }
-            Ok(tar_data)
-        })
-        .await
-        .map_err(|_| RuntimeError::internal("Tokio join error"))??;
+        let mut tar_data = Vec::new();
+        let mut tar_builder = async_tar::Builder::new(&mut tar_data);
+        let file = smol::fs::File::open(src).await?;
+        let mut header = async_tar::Header::new_gnu();
+        let metadata = file.metadata().await?;
+        header.set_entry_type(async_tar::EntryType::Regular);
+        header.set_mode(metadata.mode());
+        header.set_size(metadata.len());
+        header.set_cksum();
+        tar_builder
+            .append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, file)
+            .await?;
+        tar_builder.finish().await?;
 
+        drop(tar_builder);
         Ok(FileSystem::File(tar_data.into()))
     }
 }
 
 /// Read the given path into a tar
-#[expect(clippy::needless_pass_by_value, reason = "Spawned in a thread")]
-fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Vec<u8>, RuntimeError> {
+async fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Rc<[u8]>, RuntimeError> {
     let mut tar_data = Vec::new();
     let paths = ignore::WalkBuilder::new(&src)
         .hidden(false)
@@ -467,7 +459,7 @@ fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Vec<u8>, RuntimeError> 
         .filter_map(Result::ok);
 
     {
-        let mut tar_builder = tar::Builder::new(&mut tar_data);
+        let mut tar_builder = async_tar::Builder::new(&mut tar_data);
 
         for entry in paths {
             let path = entry.path();
@@ -478,27 +470,29 @@ fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Vec<u8>, RuntimeError> 
             }
 
             if path.is_file() {
-                let file = std::fs::File::open(path)?;
-                let mut header = tar::Header::new_gnu();
-                let metadata = file.metadata()?;
-                header.set_entry_type(tar::EntryType::Regular);
+                let file = smol::fs::File::open(path).await?;
+                let mut header = async_tar::Header::new_gnu();
+                let metadata = file.metadata().await?;
+                header.set_entry_type(async_tar::EntryType::Regular);
                 header.set_mode(metadata.mode());
                 header.set_size(metadata.len());
                 header.set_cksum();
-                tar_builder.append_data(&mut header, relative_path, file)?;
+                tar_builder
+                    .append_data(&mut header, relative_path, file)
+                    .await?;
             } else if path.is_dir() {
-                let mut header = tar::Header::new_gnu();
-                header.set_entry_type(tar::EntryType::Directory);
+                let mut header = async_tar::Header::new_gnu();
+                header.set_entry_type(async_tar::EntryType::Directory);
                 header.set_mode(path.metadata()?.mode());
                 header.set_size(0);
                 header.set_cksum();
-                tar_builder.append(&header, std::io::empty())?;
+                tar_builder.append(&header, smol::io::empty()).await?;
             }
         }
 
-        tar_builder.finish()?;
+        tar_builder.finish().await?;
     }
-    Ok(tar_data)
+    Ok(tar_data.into())
 }
 
 /// Extract a `FileSystem` from a container at the given path
@@ -521,9 +515,9 @@ async fn to_host(
         FileSystem::File(data) | FileSystem::Folder(data) => data,
     };
 
-    let mut archive = tar::Archive::new(&*data);
+    let archive = async_tar::Archive::new(&*data);
     log::info!("Writing fs to {path}");
-    archive.unpack(&*path)?;
+    archive.unpack(&*path).await?;
 
     Ok(0)
 }
