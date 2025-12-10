@@ -1,5 +1,6 @@
 //! Handles the display of progress and container state to the terminal.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ pub enum TuiMessage {
     StopContainer(Box<str>),
 }
 
-/// Wrapper around a threaded channel, always channel to not be set.
+/// Wrapper around a threaded channel, allows channel to not be set.
 #[derive(Clone)]
 pub struct TuiSender(pub Option<std::sync::mpsc::Sender<TuiMessage>>);
 
@@ -93,13 +94,13 @@ struct UiState {
     /// Are we shutting down?
     shutting_down: bool,
     /// Tasks being tracked by the UI
-    tasks: Vec<Task>,
+    tasks: HashMap<Arc<str>, Task>,
     /// Log lines
-    logs: Vec<Box<str>>,
+    logs: heapless::Deque<Box<str>, 20>,
     /// Containers spawned by serpentine
     containers: Vec<Box<str>>,
     /// Logs from tasks
-    task_logs: Vec<Box<str>>,
+    task_logs: heapless::Deque<Box<str>, 40>,
 }
 
 impl UiState {
@@ -111,10 +112,10 @@ impl UiState {
             running_nodes: 0,
             finished_nodes: 0,
             shutting_down: false,
-            tasks: Vec::new(),
-            logs: Vec::new(),
+            tasks: HashMap::new(),
+            logs: heapless::Deque::new(),
             containers: Vec::new(),
-            task_logs: Vec::new(),
+            task_logs: heapless::Deque::new(),
         }
     }
 
@@ -137,33 +138,28 @@ impl UiState {
             }
             TuiMessage::UpdateTask(task) => {
                 if let TaskProgress::Log(msg) = &task.progress {
-                    self.task_logs.push(msg.clone());
-                    if self.task_logs.len() > 40 {
-                        self.task_logs.remove(0);
+                    if self.task_logs.is_full() {
+                        self.task_logs.pop_front();
                     }
+                    let _ = self.task_logs.push_back(msg.clone());
                 }
 
-                for existing_task in &mut self.tasks {
-                    if existing_task.identifier == task.identifier {
-                        *existing_task = task;
-                        return;
-                    }
-                }
-                self.tasks.push(task);
+                self.tasks.insert(Arc::clone(&task.identifier), task);
             }
             TuiMessage::FinishTask(identifier) => {
-                self.tasks.retain(|task| task.identifier != identifier);
+                self.tasks.remove(&identifier);
             }
             TuiMessage::Log(msg) => {
-                self.logs.push(msg);
-                if self.logs.len() > 20 {
-                    self.logs.remove(0);
+                if self.logs.is_full() {
+                    self.logs.pop_front();
                 }
+                let _ = self.logs.push_back(msg.clone());
             }
             TuiMessage::Container(id) => {
                 self.containers.push(id);
             }
             TuiMessage::StopContainer(id) => {
+                // Containers are spun down rarely enough to this to be okay.
                 self.containers.retain(|container| *container != id);
             }
         }
@@ -214,14 +210,14 @@ impl UiState {
         frame.render_widget(
             Paragraph::new(
                 self.task_logs
-                    .get(
-                        (self
-                            .task_logs
+                    .iter()
+                    .skip(
+                        self.task_logs
                             .len()
-                            .saturating_sub(task_logs_inner.height.into()))..,
+                            .saturating_sub(task_logs_inner.height.into()),
                     )
-                    .unwrap_or(&self.task_logs)
-                    .join("\n"),
+                    .map(|line| Line::from(line.as_ref()))
+                    .collect::<Vec<_>>(),
             ),
             task_logs_inner,
         );
@@ -237,7 +233,7 @@ impl UiState {
         )
         .split(area);
 
-        for (task, task_area) in self.tasks.iter().zip(areas.iter()) {
+        for (task, task_area) in self.tasks.values().zip(areas.iter()) {
             match &task.progress {
                 TaskProgress::Measurable { completed, total } => {
                     #[expect(
@@ -397,7 +393,16 @@ impl UiState {
             .title(" Serpentine Logs ");
         let log_inner = logs.inner(log_area);
         frame.render_widget(logs, log_area);
-        frame.render_widget(Paragraph::new(self.logs.join("\n")), log_inner);
+        frame.render_widget(
+            Paragraph::new(
+                self.logs
+                    .iter()
+                    .skip(self.logs.len().saturating_sub(log_inner.height.into()))
+                    .map(|line| Line::from(line.as_ref()))
+                    .collect::<Vec<_>>(),
+            ),
+            log_inner,
+        );
 
         let containers = Block::default().borders(Borders::ALL).title(" Containers ");
         let container_inner = containers.inner(container_area);
@@ -458,6 +463,7 @@ pub fn start_tui(events: std::sync::mpsc::Receiver<TuiMessage>, total_nodes: usi
             break;
         }
 
+        // Handle burst messages
         while let Ok(message) = events.recv_timeout(Duration::from_millis(10)) {
             match message {
                 TuiMessage::Shutdown => {
