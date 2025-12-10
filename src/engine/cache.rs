@@ -6,9 +6,8 @@ use std::path::Path;
 use sha2::Digest;
 use smol::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::engine::RuntimeError;
 use crate::engine::data_model::{Data, NodeKindId};
-use crate::engine::docker::DockerClient;
+use crate::engine::{RuntimeError, containerd};
 
 // ==== CACHE FILE FORMAT ====
 // The first byte is the `CACHE_COMPATIBILITY_VERSION`, written as a pure u8.
@@ -85,7 +84,7 @@ impl Cache {
     /// Load the cache from the given path.
     pub async fn load_cache(
         cache_file: &Path,
-        docker: &DockerClient,
+        containerd: &containerd::Client,
     ) -> Result<Self, RuntimeError> {
         log::info!("Attempting to load cache from {}", cache_file.display());
         let file = smol::fs::File::open(cache_file).await?;
@@ -117,7 +116,7 @@ impl Cache {
 
         if has_standalone_cache == 1 {
             log::info!("Loading standalone cache");
-            docker.import(file).await?;
+            containerd.import(file).await?;
         } else {
             log::info!("No standalone cache found.");
             debug_assert_eq!(has_standalone_cache, 0, "hash_standalone_cache not 0 or 1");
@@ -136,7 +135,7 @@ impl Cache {
     pub async fn save_cache(
         self,
         cache_file: &Path,
-        docker: &DockerClient,
+        containerd: &containerd::Client,
         keep_old_cache: bool,
         export_standalone: bool,
     ) -> Result<(), RuntimeError> {
@@ -164,7 +163,7 @@ impl Cache {
                 .into_values()
                 .filter(|value| !in_use.contains(value))
             {
-                value.cleanup(docker).await;
+                value.cleanup(containerd).await;
             }
         }
 
@@ -190,7 +189,7 @@ impl Cache {
                 }
             });
             log::info!("Exporting standalone cache");
-            docker.export(images, &mut file).await?;
+            containerd.export(images, &mut file).await?;
         } else {
             file.write_all(&[0]).await?;
         }
@@ -234,8 +233,8 @@ mod tests {
     use super::*;
 
     #[fixture]
-    async fn docker_client() -> DockerClient {
-        DockerClient::new(crate::tui::TuiSender(None), 1)
+    async fn containerd_client() -> containerd::Client {
+        containerd::Client::new(crate::tui::TuiSender(None), 1)
             .await
             .expect("Failed to create Docker client")
     }
@@ -245,12 +244,12 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn save_and_load_one_entry(
-        #[future] docker_client: DockerClient,
+        #[future] containerd_client: containerd::Client,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let docker_client = docker_client.await;
+        let containerd_client = containerd_client.await;
 
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
@@ -264,11 +263,13 @@ mod tests {
         let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
         cache
-            .save_cache(cache_file, &docker_client, false, false)
+            .save_cache(cache_file, &containerd_client, false, false)
             .await
             .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let mut loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         let loaded_value = loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
@@ -281,10 +282,10 @@ mod tests {
     #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 5, ..Default::default()})]
     #[test_log::test]
     async fn save_and_load_multiple_entries(
-        #[future] docker_client: DockerClient,
+        #[future] containerd_client: containerd::Client,
         #[ignore] values: Vec<(NodeKindId, Vec<Data>, Data)>,
     ) {
-        let docker_client = docker_client.await;
+        let containerd_client = containerd_client.await;
 
         let mut cache = Cache::new();
         for (node, data, value) in &values {
@@ -300,11 +301,13 @@ mod tests {
         let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
         cache
-            .save_cache(cache_file, &docker_client, false, false)
+            .save_cache(cache_file, &containerd_client, false, false)
             .await
             .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let mut loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
 
         for (node, data, _) in &values {
             let data = data.iter().collect::<Vec<_>>();
@@ -328,12 +331,12 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn if_cache_used_should_always_be_kept(
-        #[future] docker_client: DockerClient,
+        #[future] containerd_client: containerd::Client,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let docker_client = docker_client.await;
+        let containerd_client = containerd_client.await;
 
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
@@ -347,11 +350,13 @@ mod tests {
         let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
         cache
-            .save_cache(cache_file, &docker_client, false, false)
+            .save_cache(cache_file, &containerd_client, false, false)
             .await
             .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let mut loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
@@ -359,11 +364,13 @@ mod tests {
         // Even tho `keep_old_cache` is false it should still keep the entry in there since we used
         // it.
         loaded_cache
-            .save_cache(cache_file, &docker_client, false, false)
+            .save_cache(cache_file, &containerd_client, false, false)
             .await
             .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let mut second_loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         second_loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
@@ -374,12 +381,12 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn old_entry_cleared_if_not_used(
-        #[future] docker_client: DockerClient,
+        #[future] containerd_client: containerd::Client,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let docker_client = docker_client.await;
+        let containerd_client = containerd_client.await;
 
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
@@ -393,17 +400,21 @@ mod tests {
         let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
         cache
-            .save_cache(cache_file, &docker_client, false, false)
+            .save_cache(cache_file, &containerd_client, false, false)
             .await
             .unwrap();
 
-        let loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         loaded_cache
-            .save_cache(cache_file, &docker_client, false, false)
+            .save_cache(cache_file, &containerd_client, false, false)
             .await
             .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let mut second_loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         let result = second_loaded_cache.get(&key.sha256().unwrap());
         assert!(result.is_none(), "unused old_cache value was saved.");
     }
@@ -413,12 +424,12 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn old_entry_kept_if_keep_old_true_even_if_not_used(
-        #[future] docker_client: DockerClient,
+        #[future] containerd_client: containerd::Client,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let docker_client = docker_client.await;
+        let containerd_client = containerd_client.await;
 
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
@@ -432,17 +443,21 @@ mod tests {
         let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
         cache
-            .save_cache(cache_file, &docker_client, false, false)
+            .save_cache(cache_file, &containerd_client, false, false)
             .await
             .unwrap();
 
-        let loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         loaded_cache
-            .save_cache(cache_file, &docker_client, true, false)
+            .save_cache(cache_file, &containerd_client, true, false)
             .await
             .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let mut second_loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         second_loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
@@ -451,11 +466,11 @@ mod tests {
     #[tokio::test]
     #[rstest]
     #[test_log::test]
-    async fn export_standalone_to_existing_file(#[future] docker_client: DockerClient) {
-        let docker_client = docker_client.await;
+    async fn export_standalone_to_existing_file(#[future] containerd_client: containerd::Client) {
+        let containerd_client = containerd_client.await;
 
         let mut cache = Cache::new();
-        let image = docker_client
+        let image = containerd_client
             .pull_image("quay.io/toolbx-images/alpine-toolbox:latest")
             .await
             .unwrap();
@@ -464,16 +479,20 @@ mod tests {
         let cache_file = tempfile::NamedTempFile::new().unwrap();
         let cache_file = cache_file.path();
         cache
-            .save_cache(cache_file, &docker_client, true, true)
+            .save_cache(cache_file, &containerd_client, true, true)
             .await
             .unwrap();
 
-        let loaded_cache = Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        let loaded_cache = Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
         loaded_cache
-            .save_cache(cache_file, &docker_client, true, true)
+            .save_cache(cache_file, &containerd_client, true, true)
             .await
             .unwrap();
 
-        Cache::load_cache(cache_file, &docker_client).await.unwrap();
+        Cache::load_cache(cache_file, &containerd_client)
+            .await
+            .unwrap();
     }
 }
