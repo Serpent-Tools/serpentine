@@ -9,41 +9,56 @@ use crate::snek::CompileError;
 /// A virtual file that can hold multiple files for error reporting
 /// But look like one big file to miette.
 #[derive(Debug)]
-pub struct VirtualFile {
+pub struct VirtualFile<'arena> {
     /// The actual files, with their content and paths.
-    files: Vec<(PathBuf, String)>,
+    files: Vec<(PathBuf, &'arena str)>,
+    /// The current length of all values
+    length: usize,
 }
 
 /// A unique identifier for a file in the virtual file system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId(pub usize);
 
-impl VirtualFile {
+impl<'arena> VirtualFile<'arena> {
     /// Create a new empty virtual file
     pub fn new() -> Self {
-        Self { files: Vec::new() }
+        Self {
+            files: Vec::new(),
+            length: 0,
+        }
     }
 
     /// Add a new file to this virtual file, returning its `FileId`.
-    ///
-    /// This will clone the `code` into the virtual file
-    pub fn push(&mut self, path: PathBuf, code: &str) -> FileId {
-        let mut current_end = 0;
-        for (name, file) in &self.files {
-            if *name == path {
-                return FileId(current_end);
-            }
+    pub fn push(&mut self, path: PathBuf, code: &'arena str) -> FileId {
+        let start_point = self.length;
 
-            current_end = current_end.saturating_add(file.len());
+        self.length = self.length.saturating_add(code.len());
+        self.files.push((path, code));
+
+        FileId(start_point)
+    }
+
+    /// Clone the source code to report spans.
+    pub fn into_owned(self) -> OwnedVirtualFile {
+        OwnedVirtualFile {
+            files: self
+                .files
+                .into_iter()
+                .map(|(path, code)| (path, code.into()))
+                .collect(),
         }
-
-        self.files.push((path, code.to_owned()));
-
-        FileId(current_end)
     }
 }
 
-impl miette::SourceCode for VirtualFile {
+/// A owned copy of `VirtualFile` for storing in errors, should be lazily created as needed.
+#[derive(Debug)]
+pub struct OwnedVirtualFile {
+    /// The files
+    files: Box<[(PathBuf, Box<str>)]>,
+}
+
+impl miette::SourceCode for OwnedVirtualFile {
     fn read_span<'this>(
         &'this self,
         span: &miette::SourceSpan,
@@ -135,17 +150,14 @@ impl Span {
         Spanned(value, self)
     }
 
-    /// return a clone of the string this span represents from the input string.
-    pub fn index_str(self, value: &str) -> Result<Box<str>, CompileError> {
-        value
-            .get(self.start..self.end)
-            .ok_or_else(|| {
-                CompileError::internal(format!(
-                    "Failed to index string {value:?} with {}..{}",
-                    self.start, self.end
-                ))
-            })
-            .map(Into::into)
+    /// return a slice of the string this span represents from the input string.
+    pub fn index_str(self, value: &str) -> Result<&str, CompileError> {
+        value.get(self.start..self.end).ok_or_else(|| {
+            CompileError::internal(format!(
+                "Failed to index string {value:?} with {}..{}",
+                self.start, self.end
+            ))
+        })
     }
 }
 

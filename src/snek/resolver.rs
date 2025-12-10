@@ -4,34 +4,36 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use bumpalo::Bump;
+
 use crate::engine::data_model::{Data, NodeKindId, NodeStorage, Store, StoreId};
 use crate::snek::span::{Span, Spanned, VirtualFile};
 use crate::snek::{CompileError, ast, ir};
 
 /// A snek module
-struct Module {
+struct Module<'arena> {
     /// The items in the module
-    items: Scope<'static>,
+    items: Scope<'arena, 'arena>,
 }
 
 /// A store of modules
-type ModuleStore = Store<Module>;
+type ModuleStore<'arena> = Store<Module<'arena>>;
 
 /// A module id
-type ModuleId = StoreId<Module>;
+type ModuleId<'arena> = StoreId<Module<'arena>>;
 
 /// Possible items in scope
 #[derive(Clone, Copy)]
-enum ScopeItem {
+enum ScopeItem<'arena> {
     /// A node label
     Label(ir::Symbol),
     /// A function
     Function(ir::FunctionId),
     /// A module
-    Module(ModuleId),
+    Module(ModuleId<'arena>),
 }
 
-impl ScopeItem {
+impl<'arena> ScopeItem<'arena> {
     /// Return a string describing the kind of item
     #[must_use]
     fn kind(&self) -> &'static str {
@@ -46,7 +48,7 @@ impl ScopeItem {
     ///
     /// `error_span` is used in the any potential errors,
     /// and should point to the source of the item path that got this value.
-    fn try_into_module(self, error_span: Span) -> Result<ModuleId, CompileError> {
+    fn try_into_module(self, error_span: Span) -> Result<ModuleId<'arena>, CompileError> {
         if let Self::Module(module) = self {
             Ok(module)
         } else {
@@ -92,14 +94,17 @@ impl ScopeItem {
 }
 
 /// A lexical scope
-struct Scope<'parent> {
+///
+/// Use `'parent = 'arena` for a root level, as its the biggest lifetime we can use.
+/// (`'static` would force `'arena` to be `'static`)
+struct Scope<'arena, 'parent> {
     /// The parent scope, used for lookups if not found in the current scope.
-    parent: Option<&'parent Scope<'parent>>,
+    parent: Option<&'parent Scope<'arena, 'parent>>,
     /// The items in the current scope
-    items: HashMap<Box<str>, ScopeItem>,
+    items: HashMap<&'arena str, ScopeItem<'arena>>,
 }
 
-impl Scope<'static> {
+impl<'arena> Scope<'arena, 'arena> {
     /// Create a new empty root scope
     fn root() -> Self {
         Scope {
@@ -109,10 +114,10 @@ impl Scope<'static> {
     }
 }
 
-impl Scope<'_> {
+impl<'arena> Scope<'arena, '_> {
     /// Create a child scope
     #[must_use]
-    fn child(&self) -> Scope<'_> {
+    fn child<'this>(&'this self) -> Scope<'arena, 'this> {
         Scope {
             parent: Some(self),
             items: HashMap::new(),
@@ -120,7 +125,7 @@ impl Scope<'_> {
     }
 
     /// Insert an item into the scope
-    fn insert(&mut self, name: Box<str>, item: ScopeItem) {
+    fn insert(&mut self, name: &'arena str, item: ScopeItem<'arena>) {
         self.items.insert(name, item);
     }
 
@@ -128,7 +133,7 @@ impl Scope<'_> {
     ///
     /// `error_span` is used for constructing the `ItemNotFound` error,
     /// and should point to the identifier that was the source of `name`
-    fn lookup(&self, name: &str, error_span: Span) -> Result<&ScopeItem, CompileError> {
+    fn lookup(&self, name: &str, error_span: Span) -> Result<&ScopeItem<'arena>, CompileError> {
         if let Some(item) = self.items.get(name) {
             Ok(item)
         } else if let Some(parent) = self.parent {
@@ -146,17 +151,17 @@ impl Scope<'_> {
 ///
 /// This is split out and passed as its own argument to allow other arguments to hold borrows into
 /// it (for example references to the prelude) without causing `self` to be immutable.
-struct ImmutableContext {
+struct ImmutableContext<'arena> {
     /// The prelude scope
-    prelude: Scope<'static>,
+    prelude: Scope<'arena, 'arena>,
 }
 
 /// Context for the compilation of a statement.
-enum StatementContext<'caller> {
+enum StatementContext<'arena, 'caller> {
     /// A module/top level context
     Module {
         /// The map of exported items
-        export_map: &'caller mut Scope<'static>,
+        export_map: &'caller mut Scope<'arena, 'arena>,
     },
     /// A function context
     Function {
@@ -167,7 +172,7 @@ enum StatementContext<'caller> {
     },
 }
 
-impl StatementContext<'_> {
+impl<'arena> StatementContext<'arena, '_> {
     /// Return the in-progress ir body that should be used for emitting in this context
     ///
     /// Specifically the `top_level_body` should be used when importing stuff so that modules
@@ -190,8 +195,8 @@ impl StatementContext<'_> {
     /// and should point to the `export` keyword.
     fn export(
         &mut self,
-        name: Box<str>,
-        item: ScopeItem,
+        name: &'arena str,
+        item: ScopeItem<'arena>,
         error_span: Span,
     ) -> Result<(), CompileError> {
         if let Self::Module { export_map } = self {
@@ -237,20 +242,22 @@ impl StatementContext<'_> {
 }
 
 /// Holds the state of the resolver
-struct Resolver {
+struct Resolver<'arena> {
+    /// Arena used for allocating the source code
+    arena: &'arena Bump,
     /// The store of modules
-    modules: ModuleStore,
+    modules: ModuleStore<'arena>,
     /// The module cache
     ///
     /// None indicates the module is actively being compiled.
     /// I.e if we try to retrieve it its a circular import.
-    module_cache: HashMap<PathBuf, Option<ModuleId>>,
+    module_cache: HashMap<PathBuf, Option<ModuleId<'arena>>>,
     /// The builtin node implementations
     nodes: NodeStorage,
     /// The store of functions
     functions: ir::FunctionStore,
     /// The virtual file holding the file contents
-    file: VirtualFile,
+    file: VirtualFile<'arena>,
     /// The next symbol id to use
     next_symbol_id: usize,
     /// Cache of literal values
@@ -258,20 +265,25 @@ struct Resolver {
 }
 
 /// The result of a resolving a file
-pub struct ResolveResult {
+pub struct ResolveResult<'arena> {
     /// The resulting ir
     pub ir: ir::Pipeline,
     /// The builtin node implementations
     pub nodes: NodeStorage,
     /// A virtual file.
-    pub files: VirtualFile,
+    pub files: VirtualFile<'arena>,
     /// The id of the `Noop` node
     pub noop: NodeKindId,
 }
 
 /// Compile the given file to a IR
-pub fn resolve(file: &Path, entry_point: &str) -> Result<ResolveResult, crate::SerpentineError> {
+pub fn resolve<'arena>(
+    arena: &'arena Bump,
+    file: &Path,
+    entry_point: &'arena str,
+) -> Result<ResolveResult<'arena>, crate::SerpentineError> {
     let mut resolver = Resolver {
+        arena,
         modules: ModuleStore::new(),
         module_cache: HashMap::new(),
         functions: ir::FunctionStore::new(),
@@ -291,7 +303,7 @@ pub fn resolve(file: &Path, entry_point: &str) -> Result<ResolveResult, crate::S
         Ok(module) => module,
         Err(err) => {
             return Err(crate::SerpentineError::Compile {
-                source_code: resolver.file,
+                source_code: resolver.file.into_owned(),
                 error: vec![err],
             });
         }
@@ -306,7 +318,7 @@ pub fn resolve(file: &Path, entry_point: &str) -> Result<ResolveResult, crate::S
         Ok(symbol) => symbol,
         Err(err) => {
             return Err(crate::SerpentineError::Compile {
-                source_code: resolver.file,
+                source_code: resolver.file.into_owned(),
                 error: vec![err],
             });
         }
@@ -324,7 +336,23 @@ pub fn resolve(file: &Path, entry_point: &str) -> Result<ResolveResult, crate::S
     })
 }
 
-impl Resolver {
+/// A `Write`-er that writes into a Bumpalo string
+struct BumpaloStringWriter<'arena>(bumpalo::collections::String<'arena>);
+
+impl std::io::Write for BumpaloStringWriter<'_> {
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // This is a simple utf-8 check (not a clone/copy)
+        let buf = str::from_utf8(buf).map_err(std::io::Error::other)?;
+        self.0.push_str(buf);
+        Ok(buf.len())
+    }
+}
+
+impl<'arena> Resolver<'arena> {
     /// Create the prelude by creating the node storage and prelude, and populating the functions
     /// map.
     ///
@@ -333,7 +361,7 @@ impl Resolver {
         clippy::expect_used,
         reason = "Noop is always defined, if not this function will always fail, and will be caught in tests."
     )]
-    fn create_prelude(&mut self) -> (Scope<'static>, NodeKindId) {
+    fn create_prelude(&mut self) -> (Scope<'arena, 'arena>, NodeKindId) {
         let mut prelude = Scope::root();
         let mut noop = None;
 
@@ -345,7 +373,7 @@ impl Resolver {
             }
 
             let function_id = self.functions.push(ir::Function::BuiltinFunction(id));
-            prelude.insert(name.into(), ScopeItem::Function(function_id));
+            prelude.insert(name, ScopeItem::Function(function_id));
         }
 
         (prelude, noop.expect("Noop node not found"))
@@ -357,10 +385,10 @@ impl Resolver {
     /// And should always be used by other code.
     fn get_module(
         &mut self,
-        context: &ImmutableContext,
+        context: &ImmutableContext<'arena>,
         top_level_body: &mut Vec<ir::Node>,
         module_path: &Path,
-    ) -> Result<ModuleId, CompileError> {
+    ) -> Result<ModuleId<'arena>, CompileError> {
         let module_path =
             module_path
                 .canonicalize()
@@ -385,17 +413,31 @@ impl Resolver {
     /// Resolve the given module
     fn resolve_module(
         &mut self,
-        resolve_context: &ImmutableContext,
+        resolve_context: &ImmutableContext<'arena>,
         top_level_body: &mut Vec<ir::Node>,
         module: &Path,
-    ) -> Result<Module, CompileError> {
-        let code = std::fs::read_to_string(module).map_err(|io_err| CompileError::FileReading {
-            file: module.into(),
-            inner: io_err,
-        })?;
+    ) -> Result<Module<'arena>, CompileError> {
+        let code = std::fs::File::open(module)
+            .and_then(|mut file| {
+                let code = if let Ok(length) = file.metadata().map(|metadata| metadata.len()) {
+                    bumpalo::collections::String::with_capacity_in(
+                        length.try_into().unwrap_or(usize::MAX),
+                        self.arena,
+                    )
+                } else {
+                    bumpalo::collections::String::new_in(self.arena)
+                };
+                let mut code = BumpaloStringWriter(code);
+                std::io::copy(&mut file, &mut code)?;
+                Ok(code.0.into_bump_str())
+            })
+            .map_err(|io_err| CompileError::FileReading {
+                file: module.into(),
+                inner: io_err,
+            })?;
 
-        let file_id = self.file.push(module.to_owned(), &code);
-        let tokens = super::tokenizer::Tokenizer::tokenize(file_id, &code)?;
+        let file_id = self.file.push(module.to_owned(), code);
+        let tokens = super::tokenizer::Tokenizer::tokenize(file_id, code)?;
         let ast = super::parser::Parser::parse_file(tokens)?;
 
         let mut exports = Scope::root();
@@ -421,12 +463,12 @@ impl Resolver {
     /// Resolve a statement
     fn resolve_statement(
         &mut self,
-        resolve_context: &ImmutableContext,
-        scope: &mut Scope<'_>,
-        statement_context: &mut StatementContext,
+        resolve_context: &ImmutableContext<'arena>,
+        scope: &mut Scope<'arena, '_>,
+        statement_context: &mut StatementContext<'arena, '_>,
         current_path: &Path,
         top_level_body: &mut Vec<ir::Node>,
-        statement: ast::Statement,
+        statement: ast::Statement<'arena>,
     ) -> Result<(), CompileError> {
         match statement {
             ast::Statement::Import { export, path, name } => {
@@ -434,7 +476,7 @@ impl Resolver {
                 let path = current_path
                     .parent()
                     .unwrap_or_else(|| Path::new("/"))
-                    .join(path.take().to_string());
+                    .join(path.take());
                 let module_id = self
                     .get_module(resolve_context, top_level_body, &path)
                     .map_err(|import_error| CompileError::ImportError {
@@ -447,7 +489,7 @@ impl Resolver {
                 let name = name.0.take();
 
                 if let Some(export_span) = export {
-                    statement_context.export(name.clone(), item, export_span)?;
+                    statement_context.export(name, item, export_span)?;
                 }
                 scope.insert(name, item);
             }
@@ -470,7 +512,7 @@ impl Resolver {
 
                 let name = label.0.take();
                 if let Some(export_span) = export {
-                    statement_context.export(name.clone(), item, export_span)?;
+                    statement_context.export(name, item, export_span)?;
                 }
                 scope.insert(name, item);
             }
@@ -522,7 +564,7 @@ impl Resolver {
                 let item = ScopeItem::Function(function_id);
                 let name = name.0.take();
                 if let Some(export_span) = export {
-                    statement_context.export(name.clone(), item, export_span)?;
+                    statement_context.export(name, item, export_span)?;
                 }
                 scope.insert(name, item);
             }
@@ -534,10 +576,10 @@ impl Resolver {
     /// Resolve a expression, returning the final symbol
     fn resolve_expression(
         &mut self,
-        scope: &Scope<'_>,
+        scope: &Scope<'arena, '_>,
         top_level_body: &mut Vec<ir::Node>,
-        statement_context: &mut StatementContext,
-        expression: ast::Expression,
+        statement_context: &mut StatementContext<'arena, '_>,
+        expression: ast::Expression<'arena>,
     ) -> Result<ir::Symbol, CompileError> {
         match expression {
             ast::Expression::Number(number) => {
@@ -584,10 +626,10 @@ impl Resolver {
     /// Resolve a node to a symbol and emit the needed instructions to the body
     fn resolve_node(
         &mut self,
-        scope: &Scope<'_>,
+        scope: &Scope<'arena, '_>,
         top_level_body: &mut Vec<ir::Node>,
-        statement_context: &mut StatementContext,
-        node: Spanned<ast::Node>,
+        statement_context: &mut StatementContext<'arena, '_>,
+        node: Spanned<ast::Node<'arena>>,
         first_argument: Option<ir::Symbol>,
     ) -> Result<ir::Symbol, CompileError> {
         let node_span = node.span();
@@ -670,9 +712,9 @@ impl Resolver {
     /// Retrieve a item by a item path by resolving modules
     fn get_item_path(
         &self,
-        scope: &Scope<'_>,
-        path: ast::ItemPath,
-    ) -> Result<ScopeItem, CompileError> {
+        scope: &Scope<'arena, '_>,
+        path: ast::ItemPath<'arena>,
+    ) -> Result<ScopeItem<'arena>, CompileError> {
         let mut previous_span = path.base.0.span();
         let mut item = scope.lookup(&path.base.0, path.base.0.span())?;
 
