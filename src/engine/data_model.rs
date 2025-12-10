@@ -3,7 +3,7 @@
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crate::engine::docker;
+use crate::engine::containerd;
 use crate::engine::nodes::NodeImpl;
 
 /// The name of the file in the tar archives for `FileSystem` representing a single file.
@@ -36,8 +36,8 @@ pub enum Data {
     Int(i128),
     /// A string, usually a short literal
     String(Rc<str>),
-    /// A docker container (well in reality an image)
-    Container(docker::ContainerState),
+    /// A docker container
+    Container(containerd::ContainerState),
     /// A file/folder
     FileSystem(FileSystem),
 }
@@ -56,19 +56,19 @@ impl Data {
 
     /// Check if this data is still valid
     ///
-    /// Used by caching system to know if a docker image is delete externally for example.
-    pub async fn health_check(&self, docker: &docker::DockerClient) -> bool {
-        if let Self::Container(image) = self {
-            docker.exists(image).await
+    /// Used by caching system to know if a docker state is delete externally for example.
+    pub async fn health_check(&self, containerd: &containerd::Client) -> bool {
+        if let Self::Container(state) = self {
+            containerd.exists(state).await
         } else {
             true
         }
     }
 
     /// Cleanup this data
-    pub async fn cleanup(self, docker: &docker::DockerClient) {
-        if let Self::Container(image) = self {
-            docker.delete_image(&image).await;
+    pub async fn cleanup(self, containerd: &containerd::Client) {
+        if let Self::Container(state) = self {
+            containerd.delete_state(&state).await;
         }
     }
 }

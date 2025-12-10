@@ -1,8 +1,8 @@
 //! Contains the node engine, as well as node type definitions.
 
 mod cache;
+mod containerd;
 pub mod data_model;
-mod docker;
 pub mod nodes;
 mod scheduler;
 
@@ -100,7 +100,7 @@ impl RuntimeError {
 /// The various providers and interfaces used by the runtime
 pub struct RuntimeContext {
     /// The docker client
-    docker: docker::DockerClient,
+    containerd: containerd::Client,
     /// The update channel for the TUI
     tui: TuiSender,
     /// Caching of values
@@ -112,7 +112,7 @@ impl RuntimeContext {
     async fn new(tui: TuiSender, cli: &crate::Run) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
 
-        let docker = docker::DockerClient::new(tui.clone(), cli.jobs).await?;
+        let docker = containerd::Client::new(tui.clone(), cli.jobs).await?;
 
         let cache = match cache::Cache::load_cache(&cli.get_cache(), &docker).await {
             Ok(cache) => {
@@ -128,7 +128,7 @@ impl RuntimeContext {
         };
 
         Ok(Self {
-            docker,
+            containerd: docker,
             tui,
             cache: Mutex::new(cache),
         })
@@ -138,7 +138,11 @@ impl RuntimeContext {
     async fn shutdown(self, cli: &crate::Run) {
         log::debug!("Shutting down runtime context");
 
-        let Self { docker, tui, cache } = self;
+        let Self {
+            containerd: docker,
+            tui,
+            cache,
+        } = self;
         tui.send(TuiMessage::ShuttingDown);
         let _ = cache
             .into_inner()
@@ -166,6 +170,7 @@ pub fn run(
 
     let (tx_ctrlc, rx_ctrlc) = smol::channel::bounded(1);
     let _ = ctrlc::set_handler(move || {
+        log::debug!("Runnig ctrl-c handler");
         let _ = tx_ctrlc.try_send(());
     });
 
@@ -204,7 +209,7 @@ pub fn run(
 /// Clear out the given cache file
 pub fn clear_cache(cache_file: &Path) -> Result<(), RuntimeError> {
     smol::block_on(async move {
-        let docker = docker::DockerClient::new(TuiSender(None), 1).await?;
+        let docker = containerd::Client::new(TuiSender(None), 1).await?;
         let cache = cache::Cache::load_cache(cache_file, &docker).await?;
 
         // When `keep_old_cache` is set to false `save_cache` will clean out the data not used

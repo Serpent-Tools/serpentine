@@ -131,7 +131,7 @@ enum SerpentineError {
 /// Setup logging using `fern`.
 ///
 /// Only logs `Info` or higher levels from non-serpentine sources.
-/// Logs to file in `~/.cache/serpentine/logs` (or equivalent on other platforms), at TRACE level.
+/// Logs to file in `~/.local/share/serpentine/logs` (or equivalent on other platforms), at TRACE level.
 /// If `non_tui` is false sends logs at DEBUG level to `tui`.
 /// If `non_tui` is true sends logs at TRACE level to stdout.
 fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {

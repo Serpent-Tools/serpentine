@@ -16,7 +16,7 @@ use crate::engine::data_model::{
     NodeKindId,
 };
 use crate::engine::scheduler::Scheduler;
-use crate::engine::{RuntimeContext, RuntimeError, docker};
+use crate::engine::{RuntimeContext, RuntimeError, containerd};
 use crate::snek::CompileError;
 use crate::snek::span::{Span, Spanned};
 
@@ -75,7 +75,10 @@ pub trait NodeImpl {
                     scheduler.context().cache.lock().await.get(&key).cloned()
             {
                 log::debug!("Cache hit on {}", self.describe());
-                if cached_value.health_check(&scheduler.context().docker).await {
+                if cached_value
+                    .health_check(&scheduler.context().containerd)
+                    .await
+                {
                     return Ok(cached_value);
                 }
                 log::warn!("value {cached_value:?} failed health-check, not using cache.");
@@ -152,7 +155,7 @@ impl RawData for Rc<str> {
     }
 }
 
-impl RawData for docker::ContainerState {
+impl RawData for containerd::ContainerState {
     const KIND: DataType = DataType::Container;
     fn from_data(data: &Data) -> Option<Self> {
         if let Data::Container(value) = data {
@@ -368,18 +371,18 @@ pub const NOOP_NAME: &str = "Noop";
 async fn image(
     context: Rc<RuntimeContext>,
     image: Rc<str>,
-) -> Result<docker::ContainerState, RuntimeError> {
-    context.docker.pull_image(&image).await
+) -> Result<containerd::ContainerState, RuntimeError> {
+    context.containerd.pull_image(&image).await
 }
 
 /// Run a shell command in a container
 async fn exec_sh(
     context: Rc<RuntimeContext>,
-    container: docker::ContainerState,
+    container: containerd::ContainerState,
     command: Rc<str>,
-) -> Result<docker::ContainerState, RuntimeError> {
+) -> Result<containerd::ContainerState, RuntimeError> {
     context
-        .docker
+        .containerd
         .exec(&container, &["/bin/sh", "-c", &command])
         .await
 }
@@ -387,13 +390,13 @@ async fn exec_sh(
 /// Run a command in a container
 async fn exec(
     context: Rc<RuntimeContext>,
-    container: docker::ContainerState,
+    container: containerd::ContainerState,
     command: Rc<str>,
-) -> Result<docker::ContainerState, RuntimeError> {
+) -> Result<containerd::ContainerState, RuntimeError> {
     let command = shell_words::split(&command)?;
 
     context
-        .docker
+        .containerd
         .exec(
             &container,
             &command.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
@@ -404,13 +407,13 @@ async fn exec(
 /// Run a command in a container, getting its output
 async fn exec_output(
     context: Rc<RuntimeContext>,
-    container: docker::ContainerState,
+    container: containerd::ContainerState,
     command: Rc<str>,
 ) -> Result<Rc<str>, RuntimeError> {
     let command = shell_words::split(&command)?;
 
     context
-        .docker
+        .containerd
         .exec_get_output(
             &container,
             &command.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
@@ -499,10 +502,10 @@ async fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Rc<[u8]>, Runtime
 async fn export(
     context: Rc<RuntimeContext>,
 
-    container: docker::ContainerState,
+    container: containerd::ContainerState,
     path: Rc<str>,
 ) -> Result<FileSystem, RuntimeError> {
-    context.docker.export_path(&container, &path).await
+    context.containerd.export_path(&container, &path).await
 }
 
 /// Write the given file to the host
@@ -526,12 +529,12 @@ async fn to_host(
 async fn with(
     context: Rc<RuntimeContext>,
 
-    container: docker::ContainerState,
+    container: containerd::ContainerState,
     fs: FileSystem,
     path: Rc<str>,
-) -> Result<docker::ContainerState, RuntimeError> {
+) -> Result<containerd::ContainerState, RuntimeError> {
     context
-        .docker
+        .containerd
         .copy_fs_into_container(&container, fs, &path)
         .await
 }
@@ -539,20 +542,23 @@ async fn with(
 /// Modify the working directory of the container
 async fn with_working_dir(
     context: Rc<RuntimeContext>,
-    container: docker::ContainerState,
+    container: containerd::ContainerState,
     dir: Rc<str>,
-) -> Result<docker::ContainerState, RuntimeError> {
-    context.docker.set_working_dir(&container, &dir).await
+) -> Result<containerd::ContainerState, RuntimeError> {
+    context.containerd.set_working_dir(&container, &dir).await
 }
 
 /// Set a environment variable.
 async fn env(
     context: Rc<RuntimeContext>,
-    container: docker::ContainerState,
+    container: containerd::ContainerState,
     env: Rc<str>,
     value: Rc<str>,
-) -> Result<docker::ContainerState, RuntimeError> {
-    context.docker.set_env_var(&container, &env, &value).await
+) -> Result<containerd::ContainerState, RuntimeError> {
+    context
+        .containerd
+        .set_env_var(&container, &env, &value)
+        .await
 }
 
 /// A node for joining strings
@@ -621,21 +627,21 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         // time, this is the primary target for caching
         (
             "ExecSh",
-            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 exec_sh, true,
             )),
         ),
         // cache reasoning: see ExecSh
         (
             "Exec",
-            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 exec, true,
             )),
         ),
         // cache reasoning: see ExecSh
         (
             "ExecOutput",
-            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 exec_output,
                 true,
             )),
@@ -654,7 +660,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         // should be quick enough.
         (
             "Export",
-            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 export, false,
             )),
         ),
@@ -669,12 +675,12 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         // cache.
         (
             "With",
-            Box::new(Wrap::<_, (docker::ContainerState, FileSystem, Rc<str>)>::new(with, true)),
+            Box::new(Wrap::<_, (containerd::ContainerState, FileSystem, Rc<str>)>::new(with, true)),
         ),
         // cache reasoning: See With
         (
             "WorkingDir",
-            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 with_working_dir,
                 true,
             )),
@@ -682,9 +688,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         // cache reasoning: See With
         (
             "Env",
-            Box::new(Wrap::<_, (docker::ContainerState, Rc<str>, Rc<str>)>::new(
-                env, true,
-            )),
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>, Rc<str>)>::new(env, true)),
         ),
         ("Join", Box::new(Join)),
     ]
