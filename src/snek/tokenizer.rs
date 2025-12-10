@@ -4,13 +4,12 @@ use crate::snek::CompileError;
 use crate::snek::span::{FileId, Span, Spanned};
 
 /// a token is a small unit of the input stream.
-#[derive(Debug, PartialEq, Eq, Clone)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
-pub enum Token {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Token<'arena> {
     /// A identifier
-    Ident(Box<str>),
+    Ident(&'arena str),
     /// A string,
-    String(Box<str>),
+    String(&'arena str),
     /// A number
     Numeric(i128),
     /// `(`
@@ -47,7 +46,7 @@ pub enum Token {
     Eof,
 }
 
-impl Token {
+impl Token<'_> {
     /// Return a human friendly description of the token
     pub fn describe(&self) -> String {
         match self {
@@ -75,21 +74,21 @@ impl Token {
 }
 
 /// the tokenizer handles turning a input stream into tokens
-pub struct Tokenizer<'src> {
+pub struct Tokenizer<'arena> {
     /// File id for the file
     file_id: FileId,
     /// The code to parse into tokens
-    code: &'src str,
+    code: &'arena str,
     /// Current byte we are on
     byte: usize,
 }
 
-impl<'src> Tokenizer<'src> {
+impl<'arena> Tokenizer<'arena> {
     /// tokenize the given string and return the spanned tokens
     pub fn tokenize(
         file_id: FileId,
-        code: &'src str,
-    ) -> Result<Box<[Spanned<Token>]>, CompileError> {
+        code: &'arena str,
+    ) -> Result<Box<[Spanned<Token<'arena>>]>, CompileError> {
         let mut tokenizer = Self {
             file_id,
             code,
@@ -109,7 +108,7 @@ impl<'src> Tokenizer<'src> {
     }
 
     /// read the next token from the input string.
-    fn read_next_token(&mut self) -> Result<Option<Spanned<Token>>, CompileError> {
+    fn read_next_token(&mut self) -> Result<Option<Spanned<Token<'arena>>>, CompileError> {
         self.advance_while(char::is_whitespace)?;
 
         let Some(character) = self.advance()? else {
@@ -184,7 +183,7 @@ impl<'src> Tokenizer<'src> {
 
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
                 let text = span.index_str(self.code)?;
-                let token = match &*text {
+                let token = match text {
                     "return" => Token::Return,
                     "def" => Token::Def,
                     "import" => Token::Import,

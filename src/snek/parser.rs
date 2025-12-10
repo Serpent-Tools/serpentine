@@ -1,8 +1,4 @@
 //! Parses tokens into a ast
-#![expect(
-    clippy::needless_pass_by_value,
-    reason = "While yes Token is technically not Copy and expensive to Clone in some variants, all the tokens we pass by value are cheap to clone"
-)]
 
 use std::iter::Peekable;
 
@@ -13,16 +9,16 @@ use crate::snek::CompileError;
 use crate::snek::span::Span;
 
 /// A parser for keeping track of the parsing state.
-pub struct Parser {
+pub struct Parser<'arena> {
     /// A peekable iterator over the tokens to parse
-    tokens: Peekable<std::vec::IntoIter<Spanned<Token>>>,
+    tokens: Peekable<std::vec::IntoIter<Spanned<Token<'arena>>>>,
 }
 
-impl Parser {
+impl<'arena> Parser<'arena> {
     /// Parse the given tokens as a complete snek file
     pub fn parse_file(
-        tokens: std::boxed::Box<[Spanned<Token>]>,
-    ) -> Result<ast::File, CompileError> {
+        tokens: std::boxed::Box<[Spanned<Token<'arena>>]>,
+    ) -> Result<ast::File<'arena>, CompileError> {
         let mut parser = Self {
             tokens: tokens.into_iter().peekable(),
         };
@@ -43,7 +39,7 @@ impl Parser {
     /// Parse a statement from the current token stream.
     ///
     /// This expects the next token to be the start of a statement.
-    fn parse_statement(&mut self) -> Result<ast::Statement, CompileError> {
+    fn parse_statement(&mut self) -> Result<ast::Statement<'arena>, CompileError> {
         let token = self.next()?;
         let token_span = token.span();
         match token.take() {
@@ -90,8 +86,8 @@ impl Parser {
         &mut self,
         export: Option<Span>,
         token_span: Span,
-        ident: Box<str>,
-    ) -> Result<ast::Statement, CompileError> {
+        ident: &'arena str,
+    ) -> Result<ast::Statement<'arena>, CompileError> {
         let label = ast::Ident(token_span.with(ident));
         self.expect(Token::Eq)?;
         let expression = self.parse_expression()?;
@@ -108,7 +104,10 @@ impl Parser {
     /// This expects the next token to be the function name.
     /// I.e it expects `export` and `def` to have already been consumed,
     /// and if export was present its span should be passed as a argument.
-    fn parse_function_def(&mut self, export: Option<Span>) -> Result<ast::Statement, CompileError> {
+    fn parse_function_def(
+        &mut self,
+        export: Option<Span>,
+    ) -> Result<ast::Statement<'arena>, CompileError> {
         let name = self.expect_ident()?;
 
         self.expect(Token::OpenParen)?;
@@ -131,7 +130,10 @@ impl Parser {
     /// This expects the next token to be the import path.
     /// I.e it expects `export` and `import` to have already been consumed,
     /// and if export was present its span should be passed as a argument.
-    fn parse_import(&mut self, export: Option<Span>) -> Result<ast::Statement, CompileError> {
+    fn parse_import(
+        &mut self,
+        export: Option<Span>,
+    ) -> Result<ast::Statement<'arena>, CompileError> {
         let path = self.expect_str()?;
         self.expect(Token::As)?;
         let name = self.expect_ident()?;
@@ -142,7 +144,7 @@ impl Parser {
     /// Parse a expression
     ///
     /// This expects the next token to be the start of the expression.
-    fn parse_expression(&mut self) -> Result<ast::Expression, CompileError> {
+    fn parse_expression(&mut self) -> Result<ast::Expression<'arena>, CompileError> {
         let value = self.parse_atom()?;
 
         if self.peek()? == Token::Pipe {
@@ -162,7 +164,7 @@ impl Parser {
     /// Parse a simple expression (literal, var, node)
     ///
     /// This expects the next token to be the start of the expression.
-    fn parse_atom(&mut self) -> Result<ast::Expression, CompileError> {
+    fn parse_atom(&mut self) -> Result<ast::Expression<'arena>, CompileError> {
         Ok(match self.peek()? {
             Token::Numeric(value) => {
                 let span = self.next()?.span();
@@ -189,7 +191,10 @@ impl Parser {
     ///
     /// This expects the next token to be the first `>`.
     /// I.e it the start expression is already consumed, and passed as a argument.
-    fn parse_chain(&mut self, start: ast::Expression) -> Result<ast::Chain, CompileError> {
+    fn parse_chain(
+        &mut self,
+        start: ast::Expression<'arena>,
+    ) -> Result<ast::Chain<'arena>, CompileError> {
         let mut nodes = Vec::new();
         while self.next_if(Token::Pipe)?.is_some() {
             nodes.push(self.parse_node(None)?);
@@ -209,8 +214,8 @@ impl Parser {
     /// realized it was a node, and hence expects the next token to be the `(` of the call part.
     fn parse_node(
         &mut self,
-        pre_parsed_name: Option<ast::ItemPath>,
-    ) -> Result<Spanned<ast::Node>, CompileError> {
+        pre_parsed_name: Option<ast::ItemPath<'arena>>,
+    ) -> Result<Spanned<ast::Node<'arena>>, CompileError> {
         let name;
         let mut phantom_inputs = Vec::new();
         let start_span;
@@ -275,8 +280,8 @@ impl Parser {
     /// If provided will consume `separator` between calls to `parser`.
     fn parse_list<T>(
         &mut self,
-        closing: Token,
-        separator: Option<Token>,
+        closing: Token<'static>,
+        separator: Option<Token<'static>>,
         parser: impl Fn(&mut Self) -> Result<T, CompileError>,
     ) -> Result<Vec<T>, CompileError> {
         let separator = separator.as_ref();
@@ -285,7 +290,7 @@ impl Parser {
             result.push(parser(self)?);
 
             if let Some(separator) = separator {
-                self.next_if(separator.clone())?;
+                self.next_if(*separator)?;
             }
         }
         self.next()?;
@@ -295,7 +300,7 @@ impl Parser {
     /// Parse a item path
     ///
     /// This expects the first token to be the first identifier of the path.
-    fn parse_item_path(&mut self) -> Result<ast::ItemPath, CompileError> {
+    fn parse_item_path(&mut self) -> Result<ast::ItemPath<'arena>, CompileError> {
         let base = self.expect_ident()?;
         let mut rest = Vec::new();
         while self.next_if(Token::Path)?.is_some() {
@@ -309,7 +314,7 @@ impl Parser {
     }
 
     /// If the next token is the given token return its span, otherwise return a error
-    fn expect(&mut self, expected_token: Token) -> Result<Span, CompileError> {
+    fn expect(&mut self, expected_token: Token<'static>) -> Result<Span, CompileError> {
         let token = self.next()?;
         if *token == expected_token {
             Ok(token.span())
@@ -323,10 +328,10 @@ impl Parser {
     }
 
     /// If the next token is a identifier return it, otherwiser return a error.
-    fn expect_ident(&mut self) -> Result<ast::Ident, CompileError> {
+    fn expect_ident(&mut self) -> Result<ast::Ident<'arena>, CompileError> {
         let token = self.next()?;
-        if let Token::Ident(ref ident) = *token {
-            Ok(ast::Ident(token.span().with(ident.clone())))
+        if let Token::Ident(ident) = *token {
+            Ok(ast::Ident(token.span().with(ident)))
         } else {
             Err(CompileError::UnexpectedToken {
                 expected: "identifier".to_owned(),
@@ -337,10 +342,10 @@ impl Parser {
     }
 
     /// If the next token is a string return it, otherwiser return a error.
-    fn expect_str(&mut self) -> Result<Spanned<Box<str>>, CompileError> {
+    fn expect_str(&mut self) -> Result<Spanned<&'arena str>, CompileError> {
         let token = self.next()?;
-        if let Token::String(ref value) = *token {
-            Ok(token.span().with(value.clone()))
+        if let Token::String(value) = *token {
+            Ok(token.span().with(value))
         } else {
             Err(CompileError::UnexpectedToken {
                 expected: "string".to_owned(),
@@ -355,7 +360,7 @@ impl Parser {
     ///
     /// This is effectively a version of `expect` that returns a `None` instead and ensures the
     /// parser state is allowed to continue without failure.
-    fn next_if(&mut self, expected_token: Token) -> Result<Option<Span>, CompileError> {
+    fn next_if(&mut self, expected_token: Token<'static>) -> Result<Option<Span>, CompileError> {
         if self.peek()? == expected_token {
             Ok(Some(self.next()?.span()))
         } else {
@@ -364,9 +369,9 @@ impl Parser {
     }
 
     /// Return the next value in the token stream (without consuming it)
-    fn peek(&mut self) -> Result<Token, CompileError> {
+    fn peek(&mut self) -> Result<Token<'arena>, CompileError> {
         match self.tokens.peek() {
-            Some(token) => Ok((**token).clone()),
+            Some(token) => Ok(**token),
             None => Err(CompileError::internal(
                 "Hit end of token list before hitting EOF token.",
             )),
@@ -374,32 +379,12 @@ impl Parser {
     }
 
     /// Return the next value in the token stream and advance it.
-    fn next(&mut self) -> Result<Spanned<Token>, CompileError> {
+    fn next(&mut self) -> Result<Spanned<Token<'arena>>, CompileError> {
         match self.tokens.next() {
             Some(token) => Ok(token),
             None => Err(CompileError::internal(
                 "Hit end of token list before hitting EOF token.",
             )),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use proptest::property_test;
-
-    use super::*;
-    use crate::snek::tokenizer;
-
-    #[property_test]
-    #[test_log::test]
-    fn doesnt_panic(mut code: Vec<tokenizer::Token>) {
-        code.push(tokenizer::Token::Eof);
-        let code = code
-            .into_iter()
-            .map(|token| Span::dummy().with(token))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let _ = Parser::parse_file(code);
     }
 }

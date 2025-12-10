@@ -77,7 +77,7 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::Se
     for node in top_level.0 {
         if let Err(err) = compiler.compile_node(&context, &node) {
             return Err(crate::SerpentineError::Compile {
-                source_code: files,
+                source_code: files.into_owned(),
                 error: vec![err],
             });
         }

@@ -211,7 +211,8 @@ pub fn compile_graph(
     file: &Path,
     entry_point: &str,
 ) -> Result<CompileResult, crate::SerpentineError> {
-    let resolved = resolver::resolve(file, entry_point)?;
+    let arena = bumpalo::Bump::new();
+    let resolved = resolver::resolve(&arena, file, entry_point)?;
     let compiled = compiler::compile(resolved)?;
     Ok(compiled)
 }

@@ -116,7 +116,7 @@ enum SerpentineError {
     Compile {
         /// The source code that produced the compile error
         #[source_code]
-        source_code: snek::span::VirtualFile,
+        source_code: snek::span::OwnedVirtualFile,
         /// The compile Error
         #[related]
         error: Vec<snek::CompileError>,
