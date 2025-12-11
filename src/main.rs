@@ -125,7 +125,7 @@ enum SerpentineError {
     /// Something failed at runtime.
     #[error(transparent)]
     #[diagnostic(transparent)]
-    Runtime(engine::RuntimeError),
+    Runtime(#[from] engine::RuntimeError),
 }
 
 /// Setup logging using `fern`.

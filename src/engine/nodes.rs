@@ -6,6 +6,8 @@ use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::rc::Rc;
 
+use async_compat::CompatExt;
+
 use crate::engine::cache::CacheKey;
 use crate::engine::data_model::{
     Data,
@@ -433,7 +435,7 @@ async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSys
     } else {
         let mut tar_data = Vec::new();
         let mut tar_builder = async_tar::Builder::new(&mut tar_data);
-        let file = smol::fs::File::open(src).await?;
+        let file = tokio::fs::File::open(src).await?;
         let mut header = async_tar::Header::new_gnu();
         let metadata = file.metadata().await?;
         header.set_entry_type(async_tar::EntryType::Regular);
@@ -441,7 +443,7 @@ async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSys
         header.set_size(metadata.len());
         header.set_cksum();
         tar_builder
-            .append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, file)
+            .append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, file.compat())
             .await?;
         tar_builder.finish().await?;
 
@@ -473,7 +475,7 @@ async fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Rc<[u8]>, Runtime
             }
 
             if path.is_file() {
-                let file = smol::fs::File::open(path).await?;
+                let file = tokio::fs::File::open(path).await?;
                 let mut header = async_tar::Header::new_gnu();
                 let metadata = file.metadata().await?;
                 header.set_entry_type(async_tar::EntryType::Regular);
@@ -481,7 +483,7 @@ async fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Rc<[u8]>, Runtime
                 header.set_size(metadata.len());
                 header.set_cksum();
                 tar_builder
-                    .append_data(&mut header, relative_path, file)
+                    .append_data(&mut header, relative_path, file.compat())
                     .await?;
             } else if path.is_dir() {
                 let mut header = async_tar::Header::new_gnu();
@@ -489,7 +491,9 @@ async fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Rc<[u8]>, Runtime
                 header.set_mode(path.metadata()?.mode());
                 header.set_size(0);
                 header.set_cksum();
-                tar_builder.append(&header, smol::io::empty()).await?;
+                tar_builder
+                    .append(&header, tokio::io::empty().compat())
+                    .await?;
             }
         }
 

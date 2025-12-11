@@ -58,6 +58,7 @@
               "rustfmt"
             ])
             just
+            protobuf
           ];
         };
       }
