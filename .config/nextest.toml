@@ -2,9 +2,13 @@
 docker = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = "test(engine::docker::)"
+filter = "test(engine::containerd::)"
 test-group = "docker"
 
 [[profile.default.overrides]]
 filter = "test(tests::live_examples::)"
+test-group = "docker"
+
+[[profile.default.overrides]]
+filter = "test(engine::cache::)"
 test-group = "docker"

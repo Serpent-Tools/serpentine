@@ -2,7 +2,7 @@
   description = "Powerful simplistic workflow runner.";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -32,12 +32,13 @@
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           doCheck = false;
+          nativeBuildInputs = with pkgs; [ protobuf ];
 
           meta = {
-            description = "Powerful simplistic workflow runner.";
+            description = cargoToml.package.description;
             license = pkgs.lib.licenses.mit;
-            mainProgram = "serpentine";
-            homepage = "https://github.com/Serpent-Tools/serpentine";
+            mainProgram = cargoToml.package.name;
+            homepage = cargoToml.package.repository;
             maintainers = [
               {
                 github = "vivax3794";
@@ -59,6 +60,10 @@
             ])
             just
             protobuf
+            cargo-nextest
+
+            mdbook
+            mdbook-mermaid
           ];
         };
       }

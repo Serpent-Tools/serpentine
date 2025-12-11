@@ -1,20 +1,21 @@
 //! Wrapper around bollard Docker API client
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
 use std::rc::Rc;
-use std::sync::Arc;
 
-use bollard::API_DEFAULT_VERSION;
+use containerd_client::services::v1 as containerd_services;
+use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::Mutex;
 
 use crate::engine::RuntimeError;
-use crate::engine::data_model::{FILE_SYSTEM_FILE_TAR_NAME, FileSystem};
-use crate::tui::{Task, TaskProgress, TuiSender};
+use crate::engine::data_model::FileSystem;
+use crate::tui::TuiSender;
 
-/// A container created by the Docker client
+/// The snapshoter to use for containers.
+const SNAPSHOTER: &str = "overlayfs";
+
+/// A container created by the client
+#[derive(Debug)]
 struct Container(Box<str>);
 
 /// A reference to a specific state of a container.
@@ -22,14 +23,83 @@ struct Container(Box<str>);
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerState(Rc<str>);
 
+/// Return the goarch of the current system.
+fn system_goarch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "i686" | "i386" => "386",
+        "arm" => "arm",
+        "s390x" => "s390x",
+        "powerpc64" | "powerpc64le" => "ppc64le",
+        arch => {
+            log::warn!("Unknown arch {arch}");
+            arch
+        }
+    }
+}
+
+/// Return wether the given Oci platform object is compatible with the current system.
+fn platform_resolver(manifests: &[oci_client::manifest::ImageIndexEntry]) -> Option<String> {
+    manifests
+        .iter()
+        .find(|manifest| match &manifest.platform {
+            None => false,
+            Some(platform) => platform.os == "linux" && platform.architecture == system_goarch(),
+        })
+        .map(|manifest| manifest.digest.clone())
+}
+
+/// Thin wrapper around `containerd_client::Client` to apply namespace interceptor
+struct ContainerdRootClient(containerd_client::Client);
+
+/// Injects the serpentine namespace into all requests
+#[expect(clippy::expect_used, reason = "constant value")]
+#[expect(
+    clippy::result_large_err,
+    clippy::unnecessary_wraps,
+    reason = "This is the signature needed by tonic"
+)]
+fn inject_namespace(
+    mut request: containerd_client::tonic::Request<()>,
+) -> containerd_client::tonic::Result<containerd_client::tonic::Request<()>> {
+    request.metadata_mut().insert(
+        "containerd-namespace",
+        "serpentine".parse().expect("Invalid namespace"),
+    );
+    Ok(request)
+}
+
+/// Generate the getter wrappers for `ContainerdRootClient`
+macro_rules! sub_client_wrapper {
+    ($method:ident, $($type:ident)::+) => {
+        #[must_use]
+        fn $method(
+            &self,
+        ) -> containerd_services::$($type)::+<
+            containerd_client::tonic::service::interceptor::InterceptedService<
+                containerd_client::tonic::transport::Channel,
+                impl containerd_client::tonic::service::interceptor::Interceptor,
+            >,
+        > {
+            containerd_services::$($type)::+::with_interceptor(self.0.channel(), inject_namespace)
+        }
+    };
+}
+
+impl ContainerdRootClient {
+    sub_client_wrapper!(containers, containers_client::ContainersClient);
+    sub_client_wrapper!(content, content_client::ContentClient);
+    sub_client_wrapper!(snapshot, snapshots::snapshots_client::SnapshotsClient);
+    sub_client_wrapper!(diff, diff_client::DiffClient);
+}
+
 /// A docker client wrapper
 pub struct Client {
-    /// The underlying bollard Docker client
-    docker: bollard::Docker,
-    /// Cache of containers at the specified image state
-    containers: Mutex<HashMap<ContainerState, Container>>,
-    /// List of all containers created by this client, never removed from to ensure cleanup
-    cleanup_list: Mutex<Vec<Container>>,
+    /// containerd client
+    containerd: ContainerdRootClient,
+    /// Container registery client
+    oci: oci_client::Client,
     /// Sender to the TUI
     tui: TuiSender,
     /// Limiter on the amount of exec jobs running at once
@@ -39,81 +109,181 @@ pub struct Client {
 impl Client {
     /// Create a new Docker client
     pub async fn new(tui: TuiSender, exec_permits: usize) -> Result<Self, RuntimeError> {
-        let docker = Self::connect_docker()
-            .await
-            .map_err(|err| RuntimeError::DockerNotFound {
-                inner: Box::new(err),
-            })?;
+        let oci = oci_client::Client::new(oci_client::client::ClientConfig {
+            user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
+            platform_resolver: Some(Box::new(platform_resolver)),
+            ..Default::default()
+        });
 
         Ok(Self {
-            docker,
-            containers: Mutex::new(HashMap::new()),
-            cleanup_list: Mutex::new(Vec::new()),
+            containerd: ContainerdRootClient(crate::engine::docker::connect().await?),
+            oci,
             tui,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
         })
     }
 
-    /// Attempt to connect to docker
-    async fn connect_docker() -> Result<bollard::Docker, RuntimeError> {
-        log::info!("Connecting to Docker daemon");
-        log::debug!("DOCKER_HOST={:?}", std::env::var("DOCKER_HOST"));
-        let client = match bollard::Docker::connect_with_defaults() {
-            Ok(client) => client,
-            Err(bollard::errors::Error::SocketNotFoundError(err)) => {
-                // Fallback to podman
-                log::info!("Docker socket {err} not found, trying podman");
-                return Self::try_podman_connection();
-            }
-            Err(err) => return Err(err.into()),
-        };
-
-        match client.ping().await {
-            Ok(_) => {
-                log::info!("Docker connection successful");
-                Ok(client)
-            }
-            Err(err) => {
-                // Connection worked but ping failed (permission denied, daemon down, etc.)
-                log::warn!("Docker ping failed: {err}, trying podman");
-                Self::try_podman_connection()
-            }
-        }
+    /// Check if a state exists
+    pub async fn exists(&self, snapshot: &ContainerState) -> bool {
+        self.containerd
+            .snapshot()
+            .stat(containerd_services::snapshots::StatSnapshotRequest {
+                snapshotter: SNAPSHOTER.to_owned(),
+                key: (*snapshot.0).to_owned(),
+            })
+            .await
+            .is_ok()
     }
 
-    /// utility function to find podman socket and connect to it
-    fn try_podman_connection() -> Result<bollard::Docker, RuntimeError> {
-        let podman_socket_output = Command::new("podman")
-            .args(["info", "--format", "{{.Host.RemoteSocket.Path}}"])
-            .output()?;
-
-        let podman_socket_path = String::from_utf8(podman_socket_output.stdout)
-            .map_err(|err| {
-                RuntimeError::internal(
-                    format!("Failed to parse podman socket path: {err}").as_str(),
-                )
-            })?
-            .trim()
-            .to_owned();
-
-        let client =
-            bollard::Docker::connect_with_socket(&podman_socket_path, 120, API_DEFAULT_VERSION)?;
-        Ok(client)
-    }
-
-    /// Stop and remove all containers created by this client
-    pub async fn shutdown(self) {
-        todo!()
-    }
-
-    /// Check if a image exists
-    pub async fn exists(&self, image: &ContainerState) -> bool {
-        todo!()
-    }
-
-    /// Create a new container, download the image if necessary
+    /// download the given image if necessary
     pub async fn pull_image(&self, image: &str) -> Result<ContainerState, RuntimeError> {
-        todo!()
+        let image = oci_client::Reference::try_from(image)?;
+        let auth = oci_client::secrets::RegistryAuth::Anonymous;
+
+        let final_container_state = ContainerState(image.to_string().into());
+        if self.exists(&final_container_state).await {
+            log::debug!("image {image} already exists");
+            return Ok(final_container_state);
+        }
+
+        log::debug!("Pulling image {image}");
+        let (manifest, _) = self.oci.pull_image_manifest(&image, &auth).await?;
+
+        futures_util::future::try_join_all(
+            manifest
+                .layers
+                .iter()
+                .map(|layer| self.pull_layer(&image, layer)),
+        )
+        .await?;
+
+        log::debug!("Uploaded all layers to containerd");
+        log::debug!("Creating snapshot from image");
+
+        let key = uuid::Uuid::new_v4().to_string();
+        let mounts = self
+            .containerd
+            .snapshot()
+            .prepare(containerd_services::snapshots::PrepareSnapshotRequest {
+                key: key.clone(),
+                snapshotter: SNAPSHOTER.to_owned(),
+                labels: HashMap::new(),
+                parent: String::new(),
+            })
+            .await?
+            .into_inner()
+            .mounts;
+        for layer in manifest.layers {
+            log::debug!("Applying layer {}", layer.digest);
+
+            self.containerd
+                .diff()
+                .apply(containerd_services::ApplyRequest {
+                    diff: Some(containerd_client::types::Descriptor {
+                        media_type: layer.media_type,
+                        digest: layer.digest,
+                        size: layer.size,
+                        annotations: HashMap::new(),
+                    }),
+                    mounts: mounts.clone(),
+                    payloads: HashMap::new(),
+                    sync_fs: false,
+                })
+                .await?;
+        }
+
+        log::debug!("Commiting {key} to {image}");
+        self.containerd
+            .snapshot()
+            .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                name: image.to_string(),
+                key,
+                labels: HashMap::new(),
+                snapshotter: SNAPSHOTER.to_owned(),
+            })
+            .await?;
+
+        log::debug!("Created snapshot {image}");
+        Ok(final_container_state)
+    }
+
+    /// Pull the given layer into containerd.
+    async fn pull_layer(
+        &self,
+        image: &oci_client::Reference,
+        layer: &oci_client::manifest::OciDescriptor,
+    ) -> Result<(), RuntimeError> {
+        if self
+            .containerd
+            .content()
+            .read(containerd_services::ReadContentRequest {
+                digest: layer.digest.clone(),
+                offset: 0,
+                size: 1,
+            })
+            .await
+            .is_ok()
+        {
+            log::debug!("layer {} already exists", layer.digest);
+            return Ok(());
+        }
+
+        log::debug!("Pulling layer {layer}");
+
+        let layer_stream = self.oci.pull_blob_stream(image, &layer).await?;
+        let total_size = layer_stream
+            .content_length
+            .and_then(|len| len.try_into().ok())
+            .unwrap_or(0);
+        let upload_ref = uuid::Uuid::new_v4().to_string();
+        let upload_ref_clone = upload_ref.clone();
+        let digest = layer.digest.clone();
+        let digest_clone = digest.clone();
+
+        self.containerd
+            .content()
+            .write(
+                layer_stream
+                    .filter_map(async |layer_data| layer_data.ok())
+                    .scan(0_usize, move |current_offset, layer_data| {
+                        let write = containerd_services::WriteContentRequest {
+                            action: containerd_services::WriteAction::Write.into(),
+                            r#ref: upload_ref.clone(),
+                            total: total_size,
+                            expected: digest.clone(),
+                            offset: (*current_offset).try_into().unwrap_or(0),
+                            data: layer_data.to_vec(),
+                            labels: HashMap::new(),
+                        };
+                        *current_offset = current_offset.saturating_add(layer_data.len());
+                        futures_util::future::ready(Some(write))
+                    }),
+            )
+            .await?
+            .into_inner()
+            .try_for_each(async |_| Ok(()))
+            .await?;
+
+        log::debug!("Finished pulling {digest_clone}.");
+        self.containerd
+            .content()
+            .write(futures_util::stream::iter(std::iter::once(
+                containerd_services::WriteContentRequest {
+                    action: containerd_services::WriteAction::Commit.into(),
+                    r#ref: upload_ref_clone,
+                    total: total_size,
+                    expected: digest_clone,
+                    offset: total_size,
+                    data: Vec::new(),
+                    labels: HashMap::new(),
+                },
+            )))
+            .await?
+            .into_inner()
+            .try_for_each(async |_| Ok(()))
+            .await?;
+
+        Ok::<_, RuntimeError>(())
     }
 
     /// Commit the current state of a container and return a reference to it
@@ -252,21 +422,12 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-
-    async fn ping_client(#[future] containerd_client: Client) {
-        containerd_client.await.docker.ping().await.unwrap();
-    }
-
-    #[rstest]
-    #[tokio::test]
-    #[test_log::test]
     async fn pull_image(#[future] containerd_client: Client) {
         let containerd_client = containerd_client.await;
         containerd_client
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -282,7 +443,6 @@ mod tests {
             .exec(&image, &["echo", "hello world"])
             .await
             .expect("Failed to exec in container");
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -297,8 +457,6 @@ mod tests {
 
         let res = containerd_client.exec(&image, &["exit", "1"]).await;
         assert!(res.is_err(), "Expected exec to fail");
-
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -320,8 +478,6 @@ mod tests {
             .exec(&image, &["cat", "/tmp/hello"])
             .await
             .expect("Exec failed");
-
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -348,8 +504,6 @@ mod tests {
             .exec(&image, &["cat", "/tmp/hello"])
             .await
             .expect("Exec failed");
-
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -365,7 +519,6 @@ mod tests {
             .exec_get_output(&image, &["echo", "hello world"])
             .await
             .expect("Failed to exec in container");
-        containerd_client.shutdown().await;
 
         assert_eq!(output, "hello world");
     }
@@ -399,8 +552,6 @@ mod tests {
             .exec(&to, &["sh", "-c", "grep -q hello nice.txt || exit 1"])
             .await
             .expect("Exec failed");
-
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -448,8 +599,6 @@ mod tests {
             )
             .await
             .expect("Exec failed");
-
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -502,8 +651,6 @@ mod tests {
             )
             .await
             .expect("Exec failed");
-
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -523,8 +670,6 @@ mod tests {
             result.is_err(),
             "Expected reading non-existent path to fail"
         );
-
-        containerd_client.shutdown().await;
     }
 
     #[rstest]
@@ -576,8 +721,6 @@ mod tests {
             .exec(&image, &["sh", "-c", "echo $HELLO | grep -q WORLD"])
             .await
             .expect("Exec failed");
-
-        containerd_client.shutdown().await;
     }
 
     // #[rstest]
@@ -610,123 +753,5 @@ mod tests {
     //         .await
     //         .expect("Failed to find file");
     //
-    //     containerd_client.shutdown().await;
     // }
-
-    // The following tests, against our general test policy, use the clients internal details.
-    // This is because these tests are designed to test "external" interference.
-    // which is simplest to do by just using the existing docker connection and internal data in
-    // the client.
-    //
-    // Like yes public code shouldnt be able to grab the image name and mess with it, but external
-    // programs can via the docker cli, so we find this justified.
-
-    #[rstest]
-    #[tokio::test]
-    #[test_log::test]
-    async fn external_interference_image_deleted(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
-        let image = containerd_client
-            .exec(&image, &["touch", "hello.txt"])
-            .await
-            .expect("Exec failed");
-
-        log::debug!("Deleting {image:?}");
-        containerd_client.delete_state(&image).await;
-
-        containerd_client
-            .exec(&image, &["cat", "hello.txt"])
-            .await
-            .expect("Exec failed");
-
-        // Trigger forking (i.e we need to use the image)
-        // The system should handle image deletion gracefully without panicking
-        // whether it succeeds or fails is implementation detail
-        // (At the time of writing this fails, and there isnt a clear recovery path to make it not)
-        let _ = containerd_client.exec(&image, &["cat", "hello.txt"]).await;
-
-        containerd_client.shutdown().await;
-    }
-
-    #[rstest]
-    #[tokio::test]
-    #[test_log::test]
-    async fn external_interference_container_deleted(#[future] containerd_client: Client) {
-        let mut containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
-        let image = containerd_client
-            .exec(&image, &["touch", "hello.txt"])
-            .await
-            .expect("Exec failed");
-
-        let container = containerd_client
-            .containers
-            .get_mut()
-            .get(&image)
-            .expect("container for image not found");
-        log::debug!("Deleting {}", container.0);
-        containerd_client
-            .docker
-            .remove_container(
-                &container.0,
-                Some(
-                    bollard::query_parameters::RemoveContainerOptionsBuilder::new()
-                        .force(true)
-                        .build(),
-                ),
-            )
-            .await
-            .expect("Failed to remove container");
-
-        containerd_client
-            .exec(&image, &["cat", "hello.txt"])
-            .await
-            .expect("Exec failed");
-
-        containerd_client.shutdown().await;
-    }
-
-    #[rstest]
-    #[tokio::test]
-    #[test_log::test]
-    async fn external_interference_container_stopped(#[future] containerd_client: Client) {
-        let mut containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
-        let image = containerd_client
-            .exec(&image, &["touch", "hello.txt"])
-            .await
-            .expect("Exec failed");
-
-        let container = containerd_client
-            .containers
-            .get_mut()
-            .get(&image)
-            .expect("container for image not found");
-        log::debug!("Stopping {}", container.0);
-        containerd_client
-            .docker
-            .stop_container(
-                &container.0,
-                Some(bollard::query_parameters::StopContainerOptionsBuilder::new().build()),
-            )
-            .await
-            .expect("Failed to stop container");
-
-        containerd_client
-            .exec(&image, &["cat", "hello.txt"])
-            .await
-            .expect("Exec failed");
-
-        containerd_client.shutdown().await;
-    }
 }

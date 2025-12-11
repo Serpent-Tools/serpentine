@@ -3,6 +3,7 @@
 mod cache;
 mod containerd;
 pub mod data_model;
+mod docker;
 pub mod nodes;
 mod scheduler;
 
@@ -19,9 +20,29 @@ use crate::tui::{TuiMessage, TuiSender};
 #[derive(Debug, Error, Diagnostic)]
 pub enum RuntimeError {
     /// A Docker API error
-    #[error("Container API error: {0}")]
+    #[error("Docker API error: {0}")]
     #[diagnostic(code(docker_error))]
     Docker(#[from] bollard::errors::Error),
+
+    /// Containerd API error (for transport)
+    #[error("Containerd API error: {0}")]
+    #[diagnostic(code(containerd_error))]
+    ContainerdTranport(#[from] containerd_client::tonic::transport::Error),
+
+    /// Containerd API error (for containerd itself)
+    #[error("Containerd API error: {0}")]
+    #[diagnostic(code(containerd_error))]
+    ContainerdError(Box<containerd_client::tonic::Status>),
+
+    /// Parsing image error
+    #[error("Invalid image name: {0}")]
+    #[diagnostic(code(invalid_image))]
+    InvalidImageName(#[from] oci_client::ParseError),
+
+    /// Image pull error
+    #[error("Error pulling image: {0}")]
+    #[diagnostic(code(pull_image))]
+    PullError(#[from] oci_client::errors::OciDistributionError),
 
     /// Error establishing connection to docker/podman
     #[error("Docker/Podman not found")]
@@ -95,6 +116,12 @@ impl RuntimeError {
     }
 }
 
+impl From<containerd_client::tonic::Status> for RuntimeError {
+    fn from(value: containerd_client::tonic::Status) -> Self {
+        RuntimeError::ContainerdError(Box::new(value))
+    }
+}
+
 /// The various providers and interfaces used by the runtime
 pub struct RuntimeContext {
     /// The docker client
@@ -151,7 +178,6 @@ impl RuntimeContext {
                 cli.standalone_cache,
             )
             .await;
-        docker.shutdown().await;
     }
 }
 
@@ -216,7 +242,6 @@ pub fn clear_cache(cache_file: &Path) -> Result<(), RuntimeError> {
             // this run, which is everything.
             cache.save_cache(cache_file, &docker, false, false).await?;
             std::fs::remove_file(cache_file)?;
-            docker.shutdown().await;
 
             Ok::<_, RuntimeError>(())
         })?;
