@@ -9,9 +9,7 @@ mod scheduler;
 use std::path::Path;
 use std::rc::Rc;
 
-use futures_util::FutureExt;
 use miette::Diagnostic;
-use smol::lock::Mutex;
 use thiserror::Error;
 
 use crate::snek::CompileResult;
@@ -104,7 +102,7 @@ pub struct RuntimeContext {
     /// The update channel for the TUI
     tui: TuiSender,
     /// Caching of values
-    cache: Mutex<cache::Cache>,
+    cache: tokio::sync::Mutex<cache::Cache>,
 }
 
 impl RuntimeContext {
@@ -130,7 +128,7 @@ impl RuntimeContext {
         Ok(Self {
             containerd: docker,
             tui,
-            cache: Mutex::new(cache),
+            cache: tokio::sync::Mutex::new(cache),
         })
     }
 
@@ -168,58 +166,60 @@ pub fn run(
     log::debug!("Nodes: {}", compile_result.graph.len());
     log::debug!("Starting execution at node {start_node:?}");
 
-    let (tx_ctrlc, rx_ctrlc) = smol::channel::bounded(1);
-    let _ = ctrlc::set_handler(move || {
-        log::debug!("Runnig ctrl-c handler");
-        let _ = tx_ctrlc.try_send(());
-    });
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| RuntimeError::internal("Failed to start tokio"))?
+        .block_on(async {
+            let context = Rc::new(RuntimeContext::new(tui, cli).await?);
+            let scheduler = scheduler::Scheduler::new(
+                compile_result.nodes,
+                compile_result.graph,
+                Rc::clone(&context),
+            );
+            let result = tokio::select!(
+                res = scheduler.get_output(start_node) => res.map(|_| ()),
+                _ = tokio::signal::ctrl_c() => {
+                    log::warn!("Execution interrupted by user");
+                    Err(RuntimeError::CtrlC)
+                }
+            );
 
-    smol::block_on(async {
-        let context = Rc::new(RuntimeContext::new(tui, cli).await?);
-        let scheduler = scheduler::Scheduler::new(
-            compile_result.nodes,
-            compile_result.graph,
-            Rc::clone(&context),
-        );
-        let result = futures_util::select!(
-            res = scheduler.get_output(start_node).fuse() => res.map(|_| ()),
-            _ = rx_ctrlc.recv().fuse() => {
-                log::warn!("Execution interrupted by user");
-                Err(RuntimeError::CtrlC)
+            // Ensure the scheduler context rc is dropped.
+            drop(scheduler);
+
+            if let Some(context) = Rc::into_inner(context) {
+                context.shutdown(cli).await;
+            } else {
+                debug_assert!(false, "Context still referenced at shutdown");
+                log::warn!("Context still referenced, cant run shutdown");
             }
-        );
 
-        // Ensure the scheduler context rc is dropped.
-        drop(scheduler);
-
-        if let Some(context) = Rc::into_inner(context) {
-            context.shutdown(cli).await;
-        } else {
-            debug_assert!(false, "Context still referenced at shutdown");
-            log::warn!("Context still referenced, cant run shutdown");
-        }
-
-        result
-    })
-    .map_err(crate::SerpentineError::Runtime)?;
+            result
+        })
+        .map_err(crate::SerpentineError::Runtime)?;
 
     Ok(())
 }
 
 /// Clear out the given cache file
 pub fn clear_cache(cache_file: &Path) -> Result<(), RuntimeError> {
-    smol::block_on(async move {
-        let docker = containerd::Client::new(TuiSender(None), 1).await?;
-        let cache = cache::Cache::load_cache(cache_file, &docker).await?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| RuntimeError::internal("Failed to start tokio"))?
+        .block_on(async move {
+            let docker = containerd::Client::new(TuiSender(None), 1).await?;
+            let cache = cache::Cache::load_cache(cache_file, &docker).await?;
 
-        // When `keep_old_cache` is set to false `save_cache` will clean out the data not used
-        // this run, which is everything.
-        cache.save_cache(cache_file, &docker, false, false).await?;
-        std::fs::remove_file(cache_file)?;
-        docker.shutdown().await;
+            // When `keep_old_cache` is set to false `save_cache` will clean out the data not used
+            // this run, which is everything.
+            cache.save_cache(cache_file, &docker, false, false).await?;
+            std::fs::remove_file(cache_file)?;
+            docker.shutdown().await;
 
-        Ok::<_, RuntimeError>(())
-    })?;
+            Ok::<_, RuntimeError>(())
+        })?;
 
     Ok(())
 }

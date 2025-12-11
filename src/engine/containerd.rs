@@ -6,12 +6,9 @@ use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use async_compat::CompatExt; // Bollard uses tokio
 use bollard::API_DEFAULT_VERSION;
-use futures_util::TryStreamExt;
-use futures_util::stream::StreamExt;
-use smol::io::{AsyncBufReadExt, AsyncRead, AsyncWrite};
-use smol::lock::Mutex;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::Mutex;
 
 use crate::engine::RuntimeError;
 use crate::engine::data_model::{FILE_SYSTEM_FILE_TAR_NAME, FileSystem};
@@ -36,26 +33,24 @@ pub struct Client {
     /// Sender to the TUI
     tui: TuiSender,
     /// Limiter on the amount of exec jobs running at once
-    exec_lock: smol::lock::Semaphore,
+    exec_lock: tokio::sync::Semaphore,
 }
 
 impl Client {
     /// Create a new Docker client
     pub async fn new(tui: TuiSender, exec_permits: usize) -> Result<Self, RuntimeError> {
-        let docker =
-            Self::connect_docker()
-                .compat()
-                .await
-                .map_err(|err| RuntimeError::DockerNotFound {
-                    inner: Box::new(err),
-                })?;
+        let docker = Self::connect_docker()
+            .await
+            .map_err(|err| RuntimeError::DockerNotFound {
+                inner: Box::new(err),
+            })?;
 
         Ok(Self {
             docker,
             containers: Mutex::new(HashMap::new()),
             cleanup_list: Mutex::new(Vec::new()),
             tui,
-            exec_lock: smol::lock::Semaphore::new(exec_permits),
+            exec_lock: tokio::sync::Semaphore::new(exec_permits),
         })
     }
 
@@ -73,7 +68,7 @@ impl Client {
             Err(err) => return Err(err.into()),
         };
 
-        match client.ping().compat().await {
+        match client.ping().await {
             Ok(_) => {
                 log::info!("Docker connection successful");
                 Ok(client)

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use sha2::Digest;
-use smol::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::engine::data_model::{Data, NodeKindId};
 use crate::engine::{RuntimeError, containerd};
@@ -87,13 +87,10 @@ impl Cache {
         containerd: &containerd::Client,
     ) -> Result<Self, RuntimeError> {
         log::info!("Attempting to load cache from {}", cache_file.display());
-        let file = smol::fs::File::open(cache_file).await?;
-        let mut file = smol::io::BufReader::new(file);
+        let file = tokio::fs::File::open(cache_file).await?;
+        let mut file = tokio::io::BufReader::new(file);
 
-        let mut version = [0_u8; 1];
-        file.read_exact(&mut version).await?;
-        let version = version[0];
-
+        let version = file.read_u8().await?;
         if version != CACHE_COMPATIBILITY_VERSION {
             return Err(RuntimeError::CacheOutOfDate {
                 got: version,
@@ -101,9 +98,7 @@ impl Cache {
             });
         }
 
-        let mut cache_size = [0_u8; 8];
-        file.read_exact(&mut cache_size).await?;
-        let cache_size = u64::from_be_bytes(cache_size);
+        let cache_size = file.read_u64().await?;
 
         let mut cache_data =
             vec![0; cache_size.try_into().unwrap_or(usize::MAX)].into_boxed_slice();
@@ -143,8 +138,8 @@ impl Cache {
         if let Some(parent) = cache_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = smol::fs::File::create(cache_file).await?;
-        let mut file = smol::io::BufWriter::new(file);
+        let file = tokio::fs::File::create(cache_file).await?;
+        let mut file = tokio::io::BufWriter::new(file);
 
         file.write_all(&[CACHE_COMPATIBILITY_VERSION]).await?;
 

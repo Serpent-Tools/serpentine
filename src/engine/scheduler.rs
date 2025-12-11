@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use smol::lock::OnceCell;
+use tokio::sync::OnceCell;
 
 use super::RuntimeContext;
 use crate::engine::RuntimeError;
