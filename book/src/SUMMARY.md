@@ -5,6 +5,7 @@
 - [Snek]()
     - [Comparison with Dockerfile]()
 - [Caching]()
+- [Security](security.md)
 
 # Standard library
 - [Builtins/Prelude]()

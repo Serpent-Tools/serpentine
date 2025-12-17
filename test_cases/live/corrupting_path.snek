@@ -1,5 +1,4 @@
 export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox:latest")
     // Serpentine used to assume various binaries were on path, such as mv and sleep.
     > Env("PATH", "BROKEN")
-    > Exec("/bin/ls")
-    > ExecSh("/bin/ls");
+    > Exec("/bin/ls");

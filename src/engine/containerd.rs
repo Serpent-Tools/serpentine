@@ -1,6 +1,7 @@
 //! Wrapper around bollard Docker API client
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use containerd_client::services::v1 as containerd_services;
@@ -13,10 +14,6 @@ use crate::tui::TuiSender;
 
 /// The snapshoter to use for containers.
 const SNAPSHOTER: &str = "overlayfs";
-
-/// A container created by the client
-#[derive(Debug)]
-struct Container(Box<str>);
 
 /// A reference to a specific state of a container.
 #[derive(Clone, Hash, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
@@ -92,6 +89,7 @@ impl ContainerdRootClient {
     sub_client_wrapper!(content, content_client::ContentClient);
     sub_client_wrapper!(snapshot, snapshots::snapshots_client::SnapshotsClient);
     sub_client_wrapper!(diff, diff_client::DiffClient);
+    sub_client_wrapper!(tasks, tasks_client::TasksClient);
 }
 
 /// A docker client wrapper
@@ -167,7 +165,7 @@ impl Client {
             .prepare(containerd_services::snapshots::PrepareSnapshotRequest {
                 key: key.clone(),
                 snapshotter: SNAPSHOTER.to_owned(),
-                labels: HashMap::new(),
+                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
                 parent: String::new(),
             })
             .await?
@@ -196,10 +194,10 @@ impl Client {
         self.containerd
             .snapshot()
             .commit(containerd_services::snapshots::CommitSnapshotRequest {
-                name: image.to_string(),
-                key,
-                labels: HashMap::new(),
                 snapshotter: SNAPSHOTER.to_owned(),
+                name: image.to_string(),
+                key: key.clone(),
+                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
             .await?;
 
@@ -286,53 +284,217 @@ impl Client {
         Ok::<_, RuntimeError>(())
     }
 
-    /// Commit the current state of a container and return a reference to it
-    async fn commit_container(&self, container: Container) -> Result<ContainerState, RuntimeError> {
-        todo!()
-    }
-
-    /// Get a container in the given state (image), creating it if necessary.
-    /// This removes the container from the cache of containers at that given image,
-    /// with the assumption that it's about to be modified.
-    async fn get_state(&self, state: &ContainerState) -> Result<Container, RuntimeError> {
-        todo!()
-    }
-
-    /// Stop the given container.
-    ///
-    /// This should be called when its known the container wont be used again.
-    /// Or when the container required temporary exclusive access, but no semantic change.
-    /// Its rare to fork on such operations, so as such we spin down the container.
-    async fn stop_container(&self, container: Container) {
-        todo!()
-    }
-
-    /// Execute a command in a container
+    /// Execute a command on top of a given state and reuturn a new state representing the result
     pub async fn exec(
         &self,
-        container: &ContainerState,
-        cmd: &[&str],
+        state: &ContainerState,
+        cmd: String,
     ) -> Result<ContainerState, RuntimeError> {
-        todo!()
+        let snapshot = uuid::Uuid::new_v4().to_string();
+        self.containerd
+            .snapshot()
+            .prepare(containerd_services::snapshots::PrepareSnapshotRequest {
+                snapshotter: SNAPSHOTER.to_owned(),
+                key: snapshot.clone(),
+                parent: (*state.0).to_owned(),
+                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
+            })
+            .await?;
+
+        self.exec_internal(&ContainerState(Rc::from(snapshot.clone())), cmd)
+            .await?;
+
+        let new_snapshot = uuid::Uuid::new_v4().to_string();
+        self.containerd
+            .snapshot()
+            .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                snapshotter: SNAPSHOTER.to_owned(),
+                name: new_snapshot.clone(),
+                key: snapshot.clone(),
+                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
+            })
+            .await?;
+
+        Ok(ContainerState(new_snapshot.into()))
     }
 
-    /// Execute a command and its stdout and stderr.
+    /// Execute a command return its stdout and stderr.
     pub async fn exec_get_output(
         &self,
-        container: &ContainerState,
-        cmd: &[&str],
+        state: &ContainerState,
+        cmd: String,
     ) -> Result<String, RuntimeError> {
-        todo!()
+        let snapshot = uuid::Uuid::new_v4().to_string();
+        self.containerd
+            .snapshot()
+            .prepare(containerd_services::snapshots::PrepareSnapshotRequest {
+                snapshotter: SNAPSHOTER.to_owned(),
+                key: snapshot.clone(),
+                parent: (*state.0).to_owned(),
+                labels: HashMap::new(),
+            })
+            .await?;
+
+        let output = self
+            .exec_internal(&ContainerState(Rc::from(snapshot.clone())), cmd)
+            .await?;
+        self.containerd
+            .snapshot()
+            .remove(containerd_services::snapshots::RemoveSnapshotRequest {
+                snapshotter: SNAPSHOTER.to_owned(),
+                key: snapshot,
+            })
+            .await?;
+
+        Ok(output)
     }
 
-    /// Execute a command in a container directly without progress logging etc.
-    /// For internal use
+    /// Execute a command on the given mutable snapshot, returning its stdout and stderr
     async fn exec_internal(
         &self,
-        container: &Container,
-        cmd: &[&str],
+        snapshot: &ContainerState,
+        cmd: String,
     ) -> Result<String, RuntimeError> {
-        todo!()
+        log::debug!("Prepearing to execute {cmd:?} in {snapshot:?}");
+        let container = uuid::Uuid::new_v4().to_string();
+
+        let mut root = oci_spec::runtime::Root::default();
+        root.set_path(PathBuf::from("rootfs"));
+        root.set_readonly(Some(false));
+
+        let mut process = oci_spec::runtime::Process::default();
+        process.set_args(Some(vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            cmd.clone(),
+        ]));
+
+        log::debug!("Loading mounts for {:?}", snapshot.0);
+        let mounts_proto = self
+            .containerd
+            .snapshot()
+            .mounts(containerd_services::snapshots::MountsRequest {
+                snapshotter: SNAPSHOTER.to_owned(),
+                key: (*snapshot.0).to_owned(),
+            })
+            .await?
+            .into_inner()
+            .mounts;
+
+        log::debug!("Creating container {container}");
+        self.containerd
+            .containers()
+            .create(containerd_services::CreateContainerRequest {
+                container: Some(containerd_services::Container {
+                    id: container.clone(),
+                    snapshotter: SNAPSHOTER.to_owned(),
+                    snapshot_key: (*snapshot.0).to_owned(),
+                    runtime: Some(containerd_services::container::Runtime {
+                        name: "io.containerd.runc.v2".to_owned(),
+                        options: None,
+                    }),
+                    spec: Some(prost_types::Any {
+                        type_url: "types.containerd.io/opencontainers/runtime-spec/1/Spec"
+                            .to_owned(),
+                        value: serde_json::to_vec(
+                            &oci_spec::runtime::Spec::default()
+                                .set_root(Some(root))
+                                .set_process(Some(process)),
+                        )
+                        .map_err(|err| RuntimeError::internal(format!("{err}")))?,
+                    }),
+                    sandbox: String::new(),
+                    updated_at: None,
+                    labels: HashMap::new(),
+                    image: String::new(),
+                    created_at: None,
+                    extensions: HashMap::new(),
+                }),
+            })
+            .await?;
+
+        let stdout = PathBuf::from("pipes")
+            .join(uuid::Uuid::new_v4().to_string())
+            .with_extension("pipe");
+        let (host_stdout, container_stdout) = crate::engine::docker::path_pair(stdout);
+        log::trace!(
+            "Creating fifo at {} ({} in container)",
+            host_stdout.display(),
+            container_stdout.display()
+        );
+        tokio::fs::create_dir_all(host_stdout.parent().unwrap_or(&host_stdout)).await?;
+        nix::unistd::mkfifo(
+            &host_stdout,
+            nix::sys::stat::Mode::S_IRWXU | nix::sys::stat::Mode::S_IRWXO,
+        )
+        .map_err(std::io::Error::other)?;
+        let stdout_future = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
+            tokio::fs::read_to_string(host_stdout),
+        ));
+
+        log::debug!("Creating task in {container}");
+        self.containerd
+            .tasks()
+            .create(containerd_services::CreateTaskRequest {
+                container_id: container.clone(),
+                rootfs: mounts_proto,
+                terminal: false,
+                stdin: String::new(),
+                stdout: container_stdout.display().to_string(),
+                stderr: container_stdout.display().to_string(),
+                checkpoint: None,
+                options: None,
+                runtime_path: String::new(),
+            })
+            .await?
+            .into_inner();
+
+        // A empty `exec_id` signifies the main process of a container
+        log::debug!("Starting {cmd:?} in {container}");
+        self.containerd
+            .tasks()
+            .start(containerd_services::StartRequest {
+                container_id: container.clone(),
+                exec_id: String::new(),
+            })
+            .await?;
+
+        let exit_code = self
+            .containerd
+            .tasks()
+            .wait(containerd_services::WaitRequest {
+                container_id: container.clone(),
+                exec_id: String::new(),
+            })
+            .await?
+            .into_inner()
+            .exit_status;
+
+        let stdout_result = stdout_future
+            .await
+            .map_err(|err| RuntimeError::internal(err.to_string()))??;
+
+        self.containerd
+            .tasks()
+            .delete(containerd_services::DeleteTaskRequest {
+                container_id: container.clone(),
+            })
+            .await?;
+        self.containerd
+            .containers()
+            .delete(containerd_services::DeleteContainerRequest { id: container })
+            .await?;
+
+        log::debug!("Got exit code {exit_code}");
+        if exit_code == 0 {
+            Ok(stdout_result)
+        } else {
+            Err(RuntimeError::CommandExecution {
+                code: exit_code.into(),
+                command: cmd,
+                output: stdout_result,
+            })
+        }
     }
 
     /// Copy the given file/directory into the container
@@ -440,7 +602,7 @@ mod tests {
             .await
             .expect("Failed to create image");
         containerd_client
-            .exec(&image, &["echo", "hello world"])
+            .exec(&image, "echo hello world".to_owned())
             .await
             .expect("Failed to exec in container");
     }
@@ -455,7 +617,25 @@ mod tests {
             .await
             .expect("Failed to create image");
 
-        let res = containerd_client.exec(&image, &["exit", "1"]).await;
+        let res = containerd_client
+            .exec(&image, "cat hello.txt".to_owned())
+            .await;
+        assert!(res.is_err(), "Expected exec to fail");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn exec_cmd_not_found(#[future] containerd_client: Client) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+
+        let res = containerd_client
+            .exec(&image, "I_AM_NOT_REAL".to_owned())
+            .await;
         assert!(res.is_err(), "Expected exec to fail");
     }
 
@@ -470,12 +650,12 @@ mod tests {
             .expect("Failed to create image");
 
         let image = containerd_client
-            .exec(&image, &["touch", "/tmp/hello"])
+            .exec(&image, "touch /tmp/hello".to_owned())
             .await
             .expect("Exec failed");
 
         containerd_client
-            .exec(&image, &["cat", "/tmp/hello"])
+            .exec(&image, "cat /tmp/hello".to_owned())
             .await
             .expect("Exec failed");
     }
@@ -491,17 +671,17 @@ mod tests {
             .expect("Failed to create image");
 
         let image = containerd_client
-            .exec(&image, &["touch", "/tmp/hello"])
+            .exec(&image, "touch /tmp/hello".to_owned())
             .await
             .expect("Exec failed");
 
         containerd_client
-            .exec(&image, &["rm", "/tmp/hello"])
+            .exec(&image, "rm /tmp/hello".to_owned())
             .await
             .expect("Exec failed");
 
         containerd_client
-            .exec(&image, &["cat", "/tmp/hello"])
+            .exec(&image, "cat /tmp/hello".to_owned())
             .await
             .expect("Exec failed");
     }
@@ -516,11 +696,33 @@ mod tests {
             .await
             .expect("Failed to create image");
         let output = containerd_client
-            .exec_get_output(&image, &["echo", "hello world"])
+            .exec_get_output(&image, "echo -n hello world".to_owned())
             .await
             .expect("Failed to exec in container");
 
         assert_eq!(output, "hello world");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn exec_output_has_writale_filesystem(#[future] containerd_client: Client) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let output = containerd_client
+            .exec_get_output(&image, "echo hello world > hello.txt".to_owned())
+            .await
+            .expect("Failed to exec in container");
+        assert_eq!(output, "");
+
+        // Ensure we didnt modify the filesystem in `image`
+        containerd_client
+            .exec(&image, "cat hello.txt".to_owned())
+            .await
+            .expect_err("File was created in filesystem when it shouldnt have been");
     }
 
     #[rstest]
@@ -534,7 +736,7 @@ mod tests {
             .expect("Failed to create image");
 
         let from = containerd_client
-            .exec(&base, &["sh", "-c", "echo hello > /tmp/hello.txt"])
+            .exec(&base, "echo hello > /tmp/hello.txt".to_owned())
             .await
             .expect("Exec failed");
 
@@ -549,7 +751,7 @@ mod tests {
             .expect("Failed to copy into container");
 
         containerd_client
-            .exec(&to, &["sh", "-c", "grep -q hello nice.txt || exit 1"])
+            .exec(&to, "grep -q hello nice.txt || exit 1".to_owned())
             .await
             .expect("Exec failed");
     }
@@ -565,15 +767,12 @@ mod tests {
             .expect("Failed to create image");
 
         let from = containerd_client
-            .exec(&base, &["mkdir", "-p", "/tmp/foo/bar/baz"])
+            .exec(&base, "mkdir -p /tmp/foo/bar/baz".to_owned())
             .await
             .expect("Exec failed");
 
         let from = containerd_client
-            .exec(
-                &from,
-                &["sh", "-c", "echo hello > /tmp/foo/bar/baz/nice.txt"],
-            )
+            .exec(&from, "echo hello > /tmp/foo/bar/baz/nice.txt".to_owned())
             .await
             .expect("Exec failed");
 
@@ -588,14 +787,14 @@ mod tests {
             .expect("Failed to copy into container");
 
         containerd_client
-            .exec(&to, &["ls", "hello/bar/baz"])
+            .exec(&to, "ls hello/bar/baz".to_owned())
             .await
             .expect("Exec failed");
 
         containerd_client
             .exec(
                 &to,
-                &["sh", "-c", "grep -q hello hello/bar/baz/nice.txt || exit 1"],
+                "grep -q hello hello/bar/baz/nice.txt || exit 1".to_owned(),
             )
             .await
             .expect("Exec failed");
@@ -616,12 +815,12 @@ mod tests {
             .expect("Failed to set working dir");
 
         let from = containerd_client
-            .exec(&base, &["mkdir", "-p", "./foo/bar/baz"])
+            .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
             .await
             .expect("Exec failed");
 
         let from = containerd_client
-            .exec(&from, &["sh", "-c", "echo hello > ./foo/bar/baz/nice.txt"])
+            .exec(&from, "echo hello > ./foo/bar/baz/nice.txt".to_owned())
             .await
             .expect("Exec failed");
 
@@ -636,18 +835,14 @@ mod tests {
             .expect("Failed to copy into container");
 
         containerd_client
-            .exec(&to, &["ls", "./hello/bar/baz"])
+            .exec(&to, "ls ./hello/bar/baz".to_owned())
             .await
             .expect("Exec failed");
 
         containerd_client
             .exec(
                 &to,
-                &[
-                    "sh",
-                    "-c",
-                    "grep -q hello ./hello/bar/baz/nice.txt || exit 1",
-                ],
+                "grep -q hello ./hello/bar/baz/nice.txt || exit 1".to_owned(),
             )
             .await
             .expect("Exec failed");
@@ -682,7 +877,7 @@ mod tests {
             .await
             .expect("Failed to create image");
         let image = containerd_client
-            .exec(&image, &["mkdir", "-p", "/foo/bar"])
+            .exec(&image, "mkdir -p /foo/bar".to_owned())
             .await
             .expect("Exec failed");
         let image = containerd_client
@@ -690,16 +885,17 @@ mod tests {
             .await
             .expect("Failed to set working dir");
         containerd_client
-            .exec(&image, &["ls", "bar"])
+            .exec(&image, "ls bar".to_owned())
             .await
             .expect("Exec failed");
 
         let working_dir_pwd = containerd_client
-            .exec_get_output(&image, &["pwd"])
+            .exec_get_output(&image, "pwd".to_owned())
             .await
             .expect("Exec failed");
         assert_eq!(
-            working_dir_pwd, "/foo",
+            working_dir_pwd,
+            "/foo".to_owned(),
             "pwd reported wrong working directory"
         );
     }
@@ -718,7 +914,7 @@ mod tests {
             .await
             .expect("Failed to set env");
         containerd_client
-            .exec(&image, &["sh", "-c", "echo $HELLO | grep -q WORLD"])
+            .exec(&image, "echo $HELLO | grep -q WORLD".to_owned())
             .await
             .expect("Exec failed");
     }
@@ -733,7 +929,7 @@ mod tests {
     //         .await
     //         .expect("Failed to create image");
     //     let image = containerd_client
-    //         .exec(&image, &["touch", "hello.txt"])
+    //         .exec(&image, "touch hello.txt".to_owned())
     //         .await
     //         .expect("Failed to create file");
     //
@@ -749,7 +945,7 @@ mod tests {
     //         .expect("Failed to import");
     //
     //     containerd_client
-    //         .exec(&image, &["cat", "hello.txt"])
+    //         .exec(&image, "cat hello.txt".to_owned())
     //         .await
     //         .expect("Failed to find file");
     //

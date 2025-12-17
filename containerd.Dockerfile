@@ -1,6 +1,6 @@
 # tiny reproducible image for running containerd in a container
 FROM debian:bookworm-slim
-ARG CONTAINERD_VERSION=2.1.1
+ARG CONTAINERD_VERSION=2.2.0
 ARG RUNC_VERSION=v1.4.0
 
 ENV DEBIAN_FRONTEND=noninteractive
