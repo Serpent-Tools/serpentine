@@ -4,6 +4,7 @@
 //! On windows/mac uses Envoy to provide a http api to containerd.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use bollard::API_DEFAULT_VERSION;
@@ -27,6 +28,25 @@ const CONTAINERD_IMAGE_TAG: &str = if cfg!(debug_assertions) {
 /// The container image to use for containerd
 const CONTAINERD_IMAGE: &str = "serpentine/containerd";
 
+/// Path to the mount point on the host
+const HOST_MOUNT_DIR: &str = "/tmp/serpentine/";
+
+/// Path  to the mount in the container
+const CONTAINER_MOUNT_DIR: &str = "/run/serpentine/";
+
+/// Returns the host and container path for a file at the given relative path.
+/// This should be used to get a path pair that can be used to reference the same file from inside
+/// and outside contained.
+///
+/// The first value of the tuple is the host path, and the second in the containerd path.
+pub fn path_pair(path: impl AsRef<Path>) -> (PathBuf, PathBuf) {
+    let path = path.as_ref();
+    (
+        PathBuf::from(HOST_MOUNT_DIR).join(path),
+        PathBuf::from(CONTAINER_MOUNT_DIR).join(path),
+    )
+}
+
 // TODO: Support running on windows/mac by spawning a envoy proxy server to the unix socket.
 #[cfg(not(target_os = "linux"))]
 compile_error!("Only linux supported currently.");
@@ -41,7 +61,10 @@ pub async fn connect() -> Result<containerd_client::Client, RuntimeError> {
         })?;
 
     let containerd_socket_path = spin_up_containerd(docker).await?;
-    log::info!("Connecting to containerd at {containerd_socket_path}");
+    log::info!(
+        "Connecting to containerd at {}",
+        containerd_socket_path.display()
+    );
     let containerd_connection = containerd_client::connect(containerd_socket_path).await?;
     let containerd = containerd_client::Client::from(containerd_connection);
 
@@ -99,11 +122,12 @@ fn try_podman_connection() -> Result<bollard::Docker, RuntimeError> {
 /// Spin up a containerd instance using the given docker client.
 ///
 /// Returns the URI to connect to
-async fn spin_up_containerd(docker: bollard::Docker) -> Result<String, RuntimeError> {
+async fn spin_up_containerd(docker: bollard::Docker) -> Result<PathBuf, RuntimeError> {
     let volume = create_containerd_volume(&docker).await?;
     let image = ensure_containerd_image(&docker).await?;
 
     let container_state = "/var/lib/containerd";
+    let (socket_host, socket_container) = path_pair("container.sock");
 
     if docker
         .inspect_container(
@@ -127,21 +151,27 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<String, RuntimeEr
                     cmd: Some(vec![
                         "containerd".to_owned(),
                         "--address".to_owned(),
-                        "/run/serpentine/containerd.sock".to_owned(),
+                        socket_container.display().to_string(),
                         "--root".to_owned(),
                         container_state.to_owned(),
                         "--state".to_owned(),
                         "/run/containerd".to_owned(),
                         "--log-level".to_owned(),
-                        "debug".to_owned(),
+                        "trace".to_owned(),
                     ]),
+                    tty: Some(false),
+                    open_stdin: Some(false),
                     host_config: Some(bollard::secret::HostConfig {
                         auto_remove: Some(true),
                         privileged: Some(true),
                         binds: Some(vec![
                             format!("{volume}:{container_state}"),
-                            "/tmp/serpentine/:/run/serpentine/".to_owned(),
+                            format!("{HOST_MOUNT_DIR}:{CONTAINER_MOUNT_DIR}"),
                         ]),
+                        log_config: Some(bollard::secret::HostConfigLogConfig {
+                            typ: Some("json-file".to_owned()),
+                            config: None,
+                        }),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -160,7 +190,7 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<String, RuntimeEr
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    Ok("/tmp/serpentine/containerd.sock".to_owned())
+    Ok(socket_host)
 }
 
 /// Ensure the containerd data volume exists

@@ -56,16 +56,6 @@ pub enum RuntimeError {
         inner: Box<dyn Diagnostic + Send + Sync>,
     },
 
-    /// A bincode deserialization error
-    #[error("Error reading cache, please report: {0}")]
-    #[diagnostic(code(bincode::decode))]
-    BincodeDe(#[from] bincode::error::DecodeError),
-
-    /// A bincode serialization error
-    #[error("Error writing cache, please report: {0}")]
-    #[diagnostic(code(bincode::encode))]
-    BincodeEn(#[from] bincode::error::EncodeError),
-
     /// The cache was out of date.
     #[error("Cache format version {got} doesn't match current version {current}")]
     CacheOutOfDate {
@@ -82,7 +72,7 @@ pub enum RuntimeError {
         /// The exit code
         code: i64,
         /// The command that was run
-        command: Vec<String>,
+        command: String,
         /// The stdout/stderr of the command
         output: String,
     },

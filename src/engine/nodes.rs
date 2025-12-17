@@ -377,32 +377,15 @@ async fn image(
     context.containerd.pull_image(&image).await
 }
 
-/// Run a shell command in a container
-async fn exec_sh(
-    context: Rc<RuntimeContext>,
-    container: containerd::ContainerState,
-    command: Rc<str>,
-) -> Result<containerd::ContainerState, RuntimeError> {
-    context
-        .containerd
-        .exec(&container, &["/bin/sh", "-c", &command])
-        .await
-}
-
 /// Run a command in a container
 async fn exec(
     context: Rc<RuntimeContext>,
     container: containerd::ContainerState,
     command: Rc<str>,
 ) -> Result<containerd::ContainerState, RuntimeError> {
-    let command = shell_words::split(&command)?;
-
     context
         .containerd
-        .exec(
-            &container,
-            &command.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
-        )
+        .exec(&container, command.to_string())
         .await
 }
 
@@ -412,14 +395,9 @@ async fn exec_output(
     container: containerd::ContainerState,
     command: Rc<str>,
 ) -> Result<Rc<str>, RuntimeError> {
-    let command = shell_words::split(&command)?;
-
     context
         .containerd
-        .exec_get_output(
-            &container,
-            &command.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
-        )
+        .exec_get_output(&container, command.to_string())
         .await
         .map(Into::into)
 }
@@ -629,12 +607,6 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, false))),
         // cache reasoning: Executing command is the bulk of what serpentine does and takes the most
         // time, this is the primary target for caching
-        (
-            "ExecSh",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
-                exec_sh, true,
-            )),
-        ),
         // cache reasoning: see ExecSh
         (
             "Exec",

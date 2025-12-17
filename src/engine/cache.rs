@@ -55,7 +55,10 @@ impl CacheKey<'_> {
     /// Hash this key with sha256 by encoding it to bincode
     pub fn sha256(&self) -> Result<[u8; 32], RuntimeError> {
         let config = bincode_config();
-        let hash = sha2::Sha256::digest(&bincode::encode_to_vec(self, config)?);
+        let hash = sha2::Sha256::digest(
+            &bincode::encode_to_vec(self, config)
+                .map_err(|err| RuntimeError::internal(err.to_string()))?,
+        );
         Ok(hash.into())
     }
 }
@@ -103,7 +106,14 @@ impl Cache {
         let mut cache_data =
             vec![0; cache_size.try_into().unwrap_or(usize::MAX)].into_boxed_slice();
         file.read_exact(&mut cache_data).await?;
-        let old_cache = bincode::decode_from_std_read(&mut &*cache_data, bincode_config())?;
+        let old_cache = bincode::decode_from_std_read(&mut &*cache_data, bincode_config())
+            .map_err(|err| {
+                if let bincode::error::DecodeError::Io { inner, .. } = err {
+                    RuntimeError::IoError(inner)
+                } else {
+                    RuntimeError::internal(err.to_string())
+                }
+            })?;
 
         let mut has_standalone_cache = [0_u8; 1];
         file.read_exact(&mut has_standalone_cache).await?;
@@ -162,7 +172,8 @@ impl Cache {
             }
         }
 
-        let cache_data = bincode::encode_to_vec(&cache, bincode_config())?;
+        let cache_data = bincode::encode_to_vec(&cache, bincode_config())
+            .map_err(|err| RuntimeError::internal(err.to_string()))?;
         file.write_all(
             &cache_data
                 .len()

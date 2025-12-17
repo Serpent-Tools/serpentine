@@ -3,7 +3,7 @@ import "./lib.snek" as lib;
 license_file = lib::rust
     > lib::Binstall("cargo-about", "cargo-about")
     > With(lib::source_code, ".")
-    > ExecSh("cargo about generate about.hbs > license.html")
+    > Exec("cargo about generate about.hbs > license.html")
     > Export("license.html");
 
 binary = lib::rust
