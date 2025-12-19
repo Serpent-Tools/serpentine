@@ -1,0 +1,12 @@
+[package]
+name = "serpentine_sidecar"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+log = "0.4.29"
+simple_logger = { version = "5.1.0", default-features = false }
+
+[lints]
+workspace = true

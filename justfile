@@ -12,6 +12,9 @@ clean: build_container
     cargo clean
     docker system reset -f
 
+run_sidecar: build_container
+    docker run --rm -it serpent-tools/containerd:dev
+
 build_container:
-    docker build -t serpentine/containerd:dev -f containerd.Dockerfile
+    docker build -t serpent-tools/containerd:dev -f Dockerfile
     docker container rm -a -f 

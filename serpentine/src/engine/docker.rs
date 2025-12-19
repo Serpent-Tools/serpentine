@@ -4,7 +4,7 @@
 //! On windows/mac uses Envoy to provide a http api to containerd.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use bollard::API_DEFAULT_VERSION;
@@ -13,10 +13,10 @@ use futures_util::StreamExt;
 use crate::engine::RuntimeError;
 
 /// The name of the containerd deamon serpetnine spawns.
-const CONTAINER_NAME: &str = "serpent-tools.serpentine-containerd";
+const CONTAINER_NAME: &str = "serpent-tools.containerd";
 
 /// The name of the docker volume container
-const CONTAINER_VOLUME: &str = "serpent-tools.serpentine-containerd-data";
+const CONTAINER_VOLUME: &str = "serpent-tools.containerd-data";
 
 /// The containerd tag version to use
 const CONTAINERD_IMAGE_TAG: &str = if cfg!(debug_assertions) {
@@ -26,30 +26,7 @@ const CONTAINERD_IMAGE_TAG: &str = if cfg!(debug_assertions) {
 };
 
 /// The container image to use for containerd
-const CONTAINERD_IMAGE: &str = "serpentine/containerd";
-
-/// Path to the mount point on the host
-const HOST_MOUNT_DIR: &str = "/tmp/serpentine/";
-
-/// Path  to the mount in the container
-const CONTAINER_MOUNT_DIR: &str = "/run/serpentine/";
-
-/// Returns the host and container path for a file at the given relative path.
-/// This should be used to get a path pair that can be used to reference the same file from inside
-/// and outside contained.
-///
-/// The first value of the tuple is the host path, and the second in the containerd path.
-pub fn path_pair(path: impl AsRef<Path>) -> (PathBuf, PathBuf) {
-    let path = path.as_ref();
-    (
-        PathBuf::from(HOST_MOUNT_DIR).join(path),
-        PathBuf::from(CONTAINER_MOUNT_DIR).join(path),
-    )
-}
-
-// TODO: Support running on windows/mac by spawning a envoy proxy server to the unix socket.
-#[cfg(not(target_os = "linux"))]
-compile_error!("Only linux supported currently.");
+const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
 
 /// Create a new containerd client, by either connecting to a esisting container or spinning up a
 /// new one.
@@ -60,12 +37,13 @@ pub async fn connect() -> Result<containerd_client::Client, RuntimeError> {
             inner: Box::new(err),
         })?;
 
-    let containerd_socket_path = spin_up_containerd(docker).await?;
-    log::info!(
-        "Connecting to containerd at {}",
-        containerd_socket_path.display()
-    );
-    let containerd_connection = containerd_client::connect(containerd_socket_path).await?;
+    let containerd_addr = spin_up_containerd(docker).await?;
+    log::info!("Connecting to serpentine sidecar at {containerd_addr:?}",);
+    let containerd_connection = containerd_client::tonic::transport::Endpoint::from_shared(
+        format!("tcp://{containerd_addr}"),
+    )?
+    .connect()
+    .await?;
     let containerd = containerd_client::Client::from(containerd_connection);
 
     let version = containerd.version().version(()).await?.into_inner().version;
@@ -122,12 +100,9 @@ fn try_podman_connection() -> Result<bollard::Docker, RuntimeError> {
 /// Spin up a containerd instance using the given docker client.
 ///
 /// Returns the URI to connect to
-async fn spin_up_containerd(docker: bollard::Docker) -> Result<PathBuf, RuntimeError> {
+async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketAddr, RuntimeError> {
     let volume = create_containerd_volume(&docker).await?;
     let image = ensure_containerd_image(&docker).await?;
-
-    let container_state = "/var/lib/containerd";
-    let (socket_host, socket_container) = path_pair("container.sock");
 
     if docker
         .inspect_container(
@@ -148,30 +123,23 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<PathBuf, RuntimeE
                 ),
                 bollard::secret::ContainerCreateBody {
                     image: Some(image.into_string()),
-                    cmd: Some(vec![
-                        "containerd".to_owned(),
-                        "--address".to_owned(),
-                        socket_container.display().to_string(),
-                        "--root".to_owned(),
-                        container_state.to_owned(),
-                        "--state".to_owned(),
-                        "/run/containerd".to_owned(),
-                        "--log-level".to_owned(),
-                        "trace".to_owned(),
-                    ]),
                     tty: Some(false),
                     open_stdin: Some(false),
                     host_config: Some(bollard::secret::HostConfig {
                         auto_remove: Some(true),
                         privileged: Some(true),
-                        binds: Some(vec![
-                            format!("{volume}:{container_state}"),
-                            format!("{HOST_MOUNT_DIR}:{CONTAINER_MOUNT_DIR}"),
-                        ]),
+                        binds: Some(vec![format!("{volume}:/var/lib/containerd")]),
                         log_config: Some(bollard::secret::HostConfigLogConfig {
                             typ: Some("json-file".to_owned()),
                             config: None,
                         }),
+                        port_bindings: Some(HashMap::from([(
+                            "8000/tcp".to_owned(),
+                            Some(vec![bollard::secret::PortBinding {
+                                host_ip: Some("127.0.0.1".to_owned()),
+                                host_port: None,
+                            }]),
+                        )])),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -185,12 +153,37 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<PathBuf, RuntimeE
                 Some(bollard::query_parameters::StartContainerOptionsBuilder::new().build()),
             )
             .await?;
-
-        // TODO: Healthcheck
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    Ok(socket_host)
+    let container_details = docker
+        .inspect_container(
+            CONTAINER_NAME,
+            Some(bollard::query_parameters::InspectContainerOptions::default()),
+        )
+        .await?;
+
+    let serpentine_port = container_details
+        .network_settings
+        .ok_or_else(|| RuntimeError::internal("No network settings for container"))?
+        .ports
+        .ok_or_else(|| RuntimeError::internal("No port settings for container"))?
+        .get("8000/tcp")
+        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .as_ref()
+        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .first()
+        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .host_port
+        .as_ref()
+        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .parse()
+        .map_err(|_| RuntimeError::internal("Port wasnt a number"))?;
+
+    Ok(std::net::SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        serpentine_port,
+    ))
 }
 
 /// Ensure the containerd data volume exists
