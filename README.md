@@ -35,5 +35,3 @@ flowchart TD
     E -.-> F
     F --> G["Output"]
 ```
-
-The serpentine runtime will intelligently spawn a max of 3 containers for this job, and run the test and clippy in parallel.
