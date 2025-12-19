@@ -537,10 +537,7 @@ async fn env(
     env: Rc<str>,
     value: Rc<str>,
 ) -> Result<containerd::ContainerState, RuntimeError> {
-    context
-        .containerd
-        .set_env_var(&container, &env, &value)
-        .await
+    Ok(context.containerd.set_env_var(&container, &env, &value))
 }
 
 /// A node for joining strings
@@ -602,19 +599,13 @@ impl NodeImpl for Join {
 pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
     vec![
         (NOOP_NAME, Box::new(Noop) as Box<dyn NodeImpl>),
-        // cache reasoning: Image is at best a simple check with the docker client, which is super
-        // quick, and more importantly the output is consistent.
-        ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, false))),
-        // cache reasoning: Executing command is the bulk of what serpentine does and takes the most
-        // time, this is the primary target for caching
-        // cache reasoning: see ExecSh
+        ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, true))),
         (
             "Exec",
             Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 exec, true,
             )),
         ),
-        // cache reasoning: see ExecSh
         (
             "ExecOutput",
             Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
@@ -622,18 +613,10 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
                 true,
             )),
         ),
-        // cache reasoning: We need to check with the host system on each run to know whether the output
-        // of this is still valid, if the files didn't change on disk this will still spend some time
-        // reading them, but will result in the same result afterwards and further nodes will have cache
-        // hits.
         (
             "FromHost",
             Box::new(Wrap::<_, Rc<str>>::new(from_host, false)),
         ),
-        // cache reasoning: Copying the files from a container is usually a quick job, and keeping such
-        // files in the cache is just duplicating data that is also stored in docker.
-        // The one downside here is that we have to spin up a container to export the data, but that
-        // should be quick enough.
         (
             "Export",
             Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
@@ -644,27 +627,20 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             "ToHost",
             Box::new(Wrap::<_, (FileSystem, Rc<str>)>::new(to_host, false)),
         ),
-        // cache reasoning: While this operation is generally quick it is a primary candidate for
-        // caching, not because the operation is nice to skip, but because it isn't truly pure as
-        // docker will likely give a new image id even when run with the same inputs.
-        // Hence we use the CaC to skip this node if the input files and the input image match the
-        // cache.
         (
             "With",
             Box::new(Wrap::<_, (containerd::ContainerState, FileSystem, Rc<str>)>::new(with, true)),
         ),
-        // cache reasoning: See With
         (
             "WorkingDir",
             Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 with_working_dir,
-                true,
+                false,
             )),
         ),
-        // cache reasoning: See With
         (
             "Env",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>, Rc<str>)>::new(env, true)),
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>, Rc<str>)>::new(env, false)),
         ),
         ("Join", Box::new(Join)),
     ]
