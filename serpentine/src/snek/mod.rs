@@ -226,7 +226,7 @@ mod tests {
 
     #[rstest]
     #[test_log::test]
-    fn compile_positive(#[files("test_cases/positive/**/*.snek")] path: PathBuf) {
+    fn compile_positive(#[files("../test_cases/positive/**/*.snek")] path: PathBuf) {
         let res = compile_graph(&path, "DEFAULT");
         match res {
             Ok(_) => {}
@@ -240,7 +240,7 @@ mod tests {
 
     #[rstest]
     #[test_log::test]
-    fn compile_negative(#[files("test_cases/negative/**/*.snek")] path: PathBuf) {
+    fn compile_negative(#[files("../test_cases/negative/**/*.snek")] path: PathBuf) {
         let res = compile_graph(&path, "DEFAULT");
         match res {
             Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),

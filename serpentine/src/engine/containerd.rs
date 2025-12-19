@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use containerd_client::services::v1 as containerd_services;
+use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -17,18 +18,46 @@ use crate::tui::TuiSender;
 const SNAPSHOTER: &str = "overlayfs";
 
 /// Connfiguration for the container
-#[derive(Clone, Hash, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
-pub struct ContainerConfig {}
+pub struct ContainerConfig {
+    /// Environment
+    env: HashMap<Rc<str>, Rc<str>>,
+    /// The working directory
+    working_dir: PathBuf,
+}
+
+impl Hash for ContainerConfig {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u8(0);
+    }
+}
+impl PartialEq for ContainerConfig {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl Eq for ContainerConfig {}
 
 impl From<oci_client::config::Config> for ContainerConfig {
-    fn from(value: oci_client::config::Config) -> Self {
-        Self {}
+    fn from(config: oci_client::config::Config) -> Self {
+        Self {
+            env: config
+                .env
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|env| {
+                    env.split_once('=')
+                        .map(|(key, value)| (Rc::from(key), Rc::from(value)))
+                })
+                .collect(),
+            working_dir: config.working_dir.unwrap_or("/".to_owned()).into(),
+        }
     }
 }
 
 /// A reference to a specific state of a container.
-#[derive(Clone, Hash, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug, bincode::Encode, bincode::Decode)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerState {
     /// The snapshot to use for the container
@@ -107,6 +136,28 @@ impl ContainerdRootClient {
     sub_client_wrapper!(snapshot, snapshots::snapshots_client::SnapshotsClient);
     sub_client_wrapper!(diff, diff_client::DiffClient);
     sub_client_wrapper!(tasks, tasks_client::TasksClient);
+    sub_client_wrapper!(leases, leases_client::LeasesClient);
+}
+
+/// Extension trait for easially attaching a lease to requests
+trait WithLease<T>: IntoRequest<T> {
+    /// Attach a lease to this request
+    fn with_lease(self, lease: &str) -> Request<T>;
+}
+
+impl<S, T> WithLease<T> for S
+where
+    S: IntoRequest<T>,
+{
+    #[expect(clippy::expect_used, reason = "constant value")]
+    fn with_lease(self, lease: &str) -> Request<T> {
+        let mut this = self.into_request();
+        this.metadata_mut().insert(
+            "containerd-lease",
+            lease.parse().expect("Invalid metadta value"),
+        );
+        this
+    }
 }
 
 /// A docker client wrapper
@@ -150,27 +201,96 @@ impl Client {
             .is_ok()
     }
 
+    /// Create a new lease
+    async fn new_lease(&self) -> Result<String, RuntimeError> {
+        let lease = uuid::Uuid::new_v4().to_string();
+        self.containerd
+            .leases()
+            .create(containerd_services::CreateRequest {
+                id: lease.clone(),
+                labels: HashMap::new(),
+            })
+            .await?;
+        Ok(lease)
+    }
+
+    /// Drop the given lease, freeing up any not referenced elsewhere.
+    async fn drop_lease(&self, lease: String) -> Result<(), RuntimeError> {
+        self.containerd
+            .leases()
+            .delete(containerd_services::DeleteRequest {
+                id: lease.clone(),
+                sync: false,
+            })
+            .await?;
+        Ok(())
+    }
+
     /// download the given image if necessary
     pub async fn pull_image(&self, image: &str) -> Result<ContainerState, RuntimeError> {
         let image = oci_client::Reference::try_from(image)?;
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
 
-        log::debug!("Pulling image {image}");
+        log::debug!("Pulling image {image} manifest");
         let (manifest, _, config) = self.oci.pull_manifest_and_config(&image, &auth).await?;
 
-        futures_util::future::try_join_all(
-            manifest
-                .layers
-                .iter()
-                .map(|layer| self.pull_layer(&image, layer)),
-        )
-        .await?;
+        let last_layer_digest = manifest
+            .layers
+            .last()
+            .map(|layer| layer.digest.clone())
+            .unwrap_or_default();
+        let image_exists = self
+            .containerd
+            .snapshot()
+            .stat(containerd_services::snapshots::StatSnapshotRequest {
+                snapshotter: SNAPSHOTER.to_owned(),
+                key: last_layer_digest.clone(),
+            })
+            .await
+            .is_ok();
 
-        log::debug!("Uploaded all layers to containerd");
-        log::debug!("Creating snapshot from image");
+        if image_exists {
+            log::debug!("image {image} already exists");
+        } else {
+            let lease = self.new_lease().await?;
 
+            log::debug!("Pulling image {image}");
+            futures_util::future::try_join_all(
+                manifest
+                    .layers
+                    .iter()
+                    .map(|layer| self.pull_layer(&image, layer, &lease)),
+            )
+            .await?;
+
+            log::debug!("Uploaded all layers to containerd");
+
+            log::debug!("Creating snapshot from image");
+            self.create_snapshots(manifest, &lease).await?;
+
+            self.drop_lease(lease).await?;
+        }
+
+        let config: oci_client::config::Config =
+            serde_json::from_str(&config).map_err(|err| RuntimeError::internal(err.to_string()))?;
+        let config = ContainerConfig::from(config);
+
+        Ok(ContainerState {
+            snapshot: last_layer_digest.into(),
+            config: Rc::new(config),
+        })
+    }
+
+    /// Create layer snapshots from the manifest, this assumes the layer content is in the content
+    /// store
+    async fn create_snapshots(
+        &self,
+        manifest: oci_client::manifest::OciImageManifest,
+        lease: &str,
+    ) -> Result<(), RuntimeError> {
         let mut parent = String::new();
         let layer_count = manifest.layers.len();
+
         for (index, layer) in manifest.layers.into_iter().enumerate() {
             let layer_exists = self
                 .containerd
@@ -190,12 +310,15 @@ impl Client {
                 let mounts = self
                     .containerd
                     .snapshot()
-                    .prepare(containerd_services::snapshots::PrepareSnapshotRequest {
-                        key: key.clone(),
-                        snapshotter: SNAPSHOTER.to_owned(),
-                        labels: HashMap::new(),
-                        parent: parent.clone(),
-                    })
+                    .prepare(
+                        containerd_services::snapshots::PrepareSnapshotRequest {
+                            key: key.clone(),
+                            snapshotter: SNAPSHOTER.to_owned(),
+                            labels: HashMap::new(),
+                            parent: parent.clone(),
+                        }
+                        .with_lease(lease),
+                    )
                     .await?
                     .into_inner()
                     .mounts;
@@ -211,17 +334,9 @@ impl Client {
                         }),
                         mounts: mounts.clone(),
                         payloads: HashMap::new(),
-                        sync_fs: true,
+                        sync_fs: false,
                     })
                     .await?;
-
-                let _ = self
-                    .containerd
-                    .content()
-                    .delete(containerd_services::DeleteContentRequest {
-                        digest: layer.digest.clone(),
-                    })
-                    .await;
 
                 log::debug!("Commiting {key} to {}", layer.digest);
                 let labels = if index == layer_count.saturating_sub(1) {
@@ -231,26 +346,22 @@ impl Client {
                 };
                 self.containerd
                     .snapshot()
-                    .commit(containerd_services::snapshots::CommitSnapshotRequest {
-                        snapshotter: SNAPSHOTER.to_owned(),
-                        name: layer.digest.clone(),
-                        key,
-                        labels,
-                    })
+                    .commit(
+                        containerd_services::snapshots::CommitSnapshotRequest {
+                            snapshotter: SNAPSHOTER.to_owned(),
+                            name: layer.digest.clone(),
+                            key,
+                            labels,
+                        }
+                        .with_lease(lease),
+                    )
                     .await?;
             }
 
             parent = layer.digest;
         }
 
-        let config: oci_client::config::Config =
-            serde_json::from_str(&config).map_err(|err| RuntimeError::internal(err.to_string()))?;
-        let config = ContainerConfig::from(config);
-
-        Ok(ContainerState {
-            snapshot: parent.into(),
-            config: Rc::new(config),
-        })
+        Ok(())
     }
 
     /// Pull the given layer into containerd.
@@ -258,6 +369,7 @@ impl Client {
         &self,
         image: &oci_client::Reference,
         layer: &oci_client::manifest::OciDescriptor,
+        lease: &str,
     ) -> Result<(), RuntimeError> {
         if self
             .containerd
@@ -319,7 +431,8 @@ impl Client {
                         };
                         *current_offset = current_offset.saturating_add(layer_data.len());
                         futures_util::future::ready(Some(write))
-                    }),
+                    })
+                    .with_lease(lease),
             )
             .await?
             .into_inner()
@@ -329,17 +442,20 @@ impl Client {
         log::debug!("Finished pulling {digest_clone}.");
         self.containerd
             .content()
-            .write(futures_util::stream::iter(std::iter::once(
-                containerd_services::WriteContentRequest {
-                    action: containerd_services::WriteAction::Commit.into(),
-                    r#ref: upload_ref_clone,
-                    total: total_size,
-                    expected: digest_clone,
-                    offset: total_size,
-                    data: Vec::new(),
-                    labels: HashMap::new(),
-                },
-            )))
+            .write(
+                futures_util::stream::iter(std::iter::once(
+                    containerd_services::WriteContentRequest {
+                        action: containerd_services::WriteAction::Commit.into(),
+                        r#ref: upload_ref_clone,
+                        total: total_size,
+                        expected: digest_clone,
+                        offset: total_size,
+                        data: Vec::new(),
+                        labels: HashMap::new(),
+                    },
+                ))
+                .with_lease(lease),
+            )
             .await?
             .into_inner()
             .try_for_each(async |_| Ok(()))
@@ -355,14 +471,19 @@ impl Client {
         cmd: String,
     ) -> Result<ContainerState, RuntimeError> {
         let snapshot = uuid::Uuid::new_v4().to_string();
+        let lease = self.new_lease().await?;
+
         self.containerd
             .snapshot()
-            .prepare(containerd_services::snapshots::PrepareSnapshotRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
-                key: snapshot.clone(),
-                parent: (*state.snapshot).to_owned(),
-                labels: HashMap::new(),
-            })
+            .prepare(
+                containerd_services::snapshots::PrepareSnapshotRequest {
+                    snapshotter: SNAPSHOTER.to_owned(),
+                    key: snapshot.clone(),
+                    parent: (*state.snapshot).to_owned(),
+                    labels: HashMap::new(),
+                }
+                .with_lease(&lease),
+            )
             .await?;
 
         self.exec_internal(
@@ -371,6 +492,7 @@ impl Client {
                 config: Rc::clone(&state.config),
             },
             cmd,
+            &lease,
         )
         .await?;
 
@@ -384,6 +506,7 @@ impl Client {
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
             .await?;
+        self.drop_lease(lease).await?;
 
         Ok(ContainerState {
             snapshot: new_snapshot.into(),
@@ -398,14 +521,19 @@ impl Client {
         cmd: String,
     ) -> Result<String, RuntimeError> {
         let snapshot = uuid::Uuid::new_v4().to_string();
+        let lease = self.new_lease().await?;
+
         self.containerd
             .snapshot()
-            .prepare(containerd_services::snapshots::PrepareSnapshotRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
-                key: snapshot.clone(),
-                parent: (*state.snapshot).to_owned(),
-                labels: HashMap::new(),
-            })
+            .prepare(
+                containerd_services::snapshots::PrepareSnapshotRequest {
+                    snapshotter: SNAPSHOTER.to_owned(),
+                    key: snapshot.clone(),
+                    parent: (*state.snapshot).to_owned(),
+                    labels: HashMap::new(),
+                }
+                .with_lease(&lease),
+            )
             .await?;
 
         let output = self
@@ -415,16 +543,10 @@ impl Client {
                     config: Rc::clone(&state.config),
                 },
                 cmd,
+                &lease,
             )
             .await?;
-        let _ = self
-            .containerd
-            .snapshot()
-            .remove(containerd_services::snapshots::RemoveSnapshotRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
-                key: snapshot,
-            })
-            .await;
+        self.drop_lease(lease).await?;
 
         Ok(output)
     }
@@ -434,28 +556,10 @@ impl Client {
         &self,
         state: &ContainerState,
         cmd: String,
+        lease: &str,
     ) -> Result<String, RuntimeError> {
         log::debug!("Prepearing to execute {cmd:?} in {state:?}");
-        let container = self.create_cotnainer(state, cmd.clone()).await?;
-
-        let stdout = PathBuf::from("pipes")
-            .join(uuid::Uuid::new_v4().to_string())
-            .with_extension("pipe");
-        let (host_stdout, container_stdout) = crate::engine::docker::path_pair(stdout);
-        log::trace!(
-            "Creating fifo at {} ({} in container)",
-            host_stdout.display(),
-            container_stdout.display()
-        );
-        tokio::fs::create_dir_all(host_stdout.parent().unwrap_or(&host_stdout)).await?;
-        nix::unistd::mkfifo(
-            &host_stdout,
-            nix::sys::stat::Mode::S_IRWXU | nix::sys::stat::Mode::S_IRWXO,
-        )
-        .map_err(std::io::Error::other)?;
-        let stdout_future = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
-            tokio::fs::read_to_string(host_stdout),
-        ));
+        let container = self.create_container(state, cmd.clone(), lease).await?;
 
         log::debug!("Loading mounts for {:?}", state.snapshot);
         let mounts = self
@@ -472,17 +576,22 @@ impl Client {
         log::debug!("Creating task in {container}");
         self.containerd
             .tasks()
-            .create(containerd_services::CreateTaskRequest {
-                container_id: container.clone(),
-                rootfs: mounts,
-                terminal: false,
-                stdin: String::new(),
-                stdout: container_stdout.display().to_string(),
-                stderr: container_stdout.display().to_string(),
-                checkpoint: None,
-                options: None,
-                runtime_path: String::new(),
-            })
+            .create(
+                containerd_services::CreateTaskRequest {
+                    container_id: container.clone(),
+                    rootfs: mounts,
+                    terminal: false,
+                    stdin: String::new(),
+                    // stdout: container_stdout.display().to_string(),
+                    // stderr: container_stdout.display().to_string(),
+                    stdout: todo!(),
+                    stderr: todo!(),
+                    checkpoint: None,
+                    options: None,
+                    runtime_path: String::new(),
+                }
+                .with_lease(lease),
+            )
             .await?
             .into_inner();
 
@@ -511,22 +620,7 @@ impl Client {
 
         drop(exec_lock);
 
-        let stdout_result = stdout_future
-            .await
-            .map_err(|err| RuntimeError::internal(err.to_string()))??;
-
-        let _ = self
-            .containerd
-            .tasks()
-            .delete(containerd_services::DeleteTaskRequest {
-                container_id: container.clone(),
-            })
-            .await;
-        let _ = self
-            .containerd
-            .containers()
-            .delete(containerd_services::DeleteContainerRequest { id: container })
-            .await;
+        let stdout_result = todo!();
 
         log::debug!("Got exit code {exit_code}");
         if exit_code == 0 {
@@ -542,10 +636,11 @@ impl Client {
 
     /// Create a container according to the given container state and the given command and returns
     /// its id
-    async fn create_cotnainer(
+    async fn create_container(
         &self,
         state: &ContainerState,
         cmd: String,
+        lease: &str,
     ) -> Result<String, RuntimeError> {
         let container = uuid::Uuid::new_v4().to_string();
 
@@ -555,37 +650,49 @@ impl Client {
 
         let mut process = oci_spec::runtime::Process::default();
         process.set_args(Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), cmd]));
+        process.set_env(Some(
+            state
+                .config
+                .env
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect(),
+        ));
+        process.set_cwd(state.config.working_dir.clone());
 
         log::debug!("Creating container {container}");
         self.containerd
             .containers()
-            .create(containerd_services::CreateContainerRequest {
-                container: Some(containerd_services::Container {
-                    id: container.clone(),
-                    snapshotter: SNAPSHOTER.to_owned(),
-                    snapshot_key: (*state.snapshot).to_owned(),
-                    runtime: Some(containerd_services::container::Runtime {
-                        name: "io.containerd.runc.v2".to_owned(),
-                        options: None,
+            .create(
+                containerd_services::CreateContainerRequest {
+                    container: Some(containerd_services::Container {
+                        id: container.clone(),
+                        snapshotter: SNAPSHOTER.to_owned(),
+                        snapshot_key: (*state.snapshot).to_owned(),
+                        runtime: Some(containerd_services::container::Runtime {
+                            name: "io.containerd.runc.v2".to_owned(),
+                            options: None,
+                        }),
+                        spec: Some(prost_types::Any {
+                            type_url: "types.containerd.io/opencontainers/runtime-spec/1/Spec"
+                                .to_owned(),
+                            value: serde_json::to_vec(
+                                &oci_spec::runtime::Spec::default()
+                                    .set_root(Some(root))
+                                    .set_process(Some(process)),
+                            )
+                            .map_err(|err| RuntimeError::internal(format!("{err}")))?,
+                        }),
+                        sandbox: String::new(),
+                        updated_at: None,
+                        labels: HashMap::new(),
+                        image: String::new(),
+                        created_at: None,
+                        extensions: HashMap::new(),
                     }),
-                    spec: Some(prost_types::Any {
-                        type_url: "types.containerd.io/opencontainers/runtime-spec/1/Spec"
-                            .to_owned(),
-                        value: serde_json::to_vec(
-                            &oci_spec::runtime::Spec::default()
-                                .set_root(Some(root))
-                                .set_process(Some(process)),
-                        )
-                        .map_err(|err| RuntimeError::internal(format!("{err}")))?,
-                    }),
-                    sandbox: String::new(),
-                    updated_at: None,
-                    labels: HashMap::new(),
-                    image: String::new(),
-                    created_at: None,
-                    extensions: HashMap::new(),
-                }),
-            })
+                }
+                .with_lease(lease),
+            )
             .await?;
 
         Ok(container)
@@ -611,22 +718,49 @@ impl Client {
     }
 
     /// Set the working directory of the container
-    pub async fn set_working_dir(
-        &self,
-        image: &ContainerState,
-        dir: &str,
-    ) -> Result<ContainerState, RuntimeError> {
-        todo!()
+    #[expect(
+        clippy::unused_self,
+        reason = "This struct is the api surface for this operation"
+    )]
+    pub fn set_working_dir(&self, state: &ContainerState, dir: &str) -> ContainerState {
+        let mut config = (*state.config).clone();
+        config.working_dir = config.working_dir.join(dir);
+        ContainerState {
+            snapshot: Rc::clone(&state.snapshot),
+            config: Rc::new(config),
+        }
     }
 
     /// Set a environment variable in the container
-    pub fn set_env_var(&self, image: &ContainerState, env: &str, value: &str) -> ContainerState {
-        todo!()
+    #[expect(
+        clippy::unused_self,
+        reason = "This struct is the api surface for this operation"
+    )]
+    pub fn set_env_var(
+        &self,
+        state: &ContainerState,
+        env: Rc<str>,
+        value: Rc<str>,
+    ) -> ContainerState {
+        let mut config = (*state.config).clone();
+        config.env.insert(env, value);
+        ContainerState {
+            snapshot: Rc::clone(&state.snapshot),
+            config: Rc::new(config),
+        }
     }
 
     /// Get a environment variable in the container
-    pub fn get_env_var(&self, image: &ContainerState, env: &str) -> Option<&str> {
-        todo!()
+    #[expect(
+        clippy::unused_self,
+        reason = "This struct is the api surface for this operation"
+    )]
+    pub fn get_env_var<'state>(
+        &self,
+        state: &'state ContainerState,
+        env: &str,
+    ) -> Option<&'state Rc<str>> {
+        state.config.env.get(env)
     }
 
     /// Delete a image.
@@ -903,10 +1037,7 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let base = containerd_client
-            .set_working_dir(&base, "/testing")
-            .await
-            .expect("Failed to set working dir");
+        let base = containerd_client.set_working_dir(&base, "/testing");
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
@@ -974,22 +1105,31 @@ mod tests {
             .exec(&image, "mkdir -p /foo/bar".to_owned())
             .await
             .expect("Exec failed");
-        let image = containerd_client
-            .set_working_dir(&image, "/foo")
-            .await
-            .expect("Failed to set working dir");
+        let image = containerd_client.set_working_dir(&image, "/foo");
         containerd_client
             .exec(&image, "ls bar".to_owned())
             .await
             .expect("Exec failed");
 
+        let image = containerd_client.set_working_dir(&image, "./bar");
         let working_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
             .await
             .expect("Exec failed");
         assert_eq!(
-            working_dir_pwd,
-            "/foo".to_owned(),
+            working_dir_pwd.trim(),
+            "/foo/bar".to_owned(),
+            "pwd reported wrong working directory"
+        );
+
+        let image = containerd_client.set_working_dir(&image, "/app");
+        let working_absolute_dir_pwd = containerd_client
+            .exec_get_output(&image, "pwd".to_owned())
+            .await
+            .expect("Exec failed");
+        assert_eq!(
+            working_absolute_dir_pwd.trim(),
+            "/app".to_owned(),
             "pwd reported wrong working directory"
         );
     }
@@ -1003,9 +1143,9 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let image = containerd_client.set_env_var(&image, "HELLO", "WORLD");
+        let image = containerd_client.set_env_var(&image, "HELLO".into(), "WORLD".into());
         let exec = containerd_client
-            .exec_get_output(&image, "echo $HELLO".to_owned())
+            .exec_get_output(&image, "echo -n $HELLO".to_owned())
             .await
             .expect("Exec failed");
         let get_env = containerd_client
@@ -1013,7 +1153,7 @@ mod tests {
             .expect("Env var not found");
 
         assert_eq!(exec, "WORLD", "echo $HELLO");
-        assert_eq!(get_env, "WORLD", "get_env");
+        assert_eq!(get_env.as_ref(), "WORLD", "get_env");
     }
 
     // #[rstest]

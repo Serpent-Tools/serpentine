@@ -1,4 +1,4 @@
-#![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
+#![doc = include_str!(concat!("../../", std::env!("CARGO_PKG_README")))]
 
 use std::borrow::Cow;
 use std::io::IsTerminal;
@@ -339,7 +339,7 @@ mod tests {
 
     #[rstest]
     #[test_log::test]
-    fn live_examples(#[files("test_cases/live/**/*.snek")] path: PathBuf) {
+    fn live_examples(#[files("../test_cases/live/**/*.snek")] path: PathBuf) {
         let graph =
             crate::snek::compile_graph(&path, "DEFAULT").expect("Failed to compile pipeline");
         let cli = crate::Run {

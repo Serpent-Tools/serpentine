@@ -527,7 +527,7 @@ async fn with_working_dir(
     container: containerd::ContainerState,
     dir: Rc<str>,
 ) -> Result<containerd::ContainerState, RuntimeError> {
-    context.containerd.set_working_dir(&container, &dir).await
+    Ok(context.containerd.set_working_dir(&container, &dir))
 }
 
 /// Set a environment variable.
@@ -537,7 +537,7 @@ async fn env(
     env: Rc<str>,
     value: Rc<str>,
 ) -> Result<containerd::ContainerState, RuntimeError> {
-    Ok(context.containerd.set_env_var(&container, &env, &value))
+    Ok(context.containerd.set_env_var(&container, env, value))
 }
 
 /// A node for joining strings
