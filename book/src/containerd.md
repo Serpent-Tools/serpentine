@@ -41,9 +41,6 @@ sequenceDiagram
     docker_hub ->> serpentine : Image manifest
 
     par each layer
-        serpentine ->> containerd : Get layer 
-        containerd ->> serpentine : Ok or Error
-
         opt if missing
             serpentine ->> docker_hub : download layer
             docker_hub ->> serpentine : Layer data (Streaming)
@@ -53,11 +50,13 @@ sequenceDiagram
         end
     end
 
-    serpentine ->> containerd : Prepare snapshot
     loop each layer
-        serpentine ->> containerd : Apply layer
+        opt if mising 
+            serpentine ->> containerd : Prepare snapshot
+            serpentine ->> containerd : Apply layer
+            serpentine ->> containerd : Commit snapshot
+        end
     end
-    serpentine ->> containerd : Commit snapshot
 ```
 
 ## Running Containers

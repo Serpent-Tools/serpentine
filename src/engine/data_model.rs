@@ -59,7 +59,7 @@ impl Data {
     /// Used by caching system to know if a docker state is delete externally for example.
     pub async fn health_check(&self, containerd: &containerd::Client) -> bool {
         if let Self::Container(state) = self {
-            containerd.exists(state).await
+            containerd.healthcheck(state).await
         } else {
             true
         }

@@ -1,7 +1,6 @@
 FROM debian:bookworm-slim as install
 ARG CONTAINERD_VERSION=2.2.1
 ARG RUNC_VERSION=v1.4.0
-ARG APT_PACKAGES="ca-certificates curl iproute2"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
