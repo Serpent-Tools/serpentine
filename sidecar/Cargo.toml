@@ -1,0 +1,15 @@
+[package]
+name = "sidecar"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+log = "0.4.29"
+simple_logger = { version = "5.1.0", default-features = false }
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "net", "io-util", "fs"] }
+nix = { version = "0.30.1", features = ["fs"] }
+uuid = { version = "1.18.1", features = ["v4"] }
+
+[lints]
+workspace = true

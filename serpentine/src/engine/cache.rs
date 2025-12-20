@@ -1,10 +1,9 @@
 //! A content addressable cache.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use sha2::Digest;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::engine::data_model::{Data, NodeKindId};
 use crate::engine::{RuntimeError, containerd};
@@ -63,6 +62,23 @@ impl CacheKey<'_> {
     }
 }
 
+/// A external cache is data stored in another service like a docker volume that our cache system
+/// needs to take into account.
+pub trait ExternalCache {
+    /// Export data from the external cache to this file
+    async fn export(
+        &self,
+        values: impl IntoIterator<Item = &Data>,
+        file: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> Result<(), RuntimeError>;
+
+    /// Import data from the given file to this external cache
+    async fn import(&self, file: &mut (impl AsyncRead + Unpin + Send)) -> Result<(), RuntimeError>;
+
+    /// Delete the given data from this external cache
+    async fn cleanup(&self, data: Data);
+}
+
 /// A hashmap storing the cache data
 type CacheHashMap = HashMap<[u8; 32], Data>;
 
@@ -86,13 +102,10 @@ impl Cache {
 
     /// Load the cache from the given path.
     pub async fn load_cache(
-        cache_file: &Path,
-        containerd: &containerd::Client,
+        file: &mut (impl AsyncRead + Unpin + Send),
+        external: &impl ExternalCache,
     ) -> Result<Self, RuntimeError> {
-        log::info!("Attempting to load cache from {}", cache_file.display());
-        let file = tokio::fs::File::open(cache_file).await?;
-        let mut file = tokio::io::BufReader::new(file);
-
+        log::info!("Attempting to load cache");
         let version = file.read_u8().await?;
         if version != CACHE_COMPATIBILITY_VERSION {
             return Err(RuntimeError::CacheOutOfDate {
@@ -121,7 +134,7 @@ impl Cache {
 
         if has_standalone_cache == 1 {
             log::info!("Loading standalone cache");
-            containerd.import(file).await?;
+            external.import(file).await?;
         } else {
             log::info!("No standalone cache found.");
             debug_assert_eq!(has_standalone_cache, 0, "hash_standalone_cache not 0 or 1");
@@ -139,18 +152,12 @@ impl Cache {
     /// Returns a vector of stale data that can be safely deleted.
     pub async fn save_cache(
         self,
-        cache_file: &Path,
-        containerd: &containerd::Client,
+        file: &mut (impl AsyncWrite + Unpin + Send),
+        external: &impl ExternalCache,
         keep_old_cache: bool,
         export_standalone: bool,
     ) -> Result<(), RuntimeError> {
-        log::info!("Saving cache to {}", cache_file.display());
-        if let Some(parent) = cache_file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = tokio::fs::File::create(cache_file).await?;
-        let mut file = tokio::io::BufWriter::new(file);
-
+        log::info!("Saving cache");
         file.write_all(&[CACHE_COMPATIBILITY_VERSION]).await?;
 
         let Self {
@@ -168,7 +175,7 @@ impl Cache {
                 .into_values()
                 .filter(|value| !in_use.contains(value))
             {
-                value.cleanup(containerd).await;
+                external.cleanup(value).await;
             }
         }
 
@@ -186,16 +193,8 @@ impl Cache {
 
         if export_standalone {
             file.write_all(&[1]).await?;
-
-            let images = cache.values().filter_map(|data| {
-                if let Data::Container(image) = data {
-                    Some(image)
-                } else {
-                    None
-                }
-            });
             log::info!("Exporting standalone cache");
-            containerd.export(images, &mut file).await?;
+            external.export(cache.values(), file);
         } else {
             file.write_all(&[0]).await?;
         }
@@ -231,18 +230,36 @@ impl Cache {
 }
 
 #[cfg(test)]
-#[cfg(feature = "_test_docker")]
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use rstest::{fixture, rstest};
 
     use super::*;
 
+    struct DummyExternal;
+
+    impl ExternalCache for DummyExternal {
+        async fn export(
+            &self,
+            _values: impl IntoIterator<Item = &Data>,
+            _file: &mut (impl AsyncWrite + Unpin + Send),
+        ) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        async fn import(
+            &self,
+            _file: &mut (impl AsyncRead + Unpin + Send),
+        ) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        async fn cleanup(&self, _data: Data) {}
+    }
+
     #[fixture]
-    async fn containerd_client() -> containerd::Client {
-        containerd::Client::new(crate::tui::TuiSender(None), 1)
-            .await
-            .expect("Failed to create Docker client")
+    fn external() -> impl ExternalCache {
+        DummyExternal
     }
 
     #[tokio::test]
@@ -250,13 +267,11 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn save_and_load_one_entry(
-        #[future] containerd_client: containerd::Client,
+        external: impl ExternalCache,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let containerd_client = containerd_client.await;
-
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -266,16 +281,14 @@ mod tests {
         let mut cache = Cache::new();
         cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new().unwrap();
-        let cache_file = cache_file.path();
+        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
-            .save_cache(cache_file, &containerd_client, false, false)
+            .save_cache(&mut cache_file, &external, false, false)
             .await
             .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         let loaded_value = loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
@@ -288,11 +301,9 @@ mod tests {
     #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 5, ..Default::default()})]
     #[test_log::test]
     async fn save_and_load_multiple_entries(
-        #[future] containerd_client: containerd::Client,
+        external: impl ExternalCache,
         #[ignore] values: Vec<(NodeKindId, Vec<Data>, Data)>,
     ) {
-        let containerd_client = containerd_client.await;
-
         let mut cache = Cache::new();
         for (node, data, value) in &values {
             let data = data.iter().collect::<Vec<_>>();
@@ -304,16 +315,14 @@ mod tests {
             cache.insert(key.sha256().unwrap(), value.clone());
         }
 
-        let cache_file = tempfile::NamedTempFile::new().unwrap();
-        let cache_file = cache_file.path();
+        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
-            .save_cache(cache_file, &containerd_client, false, false)
+            .save_cache(&mut cache_file, &external, false, false)
             .await
             .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
 
         for (node, data, _) in &values {
             let data = data.iter().collect::<Vec<_>>();
@@ -337,13 +346,11 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn if_cache_used_should_always_be_kept(
-        #[future] containerd_client: containerd::Client,
+        external: impl ExternalCache,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let containerd_client = containerd_client.await;
-
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -353,30 +360,29 @@ mod tests {
         let mut cache = Cache::new();
         cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new().unwrap();
-        let cache_file = cache_file.path();
+        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
-            .save_cache(cache_file, &containerd_client, false, false)
+            .save_cache(&mut cache_file, &external, false, false)
             .await
             .unwrap();
 
-        let mut loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
 
         // Even tho `keep_old_cache` is false it should still keep the entry in there since we used
         // it.
+        cache_file.set_position(0);
+        cache_file.get_mut().clear();
         loaded_cache
-            .save_cache(cache_file, &containerd_client, false, false)
+            .save_cache(&mut cache_file, &external, false, false)
             .await
             .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         second_loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
@@ -387,13 +393,11 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn old_entry_cleared_if_not_used(
-        #[future] containerd_client: containerd::Client,
+        external: impl ExternalCache,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let containerd_client = containerd_client.await;
-
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -403,24 +407,24 @@ mod tests {
         let mut cache = Cache::new();
         cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new().unwrap();
-        let cache_file = cache_file.path();
+        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
-            .save_cache(cache_file, &containerd_client, false, false)
+            .save_cache(&mut cache_file, &external, false, false)
             .await
             .unwrap();
 
-        let loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
+
+        cache_file.set_position(0);
+        cache_file.get_mut().clear();
         loaded_cache
-            .save_cache(cache_file, &containerd_client, false, false)
+            .save_cache(&mut cache_file, &external, false, false)
             .await
             .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         let result = second_loaded_cache.get(&key.sha256().unwrap());
         assert!(result.is_none(), "unused old_cache value was saved.");
     }
@@ -430,13 +434,11 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn old_entry_kept_if_keep_old_true_even_if_not_used(
-        #[future] containerd_client: containerd::Client,
+        external: impl ExternalCache,
         #[ignore] node: NodeKindId,
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let containerd_client = containerd_client.await;
-
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
@@ -446,59 +448,26 @@ mod tests {
         let mut cache = Cache::new();
         cache.insert(key.sha256().unwrap(), value.clone());
 
-        let cache_file = tempfile::NamedTempFile::new().unwrap();
-        let cache_file = cache_file.path();
+        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
-            .save_cache(cache_file, &containerd_client, false, false)
+            .save_cache(&mut cache_file, &external, false, false)
             .await
             .unwrap();
 
-        let loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
+
+        cache_file.set_position(0);
+        cache_file.get_mut().clear();
         loaded_cache
-            .save_cache(cache_file, &containerd_client, true, false)
+            .save_cache(&mut cache_file, &external, true, false)
             .await
             .unwrap();
 
-        let mut second_loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
+        cache_file.set_position(0);
+        let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         second_loaded_cache
             .get(&key.sha256().unwrap())
             .expect("Value not found");
-    }
-
-    #[tokio::test]
-    #[rstest]
-    #[test_log::test]
-    async fn export_standalone_to_existing_file(#[future] containerd_client: containerd::Client) {
-        let containerd_client = containerd_client.await;
-
-        let mut cache = Cache::new();
-        let image = containerd_client
-            .pull_image("quay.io/toolbx-images/alpine-toolbox:latest")
-            .await
-            .unwrap();
-        cache.insert([0; 32], Data::Container(image));
-
-        let cache_file = tempfile::NamedTempFile::new().unwrap();
-        let cache_file = cache_file.path();
-        cache
-            .save_cache(cache_file, &containerd_client, true, true)
-            .await
-            .unwrap();
-
-        let loaded_cache = Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
-        loaded_cache
-            .save_cache(cache_file, &containerd_client, true, true)
-            .await
-            .unwrap();
-
-        Cache::load_cache(cache_file, &containerd_client)
-            .await
-            .unwrap();
     }
 }

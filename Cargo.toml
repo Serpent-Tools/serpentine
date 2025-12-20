@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["serpentine", "serpentine_sidecar"]
+members = ["serpentine", "sidecar"]
 
 [profile.release]
 opt-level = 3

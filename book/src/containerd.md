@@ -1,24 +1,21 @@
 # Containerd
 
-> [!NOTE]
-> Currently serpentine is linux only due to some limitations connected to docker on windows/mac running containers in a vm.
-> This is planned to be worked around using a sidecar container in the future.
-
 Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [Buikit](https://github.com/moby/buildkit) does, this page documents the the high level flow of the code in `src/engine/containerd.rs`.
 
 ## Running containerd
-Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github.
-
-### Linux
-On linux serpentine speaks to containerd directly over a unix socket.
+Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github, as well as `tini`.
+It also loads up a small `sidecar` proxy that primarly proxies a tcp port to the containerd unix socket, but also executes a few smaller tasks in the container, for example setting up and streaming stdout and stderr pipes.
 
 ```mermaid
 flowchart LR
-    subgraph Docker/Podman
-        Containerd
+    subgraph Docker 
+        Sidecar <-- containerd.sock --> Containerd
     end
-    Serpentine <-- "containerd.sock" --> Containerd 
+    Serpentine <-- 8000/tcp --> Sidecar
 ```
+
+> [!NOTE]
+> The blow diagrams leave out the proxy if the instruction port isnt used.
 
 ## Snapshots
 Snapshots are essentially a docker layer, they are modification to the file system.
@@ -77,6 +74,9 @@ sequenceDiagram
     serpentine ->> containerd : Create new snapshot
     serpentine <<->> containerd : Get mounts for snapshot
     serpentine ->> containerd : Create new container
+
+    note over serpentine : Set up stdout streaming (see below)
+
     serpentine ->> containerd : Create new task
     activate containerd
     serpentine ->> containerd : Start task
@@ -88,24 +88,32 @@ sequenceDiagram
     containerd ->> serpentine : Exit code
     deactivate containerd
 
-    serpentine ->> containerd : Delete container
     serpentine ->> containerd : Commit Snapshot
 ```
 
-### Linux
-On linux uses the same mount where it mounts its socket to also mount in fifo pipes into containerd which the spawned container uses to stream its stdout/stderr to serpentine
+### Getting Stdout/Stderr
+
+Containerd only exposes stdout/stderr via unix fifo pipe files, hence the sidecar will construct the files, and return the internal file path to serpentine (which will then inform containerd of them), and then start streaming any data on the pipes to serpentine.
 
 ```mermaid
 sequenceDiagram
     participant containerd
     participant serpentine
+    participant sidecar
     participant process
 
-    note over serpentine : mkfifo(/tmp/serpentine/XYZ)
-    serpentine ->> containerd : /run/serpentine/XYZ
+    note over serpentine,containerd: over sidecard proxy
+
+    serpentine ->>+ sidecar : Create stdout stream
+    note over sidecar : mkfifo(/run/serpentine/XYZ)
+    sidecar ->> serpentine : /run/serpentine/XYZ
+    serpentine ->> containerd : CreateTask(stdout=/run/serpentine/XYZ)
+    serpentine ->> containerd : StartTask
     containerd ->> process : start process
     loop until done
-        note over serpentine,process: using fifo pipes
-        process ->> serpentine: output
+        note over sidecar,process: using fifo pipes
+        process ->> sidecar: output
+        sidecar ->> serpentine: output
     end
+    deactivate sidecar
 ```

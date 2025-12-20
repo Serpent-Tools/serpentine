@@ -16,3 +16,4 @@
 - [Scheduler]()
 - [Caching]()
 - [Containerd](./containerd.md)
+- [Sidecar](./sidecar.md)

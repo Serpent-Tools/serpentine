@@ -8,7 +8,3 @@ test-group = "docker"
 [[profile.default.overrides]]
 filter = "test(tests::live_examples::)"
 test-group = "docker"
-
-[[profile.default.overrides]]
-filter = "test(engine::cache::)"
-test-group = "docker"
