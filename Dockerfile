@@ -23,15 +23,15 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release -p serpentine_sidecar --recipe-path recipe.json
+RUN cargo chef cook --release -p sidecar --recipe-path recipe.json
 COPY . .
-RUN cargo build --release -p serpentine_sidecar
+RUN cargo build --release -p sidecar
 
 FROM gcr.io/distroless/base-debian13
 COPY --from=download /containerd /usr/local
 COPY --from=download /runc /usr/local/sbin/runc
 COPY --from=download /tini /usr/local/bin/tini
-COPY --from=builder /app/target/release/serpentine_sidecar /usr/local/bin
+COPY --from=builder /app/target/release/sidecar /usr/local/bin
 
 EXPOSE 8000
-ENTRYPOINT ["/usr/local/bin/tini", "--", "/usr/local/bin/serpentine_sidecar"]
+ENTRYPOINT ["/usr/local/bin/tini", "--", "/usr/local/bin/sidecar"]

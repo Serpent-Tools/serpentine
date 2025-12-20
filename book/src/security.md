@@ -7,15 +7,4 @@
 While serpentine does run workflows in containers it makes no guarantee about what privliges and level of isolation it grants them.
 In general it should be assumed that a malicous serpentine pipeline can escape the containers and damage your system.
 
-## What does serpentine protect against and what does it not?
-
-However this does not mean serpentine isnt commited to security in general, its just important to understand that treath model:
-
-### Serpentine does not protect against
-* Malicous pipelines
-* Malicous processes hijacking it containerd socket. (which is always stored at the same well known location.)
-* Malicous processes connecting to its `Envoy` proxy
-
-### Serpetnien does prevent
-* Browsers connecting to its `Envoy` proxy.
-* Lan devices (non-`127.0.0.1`) connecting to its `Envoy` proxy.
+In addition serpentine does expose a priviliged docker container over tcp on your system (bound to localhost), it essential has the same access as a process with access to docker has, wether this is a actual concern or not depends on your environment, but for most users this is not a concern as they either already give their non-root users docker access, or in general its assumed you arent running malicous code on your own machine.

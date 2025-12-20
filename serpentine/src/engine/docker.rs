@@ -4,13 +4,12 @@
 //! On windows/mac uses Envoy to provide a http api to containerd.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::process::Command;
 
 use bollard::API_DEFAULT_VERSION;
 use futures_util::StreamExt;
 
-use crate::engine::RuntimeError;
+use crate::engine::{RuntimeError, sidecar_client};
 
 /// The name of the containerd deamon serpetnine spawns.
 const CONTAINER_NAME: &str = "serpent-tools.containerd";
@@ -30,7 +29,7 @@ const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
 
 /// Create a new containerd client, by either connecting to a esisting container or spinning up a
 /// new one.
-pub async fn connect() -> Result<containerd_client::Client, RuntimeError> {
+pub async fn connect() -> Result<sidecar_client::Client, RuntimeError> {
     let docker = connect_docker()
         .await
         .map_err(|err| RuntimeError::DockerNotFound {
@@ -38,18 +37,7 @@ pub async fn connect() -> Result<containerd_client::Client, RuntimeError> {
         })?;
 
     let containerd_addr = spin_up_containerd(docker).await?;
-    log::info!("Connecting to serpentine sidecar at {containerd_addr:?}",);
-    let containerd_connection = containerd_client::tonic::transport::Endpoint::from_shared(
-        format!("tcp://{containerd_addr}"),
-    )?
-    .connect()
-    .await?;
-    let containerd = containerd_client::Client::from(containerd_connection);
-
-    let version = containerd.version().version(()).await?.into_inner().version;
-    log::debug!("containerd version {version}");
-
-    Ok(containerd)
+    Ok(sidecar_client::Client::new(containerd_addr))
 }
 
 /// Attempt to connect to docker

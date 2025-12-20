@@ -1,6 +1,6 @@
 //! Wrapper around bollard Docker API client
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -8,10 +8,12 @@ use std::rc::Rc;
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::{StreamExt, TryStreamExt};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::sync::Mutex;
 
-use crate::engine::RuntimeError;
+use crate::engine::cache::ExternalCache;
 use crate::engine::data_model::FileSystem;
+use crate::engine::{RuntimeError, sidecar_client};
 use crate::tui::TuiSender;
 
 /// The snapshoter to use for containers.
@@ -19,7 +21,6 @@ const SNAPSHOTER: &str = "overlayfs";
 
 /// Connfiguration for the container
 #[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerConfig {
     /// Environment
     env: HashMap<Rc<str>, Rc<str>>,
@@ -58,7 +59,6 @@ impl From<oci_client::config::Config> for ContainerConfig {
 
 /// A reference to a specific state of a container.
 #[derive(Clone, Hash, Eq, PartialEq, Debug, bincode::Encode, bincode::Decode)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerState {
     /// The snapshot to use for the container
     snapshot: Rc<str>,
@@ -160,16 +160,30 @@ where
     }
 }
 
+/// A resource that might be left hanging on operation abort, should be cleared out at shutdown
+#[derive(PartialEq, Eq, Hash)]
+enum DanglingResource {
+    /// A lease, this dangling would lead to gc holding onto uneeded data
+    Lease(Box<str>),
+    /// A task, this danlging would leave processes running that arent useful anymore.
+    /// This holds the container id
+    Task(Box<str>),
+}
+
 /// A docker client wrapper
 pub struct Client {
     /// containerd client
     containerd: ContainerdRootClient,
+    /// Client to the sidecar
+    sidecar: sidecar_client::Client,
     /// Container registery client
     oci: oci_client::Client,
     /// Sender to the TUI
     tui: TuiSender,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
+    /// Dangling resources
+    dangling: Mutex<HashSet<DanglingResource>>,
 }
 
 impl Client {
@@ -181,11 +195,26 @@ impl Client {
             ..Default::default()
         });
 
+        let sidecar = crate::engine::docker::connect().await?;
+        let containerd =
+            containerd_client::tonic::transport::Endpoint::from_static("http://[::]:0")
+                .connect_with_connector(tower::service_fn(move |_| async move {
+                    sidecar
+                        .containerd()
+                        .await
+                        .map_err(std::io::Error::other)
+                        .map(hyper_util::rt::TokioIo::new)
+                }))
+                .await?;
+        let containerd = containerd_client::Client::from(containerd);
+
         Ok(Self {
-            containerd: ContainerdRootClient(crate::engine::docker::connect().await?),
+            sidecar,
+            containerd: ContainerdRootClient(containerd),
             oci,
             tui,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
+            dangling: Mutex::new(HashSet::new()),
         })
     }
 
@@ -204,6 +233,11 @@ impl Client {
     /// Create a new lease
     async fn new_lease(&self) -> Result<String, RuntimeError> {
         let lease = uuid::Uuid::new_v4().to_string();
+        self.dangling
+            .lock()
+            .await
+            .insert(DanglingResource::Lease(lease.clone().into()));
+
         self.containerd
             .leases()
             .create(containerd_services::CreateRequest {
@@ -223,6 +257,10 @@ impl Client {
                 sync: false,
             })
             .await?;
+        self.dangling
+            .lock()
+            .await
+            .remove(&DanglingResource::Lease(lease.into()));
         Ok(())
     }
 
@@ -573,6 +611,13 @@ impl Client {
             .into_inner()
             .mounts;
 
+        let (stdout_path, mut stdout) = self.sidecar.fifo_pipe().await?;
+        let stdout = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            let mut result = String::new();
+            stdout.read_to_string(&mut result).await?;
+            Ok::<_, RuntimeError>(result)
+        }));
+
         log::debug!("Creating task in {container}");
         self.containerd
             .tasks()
@@ -582,10 +627,8 @@ impl Client {
                     rootfs: mounts,
                     terminal: false,
                     stdin: String::new(),
-                    // stdout: container_stdout.display().to_string(),
-                    // stderr: container_stdout.display().to_string(),
-                    stdout: todo!(),
-                    stderr: todo!(),
+                    stdout: stdout_path.clone(),
+                    stderr: stdout_path.clone(),
                     checkpoint: None,
                     options: None,
                     runtime_path: String::new(),
@@ -619,17 +662,23 @@ impl Client {
             .exit_status;
 
         drop(exec_lock);
+        self.dangling
+            .lock()
+            .await
+            .remove(&DanglingResource::Task(container.into()));
 
-        let stdout_result = todo!();
+        let stdout = stdout
+            .await
+            .map_err(|_| RuntimeError::internal("Failed to join task"))??;
 
         log::debug!("Got exit code {exit_code}");
         if exit_code == 0 {
-            Ok(stdout_result)
+            Ok(stdout)
         } else {
             Err(RuntimeError::CommandExecution {
                 code: exit_code.into(),
                 command: cmd,
-                output: stdout_result,
+                output: stdout,
             })
         }
     }
@@ -643,6 +692,10 @@ impl Client {
         lease: &str,
     ) -> Result<String, RuntimeError> {
         let container = uuid::Uuid::new_v4().to_string();
+        self.dangling
+            .lock()
+            .await
+            .insert(DanglingResource::Task(container.clone().into()));
 
         let mut root = oci_spec::runtime::Root::default();
         root.set_path(PathBuf::from("rootfs"));
@@ -763,32 +816,61 @@ impl Client {
         state.config.env.get(env)
     }
 
-    /// Delete a image.
-    /// This should only be used during cleanup.
-    ///
-    /// This ignores error (just logs them), as its intended for cleanup.
-    pub async fn delete_state(&self, image: &ContainerState) {
+    /// Shutdown any dangling references
+    pub async fn shutdown(self) {
+        for dangling in &*self.dangling.lock().await {
+            match dangling {
+                DanglingResource::Lease(lease) => {
+                    let _ = self
+                        .containerd
+                        .leases()
+                        .delete(containerd_services::DeleteRequest {
+                            id: lease.to_string(),
+                            sync: false,
+                        })
+                        .await;
+                }
+                DanglingResource::Task(container) => {
+                    let _ = self
+                        .containerd
+                        .tasks()
+                        .kill(containerd_services::KillRequest {
+                            container_id: container.to_string(),
+                            exec_id: String::new(),
+                            signal: 9, // kill
+                            all: true,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+}
+
+impl ExternalCache for Client {
+    async fn cleanup(&self, data: super::data_model::Data) {
         todo!()
     }
 
-    /// Export the given images to the target file
-    pub async fn export<Target>(
+    async fn export(
         &self,
-        images: impl Iterator<Item = &ContainerState>,
-        mut target: Target,
-    ) -> Result<(), RuntimeError>
-    where
-        Target: AsyncWrite + Unpin,
-    {
-        todo!()
-    }
-
-    /// Import the given docker export to this docker client.
-    pub async fn import(
-        &self,
-        mut file: impl AsyncRead + Send + Unpin + 'static,
+        values: impl IntoIterator<Item = &super::data_model::Data>,
+        file: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<(), RuntimeError> {
         todo!()
+    }
+
+    async fn import(&self, file: &mut (impl AsyncRead + Send + Unpin)) -> Result<(), RuntimeError> {
+        todo!()
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let dangling_count = self.dangling.get_mut().len();
+        if dangling_count != 0 {
+            log::warn!("Leaving {dangling_count} dangling resources running in contained.")
+        }
     }
 }
 
@@ -951,6 +1033,42 @@ mod tests {
             .exec(&image, "cat hello.txt".to_owned())
             .await
             .expect_err("File was created in filesystem when it shouldnt have been");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn exec_non_utf8(#[future] containerd_client: Client) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        containerd_client
+            .exec(&image, r"printf '\xff\xfe\xfa'".to_owned())
+            .await
+            .expect(
+                "Exec failed on non-utf8 stdout, even tho we werent explictly capturing it here. ",
+            );
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn exec_output_non_utf8(#[future] containerd_client: Client) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let output = containerd_client
+            .exec_get_output(&image, r"printf '\xff\xfe\xfa'".to_owned())
+            .await;
+
+        assert!(
+            output.is_err(),
+            "No way to represent the non-utf8 data, so should be a error"
+        );
     }
 
     #[rstest]
@@ -1154,6 +1272,21 @@ mod tests {
 
         assert_eq!(exec, "WORLD", "echo $HELLO");
         assert_eq!(get_env.as_ref(), "WORLD", "get_env");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn network_access(#[future] containerd_client: Client) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        containerd_client
+            .exec(&image, "curl 1.1.1.1".to_owned())
+            .await
+            .expect("Exec failed");
     }
 
     // #[rstest]

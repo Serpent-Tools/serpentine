@@ -3,15 +3,14 @@
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crate::engine::containerd;
 use crate::engine::nodes::NodeImpl;
+use crate::engine::{RuntimeContext, containerd};
 
 /// The name of the file in the tar archives for `FileSystem` representing a single file.
 pub const FILE_SYSTEM_FILE_TAR_NAME: &str = "file";
 
 /// A exported filesystem
 #[derive(Hash, PartialEq, Eq, Clone, bincode::Encode, bincode::Decode)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum FileSystem {
     /// A tar entry containing a file name `FILE_SYSTEM_FILE_TAR_NAME` at `/{FILE_SYSTEM_FILE_TAR_NAME}`
     File(Rc<[u8]>),
@@ -37,8 +36,10 @@ pub enum Data {
     /// A string, usually a short literal
     String(Rc<str>),
     /// A docker container
+    #[cfg_attr(test, proptest(skip))]
     Container(containerd::ContainerState),
     /// A file/folder
+    #[cfg_attr(test, proptest(skip))]
     FileSystem(FileSystem),
 }
 
@@ -57,18 +58,11 @@ impl Data {
     /// Check if this data is still valid
     ///
     /// Used by caching system to know if a docker state is delete externally for example.
-    pub async fn health_check(&self, containerd: &containerd::Client) -> bool {
+    pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
         if let Self::Container(state) = self {
-            containerd.healthcheck(state).await
+            ctx.containerd.healthcheck(state).await
         } else {
             true
-        }
-    }
-
-    /// Cleanup this data
-    pub async fn cleanup(self, containerd: &containerd::Client) {
-        if let Self::Container(state) = self {
-            containerd.delete_state(&state).await;
         }
     }
 }

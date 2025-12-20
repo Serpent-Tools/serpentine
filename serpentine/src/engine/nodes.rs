@@ -77,10 +77,7 @@ pub trait NodeImpl {
                     scheduler.context().cache.lock().await.get(&key).cloned()
             {
                 log::debug!("Cache hit on {}", self.describe());
-                if cached_value
-                    .health_check(&scheduler.context().containerd)
-                    .await
-                {
+                if cached_value.healthcheck(scheduler.context()).await {
                     return Ok(cached_value);
                 }
                 log::warn!("value {cached_value:?} failed health-check, not using cache.");

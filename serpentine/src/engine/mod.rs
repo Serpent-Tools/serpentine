@@ -6,6 +6,7 @@ pub mod data_model;
 mod docker;
 pub mod nodes;
 mod scheduler;
+mod sidecar_client;
 
 use std::path::Path;
 use std::rc::Rc;
@@ -122,17 +123,25 @@ pub struct RuntimeContext {
     cache: tokio::sync::Mutex<cache::Cache>,
 }
 
+/// Attempt to load the cache from the settings in the cli
+async fn load_cache_from_cli(
+    cli: &crate::Run,
+    external: &impl cache::ExternalCache,
+) -> Result<cache::Cache, RuntimeError> {
+    let mut cache_file = tokio::io::BufReader::new(tokio::fs::File::open(cli.get_cache()).await?);
+    cache::Cache::load_cache(&mut cache_file, external).await
+}
+
 impl RuntimeContext {
     /// Create a new runtime context
     async fn new(tui: TuiSender, cli: &crate::Run) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
 
-        let docker = containerd::Client::new(tui.clone(), cli.jobs).await?;
-
-        let cache = match cache::Cache::load_cache(&cli.get_cache(), &docker).await {
+        let containerd = containerd::Client::new(tui.clone(), cli.jobs).await?;
+        let cache = match load_cache_from_cli(cli, &containerd).await {
             Ok(cache) => {
                 log::info!("Cache loaded, deleting cache file");
-                std::fs::remove_file(cli.get_cache())?;
+                let _ = tokio::fs::remove_file(cli.get_cache()).await;
                 cache
             }
             Err(error) => {
@@ -143,7 +152,7 @@ impl RuntimeContext {
         };
 
         Ok(Self {
-            containerd: docker,
+            containerd,
             tui,
             cache: tokio::sync::Mutex::new(cache),
         })
@@ -154,20 +163,24 @@ impl RuntimeContext {
         log::debug!("Shutting down runtime context");
 
         let Self {
-            containerd: docker,
+            containerd,
             tui,
             cache,
         } = self;
         tui.send(TuiMessage::ShuttingDown);
-        let _ = cache
-            .into_inner()
-            .save_cache(
-                &cli.get_cache(),
-                &docker,
-                !cli.clean_old,
-                cli.standalone_cache,
-            )
-            .await;
+        if let Ok(cache_file) = tokio::fs::File::create(cli.get_cache()).await {
+            let _ = cache
+                .into_inner()
+                .save_cache(
+                    &mut tokio::io::BufWriter::new(cache_file),
+                    &containerd,
+                    !cli.clean_old,
+                    cli.standalone_cache,
+                )
+                .await;
+        }
+
+        containerd.shutdown().await;
     }
 }
 
@@ -219,19 +232,31 @@ pub fn run(
 }
 
 /// Clear out the given cache file
-pub fn clear_cache(cache_file: &Path) -> Result<(), RuntimeError> {
+pub fn clear_cache(file_path: &Path) -> Result<(), RuntimeError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| RuntimeError::internal("Failed to start tokio"))?
         .block_on(async move {
+            let cache_file_read = tokio::fs::File::open(file_path).await?;
+
             let docker = containerd::Client::new(TuiSender(None), 1).await?;
-            let cache = cache::Cache::load_cache(cache_file, &docker).await?;
+            let cache =
+                cache::Cache::load_cache(&mut tokio::io::BufReader::new(cache_file_read), &docker)
+                    .await?;
 
             // When `keep_old_cache` is set to false `save_cache` will clean out the data not used
             // this run, which is everything.
-            cache.save_cache(cache_file, &docker, false, false).await?;
-            std::fs::remove_file(cache_file)?;
+            let cache_file_write = tokio::fs::File::open(file_path).await?;
+            cache
+                .save_cache(
+                    &mut tokio::io::BufWriter::new(cache_file_write),
+                    &docker,
+                    false,
+                    false,
+                )
+                .await?;
+            tokio::fs::remove_file(file_path).await?;
 
             Ok::<_, RuntimeError>(())
         })?;
