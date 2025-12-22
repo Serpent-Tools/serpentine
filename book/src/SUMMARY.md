@@ -2,7 +2,7 @@
 
 - [Getting Started]()
 - [Cli]()
-- [Snek]()
+- [Snek](snek.md)
     - [Comparison with Dockerfile]()
 - [Caching]()
 - [Security](security.md)
@@ -12,8 +12,5 @@
 
 # Internals
 - [Contributing]()
-- [Compiler]()
-- [Scheduler]()
-- [Caching]()
 - [Containerd](./containerd.md)
 - [Sidecar](./sidecar.md)

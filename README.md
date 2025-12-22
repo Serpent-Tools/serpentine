@@ -12,7 +12,7 @@ Serpentine does **not** have the concept of jobs, pipelines, etc. it has the con
 This makes it trivially easy to share setup logic, parallelize workflows, etc.
 
 ```snek
-base = Image("rust:latest") > Copy(".", "/app") > Workdir("/app");
+base = Image("rust:latest") > With(FromHost("."), "/app") > Workdir("/app");
 
 test = base > Exec("cargo test");
 clippy = base > Exec("cargo clippy");
@@ -28,7 +28,7 @@ config:
   layout: elk
 ---
 flowchart TD
-    A["Image(rust:image)"] --> B["Copy(., /app)"]
+    A["Image(rust:image)"] --> B["With(FromHost(.), /app)"]
     B --> C["Workdir(/app)"]
     C --> D["Exec(cargo test)"] & E["Exec(cargo clippy)"] & F["Exec(cargo build)"]
     D -.-> F

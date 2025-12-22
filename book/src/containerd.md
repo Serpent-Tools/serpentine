@@ -15,7 +15,7 @@ flowchart LR
 ```
 
 > [!NOTE]
-> The blow diagrams leave out the proxy if the instruction port isnt used.
+> The blow diagrams leave out the proxy where it isnt relevant.
 
 ## Snapshots
 Snapshots are essentially a docker layer, they are modification to the file system.

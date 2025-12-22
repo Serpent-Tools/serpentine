@@ -11,7 +11,7 @@ All these apis are exposed on the containers `8000` ports, which gets mapped to 
 The socket expects the following as its first bytes:
 | Bytes | Content | Description |
 | :---: | ------- | ----------- |
-| 12    | `danger noodle` | This essentialy works as a header/magic bytes/verification step, it ensures that anything connecting to the socket is at the very least aware its talking to serpentine. This stops us from doing very bad stuff based on garbage data, and more importantly very effectively shuts down any potential for stuff like browsers to ever sucessfully connect to our socket as websites dont have low enough controll of the connection to prefix it with this string.|
+| 13    | `danger noodle` | This essentialy works as a header/magic bytes/verification step, it ensures that anything connecting to the socket is at the very least aware its talking to serpentine. This stops us from doing very bad stuff based on garbage data, and more importantly very effectively shuts down any potential for stuff like browsers to ever sucessfully connect to our socket as websites dont have low enough controll of the connection to prefix it with this string.|
 | 1 | 0-1 | The kind of the request  |
 
 After this the content is defined by the request kind specified

@@ -1,7 +1,4 @@
 //! Spin up containerd using the docker api.
-//!
-//! On linux uses a unix socket.
-//! On windows/mac uses Envoy to provide a http api to containerd.
 
 use std::collections::HashMap;
 use std::process::Command;

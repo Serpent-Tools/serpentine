@@ -1,4 +1,4 @@
-//! Wrapper around bollard Docker API client
+//! Wrapper around containerd API client and other container related operations
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
