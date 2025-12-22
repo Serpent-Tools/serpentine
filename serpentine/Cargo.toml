@@ -19,7 +19,6 @@ futures-util = { version = "0.3.31", default-features = false }
 bollard = { version = "0.19.3", default-features = false, features = ["http", "pipe"] }
 async-tar = { version = "0.5.1", default-features = false }
 containerd-client = { version = "0.8.0", default-features = false, features = ["connect"] }
-async-compat = "0.2.5"
 oci-client = { version = "0.15.0", default-features = false, features = ["rustls-tls"] }
 serde_json = "1.0.145"
 oci-spec = { version = "0.8.3", default-features = false, features = ["runtime"] }
