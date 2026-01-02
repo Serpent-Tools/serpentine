@@ -2,16 +2,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::iter::successors;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::{StreamExt, TryStreamExt};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use crate::engine::cache::ExternalCache;
+use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::data_model::FileSystem;
 use crate::engine::{RuntimeError, sidecar_client};
 use crate::tui::TuiSender;
@@ -20,7 +21,8 @@ use crate::tui::TuiSender;
 const SNAPSHOTER: &str = "overlayfs";
 
 /// Connfiguration for the container
-#[derive(Clone, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerConfig {
     /// Environment
     env: HashMap<Rc<str>, Rc<str>>,
@@ -33,12 +35,6 @@ impl Hash for ContainerConfig {
         state.write_u8(0);
     }
 }
-impl PartialEq for ContainerConfig {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-impl Eq for ContainerConfig {}
 
 impl From<oci_client::config::Config> for ContainerConfig {
     fn from(config: oci_client::config::Config) -> Self {
@@ -57,13 +53,100 @@ impl From<oci_client::config::Config> for ContainerConfig {
     }
 }
 
+impl CacheData for ContainerConfig {
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        writer
+            .write_u64_variable_length(self.env.len() as u64)
+            .await?;
+        for (key, value) in &self.env {
+            key.write(writer).await?;
+            value.write(writer).await?;
+        }
+
+        let working_dir = self.working_dir.as_os_str().to_string_lossy();
+        writer
+            .write_u64_variable_length(working_dir.len() as u64)
+            .await?;
+        writer.write_all(working_dir.as_bytes()).await?;
+
+        Ok(())
+    }
+
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        let mut env = HashMap::new();
+        let items = reader.read_u64_length_encoded().await?;
+        for _ in 0..items {
+            let key = Rc::<str>::read(reader).await?;
+            let value = Rc::<str>::read(reader).await?;
+            env.insert(key, value);
+        }
+
+        let length = reader
+            .read_u64_length_encoded()
+            .await?
+            .try_into()
+            .map_err(|_| RuntimeError::internal("Path length overflows usize for platform"))?;
+
+        let mut working_dir = vec![0; length];
+        reader.read_exact(&mut working_dir).await?;
+        let working_dir =
+            String::from_utf8(working_dir).map_err(|_| RuntimeError::internal("non-utf8 path"))?;
+        let working_dir = PathBuf::from(working_dir);
+
+        Ok(Self { env, working_dir })
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        for (key, value) in &self.env {
+            key.content_hash(hasher);
+            value.content_hash(hasher);
+        }
+
+        let working_dir = self.working_dir.as_os_str().to_string_lossy();
+        hasher.update(&(working_dir.len() as u64).to_le_bytes());
+        hasher.update(working_dir.as_bytes());
+    }
+}
+
 /// A reference to a specific state of a container.
-#[derive(Clone, Hash, Eq, PartialEq, Debug, bincode::Encode, bincode::Decode)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerState {
     /// The snapshot to use for the container
     snapshot: Rc<str>,
     /// The container config
     config: Rc<ContainerConfig>,
+}
+
+impl CacheData for ContainerState {
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        self.snapshot.write(writer).await?;
+        self.config.write(writer).await?;
+        Ok(())
+    }
+
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        let snapshot = Rc::<str>::read(reader).await?;
+        let config = Rc::<ContainerConfig>::read(reader).await?;
+        Ok(Self { snapshot, config })
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        self.snapshot.content_hash(hasher);
+
+        hasher.update(&(self.config.env.len() as u64).to_le_bytes());
+        self.config.content_hash(hasher);
+    }
 }
 
 /// Return the goarch of the current system.
@@ -524,15 +607,16 @@ impl Client {
             )
             .await?;
 
-        self.exec_internal(
-            &ContainerState {
-                snapshot: Rc::from(snapshot.clone()),
-                config: Rc::clone(&state.config),
-            },
-            cmd,
-            &lease,
-        )
-        .await?;
+        let _ = self
+            .exec_internal(
+                &ContainerState {
+                    snapshot: Rc::from(snapshot.clone()),
+                    config: Rc::clone(&state.config),
+                },
+                cmd,
+                &lease,
+            )
+            .await?;
 
         let new_snapshot = uuid::Uuid::new_v4().to_string();
         self.containerd
@@ -583,19 +667,21 @@ impl Client {
                 cmd,
                 &lease,
             )
-            .await?;
+            .await?
+            .map_err(|output| RuntimeError::NonUtf8Capture { output })?;
         self.drop_lease(lease).await?;
 
         Ok(output)
     }
 
     /// Execute a command on the given mutable snapshot, returning its stdout and stderr
+    /// The stdout will be wrapeed in `Ok` is all the data was utf-8, `Err` if not.
     async fn exec_internal(
         &self,
         state: &ContainerState,
         cmd: String,
         lease: &str,
-    ) -> Result<String, RuntimeError> {
+    ) -> Result<Result<String, String>, RuntimeError> {
         log::debug!("Prepearing to execute {cmd:?} in {state:?}");
         let container = self.create_container(state, cmd.clone(), lease).await?;
 
@@ -611,12 +697,11 @@ impl Client {
             .into_inner()
             .mounts;
 
-        let (stdout_path, mut stdout) = self.sidecar.fifo_pipe().await?;
-        let stdout = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
-            let mut result = String::new();
-            stdout.read_to_string(&mut result).await?;
-            Ok::<_, RuntimeError>(result)
-        }));
+        let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
+        let log_id = cmd.clone();
+        let stdout = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(Self::read_stdout(
+            stdout, log_id,
+        )));
 
         log::debug!("Creating task in {container}");
         self.containerd
@@ -669,7 +754,7 @@ impl Client {
 
         let stdout = stdout
             .await
-            .map_err(|_| RuntimeError::internal("Failed to join task"))??;
+            .map_err(|_| RuntimeError::internal("Failed to join task"))?;
 
         log::debug!("Got exit code {exit_code}");
         if exit_code == 0 {
@@ -678,7 +763,7 @@ impl Client {
             Err(RuntimeError::CommandExecution {
                 code: exit_code.into(),
                 command: cmd,
-                output: stdout,
+                output: stdout.unwrap_or_else(|data| data),
             })
         }
     }
@@ -749,6 +834,41 @@ impl Client {
             .await?;
 
         Ok(container)
+    }
+
+    /// Read the stdout to a String, returns `Err` if encountered non-utf (containg the output
+    /// without those lines), and `Ok` if all data was utf-8
+    async fn read_stdout(
+        stdout: impl AsyncRead + Unpin + Send + 'static,
+        log_id: String,
+    ) -> Result<String, String> {
+        let mut stdout = tokio::io::BufReader::new(stdout).lines();
+        let mut result = String::new();
+        let mut success = true;
+        loop {
+            match stdout.next_line().await {
+                Ok(None) => break,
+                Ok(Some(line)) => {
+                    let line = strip_ansi_escapes::strip_str(line);
+                    log::info!("{log_id}: {line}");
+                    if !result.is_empty() {
+                        result.push('\n');
+                    }
+                    result.push_str(&line);
+                }
+                Err(err) => {
+                    log::error!("Error reading stdout: {err:?}");
+                    success = false;
+
+                    if !result.is_empty() {
+                        result.push('\n');
+                    }
+                    result.push_str("<<NON_UTF8_ON_LINE>>");
+                }
+            }
+        }
+
+        if success { Ok(result) } else { Err(result) }
     }
 
     /// Copy the given file/directory into the container

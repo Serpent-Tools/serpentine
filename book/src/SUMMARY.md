@@ -12,5 +12,6 @@
 
 # Internals
 - [Contributing]()
-- [Containerd](./containerd.md)
-- [Sidecar](./sidecar.md)
+- [Caching](caching_internal.md)
+- [Containerd](containerd.md)
+- [Sidecar](sidecar.md)

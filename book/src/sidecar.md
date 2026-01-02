@@ -21,7 +21,6 @@ After this the content is defined by the request kind specified
 | Containerd Proxy | 0 |
 | Process Output | 1 |
 
-
 ## Containerd Proxy (`0`)
 Once this connection is established all further data on the socket will be proxied to `containerd.sock` (and any data from the unix socket is proxied back).
 Essentially after this point this socket is valid to pass to a containerd client library.
@@ -56,6 +55,7 @@ sequenceDiagram
 
     serpentine ->> sidecar : danger noodle
     serpentine ->> sidecar : 1 
+    sidecar ->> serpentine : <length>
     sidecar ->> serpentine : /run/serpentine/XYZ
     loop until close
         sidecar ->> serpentine : Output

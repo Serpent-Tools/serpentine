@@ -70,11 +70,10 @@ pub trait NodeImpl {
                 node: kind,
                 inputs: &inputs,
             };
-            let key = key.sha256()?;
+            let key = key.content_hash();
             log::debug!("Checking cache with {key:?}");
             if self.should_be_cached()
-                && let Some(cached_value) =
-                    scheduler.context().cache.lock().await.get(&key).cloned()
+                && let Some(cached_value) = scheduler.context().cache.lock().await.get(key).cloned()
             {
                 log::debug!("Cache hit on {}", self.describe());
                 if cached_value.healthcheck(scheduler.context()).await {

@@ -5,12 +5,12 @@ expression: err
 ---
   x Compile Error
 
-Error: compiler::item_not_found
+Error: compiler::argument_count
 
-  x 'DEFAULT' not found in scope
-   ,-[<cli>:1:1]
- 1 | DEFAULT
-   : ^^^|^^^
-   :    `-- Item with this name not found
+  x Expected 1 arguments got 2
+   ,-[<redacted-path>:1:18]
+ 1 | export DEFAULT = Noop("hello" "world");
+   :                  ^^^^^^^^^^^|^^^^^^^^^^
+   :                             `-- This node expects 1 arguments
    `----
-  help: Serpentine cannot reference items (including functions) before they are defined.
+  help: Remember that chaining counts as a argument, `... > Foo(1, 2)` has 3 arguments passed for example.

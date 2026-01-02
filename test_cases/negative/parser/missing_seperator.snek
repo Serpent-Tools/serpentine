@@ -1,1 +1,0 @@
-export DEFUALT = Noop("hello" "world");

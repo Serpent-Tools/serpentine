@@ -23,6 +23,7 @@ fn main() -> ! {
     let _ = simple_logger::init();
 
     spawn_containerd();
+    setup_networking();
 
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -60,56 +61,24 @@ fn spawn_containerd() {
         .expect("Failed to start containerd");
 }
 
-// /// Setup the default networking config for containers
-// fn setup_networking() {
-//     log::info!("Creating networking config");
-//
-//     std::fs::create_dir_all("/etc/cni/net.d").expect("Failed to create directories");
-//
-//     std::fs::write(
-//         "/etc/cni/net.d/00-loopback",
-//         r#"
-// {
-//   "cniVersion": "1.0.0",
-//   "name": "lo",
-//   "type": "loopback"
-// }
-// "#,
-//     )
-//     .expect("Failed to create network config");
-//
-//     std::fs::write(
-//         "/etc/cni/net.d/10-bridge",
-//         r#"
-// {
-//   "cniVersion": "1.0.0",
-//   "name": "serpentine-build",
-//   "plugins": [
-//     {
-//       "type": "bridge",
-//       "bridge": "cni0",
-//       "isGateway": true,
-//       "ipMasq": true,
-//       "ipam": {
-//         "type": "host-local",
-//         "ranges": [
-//           [
-//             {
-//               "subnet": "10.88.0.0/16"
-//             }
-//           ]
-//         ],
-//         "routes": [
-//           { "dst": "0.0.0.0/0" }
-//         ]
-//       }
-//     },
-//   ]
-// }
-// "#,
-//     )
-//     .expect("Failed to create network config");
-// }
+/// Setup the default networking config for containers
+fn setup_networking() {
+    log::info!("Creating networking config");
+
+    std::fs::create_dir_all("/etc/cni/net.d").expect("Failed to create directories");
+
+    std::fs::write(
+        "/etc/cni/net.d/00-loopback",
+        r#"
+{
+  "cniVersion": "1.0.0",
+  "name": "lo",
+  "type": "loopback"
+}
+"#,
+    )
+    .expect("Failed to create network config");
+}
 
 /// Handle a incoming connection
 async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
