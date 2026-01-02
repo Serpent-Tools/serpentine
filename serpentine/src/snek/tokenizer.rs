@@ -96,11 +96,8 @@ impl<'arena> Tokenizer<'arena> {
         };
 
         let mut tokens = Vec::new();
-        loop {
-            match tokenizer.read_next_token()? {
-                None => break,
-                Some(token) => tokens.push(token),
-            }
+        while let Some(token) = tokenizer.read_next_token()? {
+            tokens.push(token);
         }
         tokens.push(tokenizer.span(1).with(Token::Eof));
 

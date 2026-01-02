@@ -3,14 +3,18 @@
 use std::hash::Hash;
 use std::rc::Rc;
 
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
 use crate::engine::nodes::NodeImpl;
-use crate::engine::{RuntimeContext, containerd};
+use crate::engine::{RuntimeContext, RuntimeError, containerd};
 
 /// The name of the file in the tar archives for `FileSystem` representing a single file.
 pub const FILE_SYSTEM_FILE_TAR_NAME: &str = "file";
 
 /// A exported filesystem
-#[derive(Hash, PartialEq, Eq, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Hash, PartialEq, Eq, Clone)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum FileSystem {
     /// A tar entry containing a file name `FILE_SYSTEM_FILE_TAR_NAME` at `/{FILE_SYSTEM_FILE_TAR_NAME}`
     File(Rc<[u8]>),
@@ -27,8 +31,54 @@ impl std::fmt::Debug for FileSystem {
     }
 }
 
+impl CacheData for FileSystem {
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::File(data) => {
+                writer.write_u8(0).await?;
+                data.write(writer).await?;
+            }
+            Self::Folder(data) => {
+                writer.write_u8(1).await?;
+                data.write(writer).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        let kind = reader.read_u8().await?;
+        let data = Rc::<[u8]>::read(reader).await?;
+
+        match kind {
+            0 => Ok(Self::File(data)),
+            1 => Ok(Self::Folder(data)),
+            _ => Err(RuntimeError::internal("Invalid kind byte for FileSystem")),
+        }
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        match self {
+            Self::File(data) => {
+                hasher.update(&[0]);
+                data.content_hash(hasher);
+            }
+            Self::Folder(data) => {
+                hasher.update(&[1]);
+                data.content_hash(hasher);
+            }
+        }
+    }
+}
+
 /// Holds the various forms of data that the node engine uses
-#[derive(Debug, Clone, Hash, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum Data {
     /// A numeric whole number value
@@ -36,10 +86,9 @@ pub enum Data {
     /// A string, usually a short literal
     String(Rc<str>),
     /// A docker container
-    #[cfg_attr(test, proptest(skip))]
+    #[cfg_attr(test, proptest(weight = 3))]
     Container(containerd::ContainerState),
     /// A file/folder
-    #[cfg_attr(test, proptest(skip))]
     FileSystem(FileSystem),
 }
 
@@ -63,6 +112,80 @@ impl Data {
             ctx.containerd.healthcheck(state).await
         } else {
             true
+        }
+    }
+}
+
+impl CacheData for Data {
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Int(data) => {
+                writer.write_u8(0).await?;
+                writer.write_i128_le(*data).await?;
+            }
+            Self::String(data) => {
+                writer.write_u8(1).await?;
+                data.write(writer).await?;
+            }
+            Self::Container(data) => {
+                writer.write_u8(2).await?;
+                data.write(writer).await?;
+            }
+            Self::FileSystem(data) => {
+                writer.write_u8(3).await?;
+                data.write(writer).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        let kind = reader.read_u8().await?;
+        match kind {
+            0 => {
+                let data = reader.read_i128_le().await?;
+                Ok(Self::Int(data))
+            }
+            1 => {
+                let data = Rc::<str>::read(reader).await?;
+                Ok(Self::String(data))
+            }
+            2 => {
+                let data = containerd::ContainerState::read(reader).await?;
+                Ok(Self::Container(data))
+            }
+            3 => {
+                let data = FileSystem::read(reader).await?;
+                Ok(Self::FileSystem(data))
+            }
+            _ => Err(RuntimeError::internal("Unknown kind byte for Data")),
+        }
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        match self {
+            Self::Int(data) => {
+                hasher.update(&[0]);
+                hasher.update(&data.to_le_bytes());
+            }
+            Self::String(data) => {
+                hasher.update(&[1]);
+                data.content_hash(hasher);
+            }
+            Self::Container(data) => {
+                hasher.update(&[2]);
+                data.content_hash(hasher);
+            }
+            Self::FileSystem(data) => {
+                hasher.update(&[3]);
+                data.content_hash(hasher);
+            }
         }
     }
 }
@@ -129,12 +252,22 @@ impl<T> proptest::arbitrary::Arbitrary for StoreId<T> {
     }
 }
 
-impl<T> bincode::Encode for StoreId<T> {
-    fn encode<E: bincode::enc::Encoder>(
+impl<T> CacheData for StoreId<T> {
+    async fn write(
         &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        self.index.encode(encoder)
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        todo!()
+    }
+
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        todo!()
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        hasher.update(&self.index().to_le_bytes());
     }
 }
 
@@ -156,12 +289,7 @@ impl<T> Clone for StoreId<T> {
 impl<T> Copy for StoreId<T> {}
 impl<T> std::fmt::Debug for StoreId<T> {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            fmt,
-            "StoreId<{}>({})",
-            std::any::type_name::<T>(),
-            self.index
-        )
+        write!(fmt, "StoreId({})", self.index)
     }
 }
 

@@ -25,7 +25,7 @@ ENV RUSTFLAGS="-C target-feature=+crt-static"
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release -p sidecar --recipe-path recipe.json
 COPY . .
-RUN cargo build --release -p sidecar
+RUN cargo build --release -p sidecar --frozen
 
 FROM gcr.io/distroless/base-debian13
 COPY --from=download /containerd /usr/local

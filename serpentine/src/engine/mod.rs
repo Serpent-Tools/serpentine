@@ -78,6 +78,14 @@ pub enum RuntimeError {
         output: String,
     },
 
+    /// Attmpted to capture non-utf8 output
+    #[error("Failed to capture stdout of command as non-utf8 was found: \n{output}")]
+    #[diagnostic(code(command_execution_error))]
+    NonUtf8Capture {
+        /// The stdout/stderr of the command
+        output: String,
+    },
+
     /// A exec command failed to parse
     #[error("Failed to parse command: {0}")]
     ExecParse(#[from] shell_words::ParseError),

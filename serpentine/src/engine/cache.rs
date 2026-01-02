@@ -1,20 +1,14 @@
 //! A content addressable cache.
 
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
-use sha2::Digest;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::engine::RuntimeError;
 use crate::engine::data_model::{Data, NodeKindId};
-use crate::engine::{RuntimeError, containerd};
-
-// ==== CACHE FILE FORMAT ====
-// The first byte is the `CACHE_COMPATIBILITY_VERSION`, written as a pure u8.
-// Followed by a `u64` in big-endian denoting the following sections size.
-// Followed by a `CacheHashMap` encoded using `bincode`
-//
-// Then if the cache contains a standalone cache the next byte is a `1`, otherwise its a `0`.
-// if there is a standalone cache then the rest of then the bytes of the docker export follows.
 
 /// Version number for the cache.
 ///
@@ -34,15 +28,431 @@ use crate::engine::{RuntimeError, containerd};
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-const CACHE_COMPATIBILITY_VERSION: u8 = 1;
+const CACHE_COMPATIBILITY_VERSION: u8 = 2;
 
-/// The bincode config to use
-const fn bincode_config() -> impl bincode::config::Config {
-    bincode::config::standard()
+/// Wrapper around the raw blake3 hash output as its trait implementations (`Hash` and `Eq`) use
+/// constant time functions, which we do not require
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheHash([u8; blake3::OUT_LEN]);
+
+// This must only call one `write` method (and only ones <= 64 bits).
+// https://docs.rs/nohash/latest/nohash/trait.IsEnabled.html
+//
+// This function does this by just taking the first 8 bytes of the hash.
+// This is okay because they are as evenly distrubted in isolation as the whole hash.
+// And secondly because the `HashMap` will compare the full hashes anyway in the unlikely event of
+// a collision.
+impl std::hash::Hash for CacheHash {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        const U64_BYTES: usize = 64 / 8;
+
+        let first_bytes = self.0.first_chunk::<U64_BYTES>().unwrap_or_else(|| {
+            debug_assert!(
+                false,
+                "blake3 hash ({} bytes), not big enough to construct u64 ({U64_BYTES} bytes)",
+                blake3::OUT_LEN
+            );
+
+            &[0; U64_BYTES]
+        });
+
+        state.write_u64(u64::from_le_bytes(*first_bytes));
+    }
+}
+
+impl nohash::IsEnabled for CacheHash {}
+
+/// Struct for writing the cache data, provides a thin wrapper over `AsyncWrite` writer, as well as
+/// methods for dealing with `Rc`
+pub struct CacheWriter<T> {
+    /// The file to write to
+    file: T,
+    /// The map of Rc pointers to ids
+    rcs: HashMap<*const u8, u64>,
+    /// The next id to use for a rc
+    next_rc_id: u64,
+}
+
+impl<T: AsyncWrite + Unpin + Send> CacheWriter<T> {
+    /// Create a new cache writer
+    pub fn new(file: T) -> Self {
+        Self {
+            file,
+            rcs: HashMap::new(),
+            next_rc_id: 1, // We start at 1, as 0 is used as a sentinel
+        }
+    }
+
+    /// Write the given cache map to the cache file, also exports the external cache if
+    /// `export_standalone` specified.
+    async fn write_map(
+        &mut self,
+        map: CacheHashMap,
+        external: &impl ExternalCache,
+        export_standalone: bool,
+    ) -> Result<(), RuntimeError> {
+        self.file.write_all(&[CACHE_COMPATIBILITY_VERSION]).await?;
+
+        self.write_u64_variable_length(map.len() as u64).await?;
+        for (hash, value) in &map {
+            self.file.write_all(&hash.0).await?;
+            log::debug!("Writing {value:?}");
+            value.write(self).await?;
+        }
+
+        if export_standalone {
+            self.file.write_all(&[1]).await?;
+            log::info!("Exporting standalone cache");
+            external.export(map.values(), &mut self.file).await?;
+        } else {
+            self.file.write_all(&[0]).await?;
+        }
+
+        self.file.flush().await?;
+
+        Ok(())
+    }
+
+    /// Write a `u64` using variable-length encoding
+    pub async fn write_u64_variable_length(&mut self, mut value: u64) -> Result<(), RuntimeError> {
+        loop {
+            let mut byte = (value & 0b0111_1111) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0b1000_0000;
+            }
+            self.write_u8(byte).await?;
+
+            if value == 0 {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write the given rc to the file, this will duplicate rcs that point to the same data.
+    ///
+    /// If the rc hasnt been writen yet calls `writer`
+    pub async fn write_rc<Value, Func>(
+        &mut self,
+        rc: &Rc<Value>,
+        writer: Func,
+    ) -> Result<(), RuntimeError>
+    where
+        Func: for<'value> FnOnce(
+            &'value mut Self,
+            &'value Rc<Value>,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<(), RuntimeError>> + 'value>,
+        >,
+        Value: ?Sized + 'static,
+    {
+        let pointer = Rc::as_ptr(rc).cast::<u8>();
+        log::debug!(
+            "Rc pointer: {pointer:?} for type {:?}",
+            std::any::TypeId::of::<Rc<Value>>()
+        );
+        if let Some(id) = self.rcs.get(&pointer) {
+            log::debug!("Pointing to existing rc, {id}");
+            self.write_u64_variable_length(*id).await?;
+        } else {
+            self.write_u64_variable_length(0).await?;
+            writer(self, rc).await?;
+
+            let id = self.next_rc_id;
+            self.next_rc_id = self.next_rc_id.saturating_add(1);
+            self.rcs.insert(pointer, id);
+            log::debug!("New rc, using id {id}");
+        }
+
+        Ok(())
+    }
+}
+
+impl<T> Deref for CacheWriter<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.file
+    }
+}
+impl<T> DerefMut for CacheWriter<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.file
+    }
+}
+
+/// Struct for reading the cache data, provides a thin wrapper over `AsyncRead` reader, as well as
+/// methods for dealing with `Rc`
+pub struct CacheReader<T> {
+    /// The file to read from
+    file: T,
+    /// The map from ids to rcs, the trait object is the `Rc`.
+    /// This is because we can not convert `Rc<str>` to `Rc<dyn Any>` since string isnt sized.
+    /// So instead we convert `Box<Rc<str>>` into `Box<dyn Any>`
+    ///
+    /// Ids are expected to be sequential
+    rcs: Vec<Box<dyn Any>>,
+}
+
+impl<T: AsyncRead + Unpin + Send> CacheReader<T> {
+    /// Create a new cache reader for the given async reader
+    pub fn new(file: T) -> Self {
+        Self {
+            file,
+            rcs: Vec::new(),
+        }
+    }
+
+    /// Read the cache from this reader
+    async fn read_map(
+        &mut self,
+
+        external: &impl ExternalCache,
+    ) -> Result<CacheHashMap, RuntimeError> {
+        log::info!("Attempting to load cache");
+        let version = self.file.read_u8().await?;
+        if version != CACHE_COMPATIBILITY_VERSION {
+            return Err(RuntimeError::CacheOutOfDate {
+                got: version,
+                current: CACHE_COMPATIBILITY_VERSION,
+            });
+        }
+
+        let mut map = CacheHashMap::default();
+        let count_items = self.read_u64_length_encoded().await?;
+        for _ in 0..count_items {
+            let mut hash = [0; blake3::OUT_LEN];
+            self.file.read_exact(&mut hash).await?;
+            let value = Data::read(self).await?;
+            map.insert(CacheHash(hash), value);
+        }
+
+        let mut has_standalone_cache = [0_u8; 1];
+        self.file.read_exact(&mut has_standalone_cache).await?;
+        let has_standalone_cache = has_standalone_cache[0];
+
+        if has_standalone_cache == 1 {
+            log::info!("Loading standalone cache");
+            external.import(&mut self.file).await?;
+        } else {
+            log::info!("No standalone cache found.");
+            debug_assert_eq!(has_standalone_cache, 0, "hash_standalone_cache not 0 or 1");
+        }
+
+        Ok(map)
+    }
+
+    /// Read a variable-length encoded u64
+    pub async fn read_u64_length_encoded(&mut self) -> Result<u64, RuntimeError> {
+        let mut value: u64 = 0;
+        let mut shift_amount: u8 = 0;
+
+        loop {
+            let byte = self.read_u8().await?;
+            value |= (u64::from(byte) & 0b0111_1111) << shift_amount;
+            shift_amount = shift_amount.saturating_add(7);
+
+            if byte & 0b1000_0000 == 0 {
+                break;
+            }
+        }
+
+        Ok(value)
+    }
+
+    /// Read the next part of the file as a Rc of type `R`, this will de-duplicate rcs pointing to
+    /// the same data.
+    ///
+    /// If the rc hasnt been parsed yet calls `reader`
+    pub async fn read_rc<Func, Res>(&mut self, reader: Func) -> Result<Rc<Res>, RuntimeError>
+    where
+        Func: for<'this> FnOnce(
+            &'this mut Self,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<Rc<Res>, RuntimeError>> + 'this>,
+        >,
+        Res: Any + ?Sized + 'static,
+    {
+        let id = self.read_u64_length_encoded().await?;
+        log::debug!(
+            "Reading {:?} with id {id}",
+            std::any::TypeId::of::<Rc<Res>>()
+        );
+
+        if id == 0 {
+            let value = reader(self).await?;
+            self.rcs.push(Box::new(Rc::clone(&value)));
+            log::debug!("New rc, reading to id {}", self.rcs.len());
+
+            Ok(value)
+        } else {
+            let id: usize = id
+                .try_into()
+                .map_err(|_| RuntimeError::internal("Rc id overflows usize for this platform"))?;
+
+            let Some(rc) = self.rcs.get(id.saturating_sub(1)) else {
+                return Err(RuntimeError::internal("Rc id out of bounds"));
+            };
+
+            let Some(rc) = rc.downcast_ref() else {
+                return Err(RuntimeError::internal(format!(
+                    "Rc type mismatch, expected {:?} got {:?}",
+                    std::any::TypeId::of::<Rc<Res>>(),
+                    (**rc).type_id()
+                )));
+            };
+
+            Ok(Rc::clone(rc))
+        }
+    }
+}
+
+impl<T> Deref for CacheReader<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.file
+    }
+}
+impl<T> DerefMut for CacheReader<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.file
+    }
+}
+
+/// Trait for structs and types that will need to be written to and from cache storage.
+pub trait CacheData: Sized {
+    /// Parse this value from the given reader.
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError>;
+
+    /// Write this value to the reader.
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError>;
+
+    /// Hash this value
+    ///
+    /// Enums snould make sure to include their discriminants.
+    fn content_hash(&self, hasher: &mut blake3::Hasher);
+}
+
+impl CacheData for Rc<[u8]> {
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        reader
+            .read_rc(|reader| {
+                Box::pin(async move {
+                    let length: usize = reader
+                        .read_u64_length_encoded()
+                        .await?
+                        .try_into()
+                        .map_err(|_| RuntimeError::internal("Data overflowed platform usize"))?;
+
+                    let mut data = vec![0; length];
+                    reader.read_exact(&mut data).await?;
+                    Ok(data.into())
+                })
+            })
+            .await
+    }
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        writer
+            .write_rc(self, |writer, this| {
+                Box::pin(async move {
+                    writer.write_u64_variable_length(this.len() as u64).await?;
+                    writer.write_all(this).await?;
+
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        hasher.update(&(self.len() as u64).to_le_bytes());
+        hasher.update(self);
+    }
+}
+impl CacheData for Rc<str> {
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        reader
+            .read_rc(|reader| {
+                Box::pin(async move {
+                    let length: usize = reader
+                        .read_u64_length_encoded()
+                        .await?
+                        .try_into()
+                        .map_err(|_| RuntimeError::internal("Data overflowed platform usize"))?;
+
+                    let mut data = vec![0; length];
+                    reader.read_exact(&mut data).await?;
+
+                    let data = String::from_utf8(data).map_err(|_| {
+                        RuntimeError::internal("Non-utf8 string encountered in cache")
+                    })?;
+
+                    Ok(data.into())
+                })
+            })
+            .await
+    }
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        writer
+            .write_rc(self, |writer, this| {
+                Box::pin(async move {
+                    writer.write_u64_variable_length(this.len() as u64).await?;
+                    writer.write_all(this.as_bytes()).await?;
+
+                    Ok(())
+                })
+            })
+            .await
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        hasher.update(&(self.len() as u64).to_le_bytes());
+        hasher.update(self.as_bytes());
+    }
+}
+
+impl<T: CacheData + Clone + 'static> CacheData for Rc<T> {
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        reader
+            .read_rc(|reader| Box::pin(async move { Ok(Rc::new(T::read(reader).await?)) }))
+            .await
+    }
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        writer
+            .write_rc(self, |writer, this| Box::pin(T::write(this, writer)))
+            .await
+    }
+
+    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+        T::content_hash(self, hasher);
+    }
 }
 
 /// A key into the cache
-#[derive(bincode::Encode, Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct CacheKey<'caller> {
     /// The kind of node
     pub node: NodeKindId,
@@ -51,14 +461,17 @@ pub struct CacheKey<'caller> {
 }
 
 impl CacheKey<'_> {
-    /// Hash this key with sha256 by encoding it to bincode
-    pub fn sha256(&self) -> Result<[u8; 32], RuntimeError> {
-        let config = bincode_config();
-        let hash = sha2::Sha256::digest(
-            &bincode::encode_to_vec(self, config)
-                .map_err(|err| RuntimeError::internal(err.to_string()))?,
-        );
-        Ok(hash.into())
+    /// Hash this key
+    pub fn content_hash(&self) -> CacheHash {
+        let mut hasher = blake3::Hasher::new();
+        self.node.content_hash(&mut hasher);
+        hasher.update(&(self.inputs.len() as u64).to_le_bytes());
+
+        for input in self.inputs {
+            input.content_hash(&mut hasher);
+        }
+
+        CacheHash(hasher.finalize().into())
     }
 }
 
@@ -80,7 +493,7 @@ pub trait ExternalCache {
 }
 
 /// A hashmap storing the cache data
-type CacheHashMap = HashMap<[u8; 32], Data>;
+type CacheHashMap = nohash::IntMap<CacheHash, Data>;
 
 /// A content addressable cache using sha256
 /// And allows serializing to disk
@@ -95,8 +508,8 @@ impl Cache {
     /// Create a new empty cache
     pub fn new() -> Self {
         Self {
-            old_cache: CacheHashMap::new(),
-            new_cache: CacheHashMap::new(),
+            old_cache: CacheHashMap::default(),
+            new_cache: CacheHashMap::default(),
         }
     }
 
@@ -105,44 +518,9 @@ impl Cache {
         file: &mut (impl AsyncRead + Unpin + Send),
         external: &impl ExternalCache,
     ) -> Result<Self, RuntimeError> {
-        log::info!("Attempting to load cache");
-        let version = file.read_u8().await?;
-        if version != CACHE_COMPATIBILITY_VERSION {
-            return Err(RuntimeError::CacheOutOfDate {
-                got: version,
-                current: CACHE_COMPATIBILITY_VERSION,
-            });
-        }
-
-        let cache_size = file.read_u64().await?;
-
-        let mut cache_data =
-            vec![0; cache_size.try_into().unwrap_or(usize::MAX)].into_boxed_slice();
-        file.read_exact(&mut cache_data).await?;
-        let old_cache = bincode::decode_from_std_read(&mut &*cache_data, bincode_config())
-            .map_err(|err| {
-                if let bincode::error::DecodeError::Io { inner, .. } = err {
-                    RuntimeError::IoError(inner)
-                } else {
-                    RuntimeError::internal(err.to_string())
-                }
-            })?;
-
-        let mut has_standalone_cache = [0_u8; 1];
-        file.read_exact(&mut has_standalone_cache).await?;
-        let has_standalone_cache = has_standalone_cache[0];
-
-        if has_standalone_cache == 1 {
-            log::info!("Loading standalone cache");
-            external.import(file).await?;
-        } else {
-            log::info!("No standalone cache found.");
-            debug_assert_eq!(has_standalone_cache, 0, "hash_standalone_cache not 0 or 1");
-        }
-
         Ok(Self {
-            old_cache,
-            new_cache: CacheHashMap::new(),
+            old_cache: CacheReader::new(file).read_map(external).await?,
+            new_cache: CacheHashMap::default(),
         })
     }
 
@@ -158,7 +536,6 @@ impl Cache {
         export_standalone: bool,
     ) -> Result<(), RuntimeError> {
         log::info!("Saving cache");
-        file.write_all(&[CACHE_COMPATIBILITY_VERSION]).await?;
 
         let Self {
             old_cache,
@@ -179,33 +556,15 @@ impl Cache {
             }
         }
 
-        let cache_data = bincode::encode_to_vec(&cache, bincode_config())
-            .map_err(|err| RuntimeError::internal(err.to_string()))?;
-        file.write_all(
-            &cache_data
-                .len()
-                .try_into()
-                .unwrap_or(u64::MAX)
-                .to_be_bytes(),
-        )
-        .await?;
-        file.write_all(&cache_data).await?;
-
-        if export_standalone {
-            file.write_all(&[1]).await?;
-            log::info!("Exporting standalone cache");
-            external.export(cache.values(), file);
-        } else {
-            file.write_all(&[0]).await?;
-        }
-
-        file.flush().await?;
+        CacheWriter::new(file)
+            .write_map(cache, external, export_standalone)
+            .await?;
 
         Ok(())
     }
 
     /// Store a value in the cache
-    pub fn insert(&mut self, key: [u8; 32], value: Data) {
+    pub fn insert(&mut self, key: CacheHash, value: Data) {
         log::debug!("Saving {key:?}={value:?} in cache");
         self.new_cache.insert(key, value);
     }
@@ -213,13 +572,13 @@ impl Cache {
     /// Get a value from the cache
     ///
     /// This also moves the value from `old_cache` to `new_cache`
-    pub fn get(&mut self, key: &[u8; 32]) -> Option<&Data> {
+    pub fn get(&mut self, key: CacheHash) -> Option<&Data> {
         log::debug!("Reading {key:?}");
-        if let Some(data) = self.old_cache.remove(key) {
+        if let Some(data) = self.old_cache.remove(&key) {
             log::debug!("Got {data:?}, moving to new_cache");
-            let data = self.new_cache.entry(*key).insert_entry(data).into_mut();
+            let data = self.new_cache.entry(key).insert_entry(data).into_mut();
             Some(data)
-        } else if let Some(data) = self.new_cache.get(key) {
+        } else if let Some(data) = self.new_cache.get(&key) {
             log::debug!("Got {data:?}");
             Some(data)
         } else {
@@ -262,6 +621,58 @@ mod tests {
         DummyExternal
     }
 
+    #[proptest::property_test]
+    #[test_log::test]
+    fn different_entries_hash_differently(node: NodeKindId, data1: Vec<Data>, data2: Vec<Data>) {
+        proptest::prop_assume!(data1 != data2, "test needs different keys");
+
+        let data1 = data1.iter().collect::<Vec<_>>();
+        let key1 = CacheKey {
+            node,
+            inputs: &data1,
+        };
+
+        let data2 = data2.iter().collect::<Vec<_>>();
+        let key2 = CacheKey {
+            node,
+            inputs: &data2,
+        };
+
+        assert_ne!(key1.content_hash(), key2.content_hash());
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[proptest::property_test]
+    #[test_log::test]
+    async fn variable_length_encoding_roundtrips(#[ignore] value: u64) {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        CacheWriter::new(&mut buf)
+            .write_u64_variable_length(value)
+            .await
+            .unwrap();
+
+        buf.set_position(0);
+        let decoded = CacheReader::new(&mut buf)
+            .read_u64_length_encoded()
+            .await
+            .unwrap();
+
+        assert_eq!(decoded, value, "failed for {value}");
+    }
+
+    #[proptest::property_test]
+    #[test_log::test]
+    fn same_entry_hashes_equal(node: NodeKindId, data: Vec<Data>) {
+        let data = data.iter().collect::<Vec<_>>();
+        let key = CacheKey {
+            node,
+            inputs: &data,
+        };
+
+        assert_eq!(key.content_hash(), key.content_hash());
+    }
+
     #[tokio::test]
     #[rstest]
     #[proptest::property_test]
@@ -279,7 +690,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256().unwrap(), value.clone());
+        cache.insert(key.content_hash(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -290,10 +701,81 @@ mod tests {
         cache_file.set_position(0);
         let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         let loaded_value = loaded_cache
-            .get(&key.sha256().unwrap())
+            .get(key.content_hash())
             .expect("Value not found");
 
         assert_eq!(*loaded_value, value);
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[proptest::property_test]
+    #[test_log::test]
+    async fn save_and_load_duplicate(external: impl ExternalCache, #[ignore] value: Data) {
+        let mut cache = Cache::new();
+
+        let key1 = CacheHash(blake3::hash(&[0]).into());
+        let key2 = CacheHash(blake3::hash(&[1]).into());
+        let key3 = CacheHash(blake3::hash(&[2]).into());
+
+        cache.insert(key1, value.clone());
+        cache.insert(key2, value.clone());
+        cache.insert(key3, value.clone());
+
+        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+        cache
+            .save_cache(&mut cache_file, &external, false, false)
+            .await
+            .unwrap();
+
+        cache_file.set_position(0);
+        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
+        let loaded_value1 = loaded_cache.get(key1).expect("Value not found").clone();
+        let loaded_value2 = loaded_cache.get(key1).expect("Value not found").clone();
+        let loaded_value3 = loaded_cache.get(key1).expect("Value not found").clone();
+
+        assert_eq!(loaded_value1, value);
+        assert_eq!(loaded_value2, value);
+        assert_eq!(loaded_value3, value);
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[test_log::test]
+    #[expect(clippy::panic, reason = "tests")]
+    async fn save_and_load_duplicate_rc_is_deduplicated(external: impl ExternalCache) {
+        let mut cache = Cache::new();
+
+        let value = Data::String(Rc::from("foo"));
+
+        let key1 = CacheHash(blake3::hash(&[0]).into());
+        let key2 = CacheHash(blake3::hash(&[1]).into());
+
+        cache.insert(key1, value.clone());
+        cache.insert(key2, value.clone());
+
+        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+        cache
+            .save_cache(&mut cache_file, &external, false, false)
+            .await
+            .unwrap();
+
+        cache_file.set_position(0);
+        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
+        let loaded_value1 = loaded_cache.get(key1).expect("Value not found").clone();
+        let loaded_value2 = loaded_cache.get(key1).expect("Value not found").clone();
+
+        let Data::String(value1) = loaded_value1 else {
+            panic!("Unexpected enum variant");
+        };
+        let Data::String(value2) = loaded_value2 else {
+            panic!("Unexpected enum variant");
+        };
+
+        assert!(
+            Rc::ptr_eq(&value1, &value2),
+            "Rcs point to different allocations despite being serialized from the same rc allocation."
+        );
     }
 
     #[tokio::test]
@@ -312,7 +794,7 @@ mod tests {
                 inputs: &data,
             };
 
-            cache.insert(key.sha256().unwrap(), value.clone());
+            cache.insert(key.content_hash(), value.clone());
         }
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
@@ -332,7 +814,7 @@ mod tests {
             };
 
             let _ = loaded_cache
-                .get(&key.sha256().unwrap())
+                .get(key.content_hash())
                 .expect("Value not found");
             // We do not check what the value is as proptest might (and likely will) generate
             // duplicate keys.
@@ -358,7 +840,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256().unwrap(), value.clone());
+        cache.insert(key.content_hash(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -369,7 +851,7 @@ mod tests {
         cache_file.set_position(0);
         let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         loaded_cache
-            .get(&key.sha256().unwrap())
+            .get(key.content_hash())
             .expect("Value not found");
 
         // Even tho `keep_old_cache` is false it should still keep the entry in there since we used
@@ -384,7 +866,7 @@ mod tests {
         cache_file.set_position(0);
         let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         second_loaded_cache
-            .get(&key.sha256().unwrap())
+            .get(key.content_hash())
             .expect("Value not found");
     }
 
@@ -405,7 +887,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256().unwrap(), value.clone());
+        cache.insert(key.content_hash(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -425,7 +907,7 @@ mod tests {
 
         cache_file.set_position(0);
         let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        let result = second_loaded_cache.get(&key.sha256().unwrap());
+        let result = second_loaded_cache.get(key.content_hash());
         assert!(result.is_none(), "unused old_cache value was saved.");
     }
 
@@ -446,7 +928,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.sha256().unwrap(), value.clone());
+        cache.insert(key.content_hash(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -467,7 +949,7 @@ mod tests {
         cache_file.set_position(0);
         let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         second_loaded_cache
-            .get(&key.sha256().unwrap())
+            .get(key.content_hash())
             .expect("Value not found");
     }
 }
