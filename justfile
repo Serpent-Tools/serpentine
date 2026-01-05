@@ -18,3 +18,9 @@ run_sidecar: build_container
 build_container:
     docker container rm -f serpent-tools.containerd
     docker build -t serpent-tools/containerd:dev -f Dockerfile
+
+size_benchmark: build_container
+    cargo build --release -p serpentine
+    docker images --filter reference=containerd
+    docker history localhost/serpent-tools/containerd:dev
+    ls ./target/release/serpentine --size --human-readable
