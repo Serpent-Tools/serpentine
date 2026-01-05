@@ -35,6 +35,7 @@ impl Client {
     pub async fn fifo_pipe(
         &self,
     ) -> Result<(String, impl AsyncRead + Unpin + Send + 'static), RuntimeError> {
+        log::debug!("Creating fifo pipe");
         let mut socket = self.connect().await?;
         socket.write_u8(1).await?;
 
@@ -46,5 +47,25 @@ impl Client {
             .map_err(|_| RuntimeError::internal("Sidecar responded with a non-utf8 path"))?;
 
         Ok((path, socket))
+    }
+
+    /// Create a network namespace and return its (container) path
+    pub async fn create_network_namespace(&self) -> Result<String, RuntimeError> {
+        log::debug!("Creating network namespace");
+        let mut socket = self.connect().await?;
+        socket.write_u8(2).await?;
+
+        let length = socket
+            .read_u64_le()
+            .await?
+            .try_into()
+            .map_err(|_| RuntimeError::internal("u64 overflowed platform usize"))?;
+
+        let mut namespace = vec![0; length];
+        socket.read_exact(&mut namespace).await?;
+
+        let namespace = String::from_utf8(namespace)
+            .map_err(|_| RuntimeError::internal("Sidecar responded with a non-utf8 path"))?;
+        Ok(namespace)
     }
 }

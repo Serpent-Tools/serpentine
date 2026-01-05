@@ -15,7 +15,7 @@ export DEFAULT = Image("rust:latest")
 ## Syntax 
 
 ### Comments
-Comments in snek are either pre-fixed with `//`, or are multi-line or even inline conent deliminated by `/*` and `/*`
+Comments in snek are either pre-fixed with `//`, or are multi-line or even inline conent deliminated by `/*` and `*/`
 ```snek
 // I am a single line comment
 

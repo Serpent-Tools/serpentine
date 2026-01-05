@@ -1,8 +1,19 @@
 FROM debian:bookworm-slim as download
 ENV DEBIAN_FRONTEND=noninteractive
 
+RUN apt-get update && apt-get install -y \
+    tar \
+    && rm -rf /var/lib/apt/lists/*
+
 ADD https://github.com/krallin/tini/releases/latest/download/tini-static /tini
 RUN chmod +x /tini
+
+ARG CNI_VERSION=v1.9.0
+ADD https://github.com/containernetworking/plugins/releases/download/$CNI_VERSION/cni-plugins-linux-amd64-$CNI_VERSION.tgz /cni.tgz
+RUN mkdir -p /cni_all && \
+    tar -xvzf cni.tgz -C /cni_all && \
+    mkdir -p /cni && \
+    mv /cni_all/loopback /cni_all/bridge /cni_all/host-local /cni
 
 FROM golang:1.24-bookworm AS runc
 ENV DEBIAN_FRONTEND=noninteractive
@@ -73,15 +84,18 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release -p sidecar --recipe-path recipe.json
+RUN cargo chef cook --release -p sidecar --recipe-path recipe.json --target x86_64-unknown-linux-gnu
 COPY . .
-RUN cargo build --release -p sidecar
+RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
-FROM scratch
+FROM alpine
+RUN apk add --no-cache iptables
+
 COPY --from=containerd /src/containerd/bin /bin
 COPY --from=runc /src/runc/runc /bin/runc
 COPY --from=download /tini /bin/tini
-COPY --from=builder /app/target/release/sidecar /bin
+COPY --from=download /cni /cni
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/sidecar /bin
 
 EXPOSE 8000
 ENTRYPOINT ["/bin/tini", "--", "/bin/sidecar"]

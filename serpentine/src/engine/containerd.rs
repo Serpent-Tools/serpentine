@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::iter::successors;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -270,7 +269,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a new Docker client
+    /// Create a new containerd client
     pub async fn new(tui: TuiSender, exec_permits: usize) -> Result<Self, RuntimeError> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
             user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
@@ -798,6 +797,25 @@ impl Client {
         ));
         process.set_cwd(state.config.working_dir.clone());
 
+        let network_namespace = self.sidecar.create_network_namespace().await?;
+        let mut linux = oci_spec::runtime::Linux::default();
+        if let Some(namespaces) = linux.namespaces_mut()
+            && let Some(namespace) = namespaces
+                .iter_mut()
+                .find(|namespace| namespace.typ() == oci_spec::runtime::LinuxNamespaceType::Network)
+        {
+            namespace.set_path(Some(network_namespace.into()));
+        }
+
+        let mut spec = oci_spec::runtime::Spec::default();
+        spec.set_root(Some(root))
+            .set_process(Some(process))
+            .set_linux(Some(linux));
+
+        if let Ok(json) = serde_json::to_string_pretty(&spec) {
+            log::trace!("SPEC: {json}");
+        }
+
         log::debug!("Creating container {container}");
         self.containerd
             .containers()
@@ -814,12 +832,8 @@ impl Client {
                         spec: Some(prost_types::Any {
                             type_url: "types.containerd.io/opencontainers/runtime-spec/1/Spec"
                                 .to_owned(),
-                            value: serde_json::to_vec(
-                                &oci_spec::runtime::Spec::default()
-                                    .set_root(Some(root))
-                                    .set_process(Some(process)),
-                            )
-                            .map_err(|err| RuntimeError::internal(format!("{err}")))?,
+                            value: serde_json::to_vec(&spec)
+                                .map_err(|err| RuntimeError::internal(format!("{err}")))?,
                         }),
                         sandbox: String::new(),
                         updated_at: None,
@@ -850,7 +864,7 @@ impl Client {
                 Ok(None) => break,
                 Ok(Some(line)) => {
                     let line = strip_ansi_escapes::strip_str(line);
-                    log::info!("{log_id}: {line}");
+                    log::trace!("{log_id}: {line}");
                     if !result.is_empty() {
                         result.push('\n');
                     }
