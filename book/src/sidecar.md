@@ -20,6 +20,8 @@ After this the content is defined by the request kind specified
 | ----- | :-: | 
 | Containerd Proxy | 0 |
 | Process Output | 1 |
+| Create Network | 2 |
+| Delete Network | 3 |
 
 ## Containerd Proxy (`0`)
 Once this connection is established all further data on the socket will be proxied to `containerd.sock` (and any data from the unix socket is proxied back).
@@ -63,3 +65,43 @@ sequenceDiagram
 ```
 
 See [Containerd](containerd.md) for more details on the surrounding context flow.
+
+## Create Network (`2`)
+This will create a new network namespace and use [CNI](https://www.cni.dev/) to attach a loopback and a bridge adapter to it.
+The sidecar will return the disk path in the container to the namespace, by first sending the length
+
+| Bytes | Content | Example |
+| :---: | ------- | ------- |
+| 1 | number of bytes | 19 |
+| n | namespace path in the container | /run/serpentine/XYZ |
+
+```mermaid
+sequenceDiagram
+    participant serpentine
+    participant sidecar
+
+    serpentine ->> sidecar : danger noodle
+    serpentine ->> sidecar : 2
+    sidecar ->> serpentine : <length>
+    sidecar ->> serpentine : /run/serpentine/XYZ
+```
+
+
+## Delete Network (`3`)
+Serpentine will send the path to a network namespace and the sidecar will delete it.
+
+| Bytes | Content | Example |
+| :---: | ------- | ------- |
+| 8 | number of bytes | 19 |
+| n | namespace path in the container | /run/serpentine/XYZ |
+
+```mermaid
+sequenceDiagram
+    participant serpentine
+    participant sidecar
+
+    serpentine ->> sidecar : danger noodle
+    serpentine ->> sidecar : 3
+    serpentine ->> sidecar : <length>
+    serpentine ->> sidecar : /run/serpentine/XYZ
+```

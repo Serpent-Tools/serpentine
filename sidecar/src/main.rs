@@ -7,9 +7,13 @@
 )]
 
 use std::error::Error;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use nix::sys::stat::Mode;
+use rand::TryRngCore;
+use rust_cni::libcni as cni;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 
@@ -19,11 +23,19 @@ const SOCKET_LOCATION: &str = "/run/containerd.sock";
 /// The port serpentine listend on
 const PORT: u16 = 8000;
 
+/// The size of container subnets
+const SUBNET_SIZE: u8 = 28;
+
+/// Prefix to use for container subnets
+const SUBNET_PREFIX: Ipv4Addr = Ipv4Addr::from_octets([198, 18, 0, 0]);
+
+/// The length of the prefix subnet.
+const SUBNET_PREFIX_LENGTH: u8 = 15;
+
 fn main() -> ! {
     let _ = simple_logger::init();
 
     spawn_containerd();
-    setup_networking();
 
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -51,33 +63,58 @@ fn main() -> ! {
     reason = "This needs to run for the duration of serpentine"
 )]
 fn spawn_containerd() {
+    log::info!("Creating containerd config");
+    std::fs::create_dir_all("/etc/containerd/").expect("Failed to create directories");
+
+    std::fs::write(
+        "/etc/containerd/config.toml",
+        r#"
+version = 3
+disabled_plugins = [
+    "io.containerd.grpc.v1.cri",
+    "io.containerd.cri.v1.images",
+    "io.containerd.cri.v1.runtime",
+    "io.containerd.cri.v1.images",
+    "io.containerd.snapshotter.v1.native",
+    "io.containerd.snapshotter.v1.btrfs",
+    "io.containerd.snapshotter.v1.devmapper",
+    "io.containerd.grpc.v1.images",
+    "io.containerd.nri.v1.nri", 
+    "io.containerd.transfer.v1.local",
+    "io.containerd.grpc.v1.transfer",
+    "io.containerd.podsandbox.controller.v1.podsandbox",
+    "io.containerd.sandbox.store.v1.local",
+    "io.containerd.sandbox.controller.v1.shim",
+    "io.containerd.grpc.v1.sandbox-controllers",
+    "io.containerd.grpc.v1.sandboxes",
+    "io.containerd.streaming.v1.manager",
+    "io.containerd.grpc.v1.streaming",
+    "io.containerd.monitor.container.v1.restart",
+    "io.containerd.image-verifier.v1.bindir",
+    "io.containerd.service.v1.images-service",
+    "io.containerd.snapshotter.v1.blockfile",
+    "io.containerd.snapshotter.v1.erofs",
+    "io.containerd.snapshotter.v1.zfs",
+    "io.containerd.differ.v1.erofs",
+    "io.containerd.mount-handler.v1.erofs",
+    "io.containerd.service.v1.introspection-service",
+    "io.containerd.grpc.v1.introspection",
+    "io.containerd.tracing.processor.v1.otlp",
+    "io.containerd.internal.v1.tracing",
+    "io.containerd.ttrpc.v1.otelttrpc",
+]
+"#,
+    )
+    .expect("Failed to create containerd config");
+
     log::info!("Spawning containerd");
-    std::process::Command::new("containerd")
+    std::process::Command::new("/bin/containerd")
         .args(["--address", SOCKET_LOCATION])
         .args(["--root", "/var/lib/containerd"])
         .args(["--state", "/run/containerd"])
         .args(["--log-level", "trace"])
         .spawn()
         .expect("Failed to start containerd");
-}
-
-/// Setup the default networking config for containers
-fn setup_networking() {
-    log::info!("Creating networking config");
-
-    std::fs::create_dir_all("/etc/cni/net.d").expect("Failed to create directories");
-
-    std::fs::write(
-        "/etc/cni/net.d/00-loopback",
-        r#"
-{
-  "cniVersion": "1.0.0",
-  "name": "lo",
-  "type": "loopback"
-}
-"#,
-    )
-    .expect("Failed to create network config");
 }
 
 /// Handle a incoming connection
@@ -94,6 +131,7 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
     match event {
         0 => proxy_containerd(remote_socket).await,
         1 => setup_fifo(remote_socket).await,
+        2 => create_network(remote_socket).await,
         _ => Err(format!("Unknown event kind {event}").into()),
     }
 }
@@ -135,4 +173,133 @@ async fn setup_fifo(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Err
     tokio::fs::remove_file(file).await?;
 
     Ok(())
+}
+
+/// Type that the cni config is stored as
+type CniConfig = Arc<Box<dyn cni::api::CNI + Send + Sync + 'static>>;
+
+/// Create a cni based network namespace
+async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+    log::info!("Creating network");
+    let ns_name = uuid::Uuid::new_v4().to_string();
+    let raw_namespace = netns_rs::NetNs::new(ns_name.clone())?;
+    let namespace_path = raw_namespace.path().to_string_lossy();
+    let namespace =
+        rust_cni::namespace::Namespace::new(ns_name.clone(), namespace_path.to_string());
+    log::debug!("Created namespace {namespace_path}");
+
+    let cni_config = cni::api::CNIConfig {
+        path: vec!["/cni".to_owned()],
+        ..Default::default()
+    };
+    let cni_config: CniConfig = Arc::new(Box::new(cni_config));
+
+    let loopback = cni::conf::ConfigFile::config_from_bytes(
+        r#"{
+            "cniVersion": "1.1.0",
+            "name": "loopback",
+            "plugins": [{
+              "type": "loopback"
+            }]
+        }"#
+        .as_bytes(),
+    )?;
+
+    let (subnet, gateway) = pick_random_subnet()?;
+    let bridge = cni::conf::ConfigFile::config_from_bytes(
+        format!(
+            r#"{{
+            "cniVersion": "1.1.0",
+            "name": "bridge",
+            "plugins": [{{
+              "type": "bridge",
+              "isGateway": true,
+              "ipMasq": true,
+              "bridge": "cni-{}",
+              "ipam": {{
+                "type": "host-local",
+                "subnet": "{subnet}",
+                "gateway": "{gateway}",
+                "routes": [
+                    {{ "dst": "0.0.0.0/0" }}
+                ]
+              }}
+            }}]
+        }}"#,
+            ns_name.get(0..8).ok_or("Uuid wasnt pure ascii")?
+        )
+        .as_bytes(),
+    )?;
+
+    apply_network(
+        Arc::clone(&cni_config),
+        &namespace,
+        "lo".to_owned(),
+        loopback,
+    )?;
+    apply_network(cni_config, &namespace, "eth0".to_owned(), bridge)?;
+
+    remote_socket
+        .write_u64_le(namespace_path.len() as u64)
+        .await?;
+    remote_socket.write_all(namespace_path.as_bytes()).await?;
+
+    Ok(())
+}
+
+/// Apply the given network config to the given namespace.
+fn apply_network(
+    cni_config: CniConfig,
+    namespace: &rust_cni::namespace::Namespace,
+    adapater_name: String,
+    config: cni::api::NetworkConfigList,
+) -> Result<(), Box<dyn Error>> {
+    log::debug!("Applying adapter {adapater_name}");
+    let network = rust_cni::namespace::Network {
+        cni: cni_config,
+        config,
+        ifname: adapater_name,
+    };
+    network.attach(namespace)?;
+
+    Ok(())
+}
+
+/// Pick a random non-internet subnet thats unlikely to be used already on the LAN/Host
+fn pick_random_subnet() -> Result<(String, Ipv4Addr), Box<dyn Error>> {
+    let random_ip: u32 = rand::rngs::OsRng.try_next_u32()?;
+
+    const {
+        assert!(
+            SUBNET_SIZE > SUBNET_PREFIX_LENGTH,
+            "subnet must be sub-set of prefix."
+        );
+    }
+
+    let prefix_mask = subnet_mask(SUBNET_PREFIX_LENGTH);
+    let target_mask = subnet_mask(SUBNET_SIZE);
+    let random_mask = target_mask ^ prefix_mask;
+
+    let subnet = SUBNET_PREFIX.to_bits() | (random_ip & random_mask);
+    let gateway = subnet | 0b1;
+    let subnet = Ipv4Addr::from_bits(subnet);
+    let gateway = Ipv4Addr::from_bits(gateway);
+
+    Ok((format!("{subnet}/{SUBNET_SIZE}"), gateway))
+}
+
+/// Generate a subnet mask from a subnet length, for example `18` -> `11111111 11111111 11000000 00000000`
+fn subnet_mask(mask_length: u8) -> u32 {
+    u32::MAX << (32_u8.saturating_sub(mask_length))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subnet_mask_works() {
+        assert_eq!(subnet_mask(16), 0b1111_1111_1111_1111_0000_0000_0000_0000);
+        assert_eq!(subnet_mask(18), 0b1111_1111_1111_1111_1100_0000_0000_0000);
+    }
 }

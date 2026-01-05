@@ -73,6 +73,7 @@ sequenceDiagram
 
     serpentine ->> containerd : Create new snapshot
     serpentine <<->> containerd : Get mounts for snapshot
+    note over serpentine : Setup networking (see below)
     serpentine ->> containerd : Create new container
 
     note over serpentine : Set up stdout streaming (see below)
@@ -116,6 +117,35 @@ sequenceDiagram
         sidecar ->> serpentine: output
     end
     deactivate sidecar
+```
+
+### Nettwork access
+To provide isolated network access to containers we use [CNI](https://www.cni.dev/) to attach a loopback and a bridge adapter to it. The sidecar will construct a network namespace and use CNI to setup the needed adapters.
+Serpetine will only create a new name-space when required, and will re-use once not actively in use by a container when running steps, on exit a serpentine process will instruct the sidecar to clean up the network namespaces created this run.
+
+```mermaid
+sequenceDiagram
+    participant linux
+    participant sidecar
+    participant serpentine
+    participant containerd
+    participant process
+    participant lan
+
+    note over serpentine,containerd: over sidecard proxy
+    opt If no free network
+        serpentine ->>+ sidecar : Create network
+        sidecar ->> linux : Create namespace
+        sidecar ->> linux : (via cni) setup adapters
+        sidecar ->>- serpentine : /run/serpentine/XYZ
+    end
+
+    serpentine ->> containerd : CreateTask(namespace=/run/serpetine/XYZ)
+    serpentine ->> containerd : StartTask
+    containerd ->> process : start process in namespace
+    loop until done
+        process <<->> lan : network traffic over bridge plugin
+    end
 ```
 
 ## Export
