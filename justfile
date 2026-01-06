@@ -17,7 +17,10 @@ run_sidecar: build_container
 
 build_container:
     docker container rm -f serpent-tools.containerd
-    docker build -t serpent-tools/containerd:dev -f Dockerfile
+    docker build -t serpent-tools/containerd:dev -f Dockerfile --pull=never
+
+pull_images:
+    grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | xargs -n1 podman pull
 
 size_benchmark: build_container
     cargo build --release -p serpentine
