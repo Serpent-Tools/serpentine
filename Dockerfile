@@ -1,23 +1,39 @@
-FROM debian:bookworm-slim as download
+FROM debian:bookworm-slim as tini
 ENV DEBIAN_FRONTEND=noninteractive
 
 ADD https://github.com/krallin/tini/releases/latest/download/tini-static /tini
 RUN chmod +x /tini
 
-FROM golang:1.24-bookworm AS runc
+FROM rustlang/rust:nightly-slim AS youki
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
-    libbtrfs-dev \
+    git \
+    pkg-config \
+    libsystemd-dev \
+    build-essential \
+    libelf-dev \
+    libseccomp-dev \
+    libclang-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ARG RUNC_VERSION=v1.4.0
+ARG YOUKI_VERSION=v0.5.7
 
-RUN git clone --depth 1 --branch ${RUNC_VERSION} \
-    https://github.com/opencontainers/runc.git /src/runc
-WORKDIR /src/runc
-RUN make BUILDTAGS="" EXTRA_FLAGS="-a" EXTRA_LDFLAGS="-w -s" static
-RUN strip --strip-all runc
+RUN git clone --depth 1 --branch ${YOUKI_VERSION} \
+    https://github.com/youki-dev/youki.git /src/youki
+WORKDIR /src/youki
+RUN sed -i '/\[profile\. release\]/,/lto = true/ c\
+[profile.release]\
+opt-level = 3\
+codegen-units = 1\
+strip = "symbols"\
+lto = "fat"\
+panic = "abort"\
+' Cargo.toml
+
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+RUN cargo +nightly build --release -p youki --target=x86_64-unknown-linux-gnu --features v2
 
 FROM golang:1.24-bookworm AS containerd
 ENV DEBIAN_FRONTEND=noninteractive
@@ -77,11 +93,15 @@ RUN cargo chef cook --release -p sidecar --recipe-path recipe.json
 COPY . .
 RUN cargo build --release -p sidecar
 
-FROM scratch
+# FROM scratch
+FROM debian:bookworm-slim
 COPY --from=containerd /src/containerd/bin /bin
-COPY --from=runc /src/runc/runc /bin/runc
-COPY --from=download /tini /bin/tini
+COPY --from=youki /src/youki/target/x86_64-unknown-linux-gnu/release/youki /bin/runc
+COPY --from=tini /tini /bin/tini
 COPY --from=builder /app/target/release/sidecar /bin
 
+RUN apt update && apt install -y vim
+RUN mkdir -p test/rootfs
+
 EXPOSE 8000
-ENTRYPOINT ["/bin/tini", "--", "/bin/sidecar"]
+ENTRYPOINT ["/bin/tini",  "--", "/bin/sidecar"]

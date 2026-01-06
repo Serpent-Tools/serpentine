@@ -798,7 +798,27 @@ impl Client {
         ));
         process.set_cwd(state.config.working_dir.clone());
 
+        let mut linux = oci_spec::runtime::Linux::default();
+        if let Some(namespaces) = linux.namespaces_mut() {
+            namespaces.retain(|namespace| {
+                namespace.typ() != oci_spec::runtime::LinuxNamespaceType::Cgroup
+            });
+        }
+
+        let mut mounts = oci_spec::runtime::get_default_mounts();
+        mounts.retain(|mount| *mount.typ() != Some("cgroup".to_owned()));
+
+        let mut spec = oci_spec::runtime::Spec::default();
+        spec.set_root(Some(root))
+            .set_process(Some(process))
+            .set_linux(Some(linux))
+            .set_mounts(Some(mounts));
         log::debug!("Creating container {container}");
+        log::debug!(
+            "SPEC: {}",
+            serde_json::to_string_pretty(&spec).unwrap_or_default()
+        );
+
         self.containerd
             .containers()
             .create(
@@ -814,12 +834,8 @@ impl Client {
                         spec: Some(prost_types::Any {
                             type_url: "types.containerd.io/opencontainers/runtime-spec/1/Spec"
                                 .to_owned(),
-                            value: serde_json::to_vec(
-                                &oci_spec::runtime::Spec::default()
-                                    .set_root(Some(root))
-                                    .set_process(Some(process)),
-                            )
-                            .map_err(|err| RuntimeError::internal(format!("{err}")))?,
+                            value: serde_json::to_vec(&spec)
+                                .map_err(|err| RuntimeError::internal(format!("{err}")))?,
                         }),
                         sandbox: String::new(),
                         updated_at: None,
