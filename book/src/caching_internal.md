@@ -27,7 +27,7 @@ While expensive nodes are, such as `Exec`.
 There is however some import stuff to take into consideration, for example `With` is cached despite usually just being small file copies,
 this is for the crucial reason as to allow cache hits on downstream nodes as `With` will generate a new containerd snapshot if it runs.
 
-In general most container notes generate new snapshots, which means that nodes arent pure in terms of exact values or even their hashes, *but* they are semantically pure (meaning even if the snapshot name is different, the snapshot is semantically equivalent to eachother), which is what lets us still cache these nodes.
+In general most container nodes generate new snapshots, which means that nodes arent pure in terms of exact values or even their hashes, *but* they are semantically pure (meaning even if the snapshot name is different, the snapshot is semantically equivalent to eachother), which is what lets us still cache these nodes.
 But this is also why its very important to consider which nodes might cause cache misses down stream and attempt to minimize it, either by caching them as well, or making them more deterministic.
 
 ### Cache validity
@@ -44,7 +44,7 @@ The rest of the cache loading assumes the data is correct.
 
 > [!NOTE]
 > Serpentine commits itself to no `unsafe`, as such we do perform utf-8 validation and return errors if it fails,
-> *but in general data is assumed to be correct, and serpentine might create a non-sense cache if it isnt (if it somehow doesnt cause a utf-8 validation fail).
+> *but* in general data is assumed to be correct, and serpentine might create a non-sense cache if it isnt (if it somehow doesnt cause a utf-8 validation fail).
 
 ### variable-length encoded values
 Serpentine uses a lot of `u64` values, storing these as their full 8 bytes is terribly wasteful when most values are <= 255.

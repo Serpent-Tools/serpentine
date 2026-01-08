@@ -3,7 +3,7 @@
 Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [Buikit](https://github.com/moby/buildkit) does, this page documents the the high level flow of the code in `src/engine/containerd.rs`.
 
 ## Running containerd
-Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github, as well as `tini`.
+Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github, and a few other supporting tools.
 It also loads up a small `sidecar` proxy that primarly proxies a tcp port to the containerd unix socket, but also executes a few smaller tasks in the container, for example setting up and streaming stdout and stderr pipes.
 
 ```mermaid
