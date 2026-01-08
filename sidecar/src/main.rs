@@ -132,6 +132,7 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
         0 => proxy_containerd(remote_socket).await,
         1 => setup_fifo(remote_socket).await,
         2 => create_network(remote_socket).await,
+        3 => delete_network(remote_socket).await,
         _ => Err(format!("Unknown event kind {event}").into()),
     }
 }
@@ -291,6 +292,27 @@ fn pick_random_subnet() -> Result<(String, Ipv4Addr), Box<dyn Error>> {
 /// Generate a subnet mask from a subnet length, for example `18` -> `11111111 11111111 11000000 00000000`
 fn subnet_mask(mask_length: u8) -> u32 {
     u32::MAX << (32_u8.saturating_sub(mask_length))
+}
+
+/// Delete the given network interface.
+async fn delete_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+    let length = remote_socket
+        .read_u64_le()
+        .await?
+        .try_into()
+        .map_err(|_| "u64 overflowed platform usize")?;
+    let mut path = vec![0; length];
+    remote_socket.read_exact(&mut path).await?;
+    let path = String::from_utf8(path)?;
+    let path = PathBuf::from(path);
+
+    let namespace = path.file_name().ok_or("No filename in path")?;
+    let namespace = namespace.to_string_lossy();
+    let namespace = netns_rs::NetNs::get(namespace)?;
+    log::info!("Removing network namespace: {namespace}");
+    namespace.remove()?;
+
+    Ok(())
 }
 
 #[cfg(test)]
