@@ -250,6 +250,8 @@ enum DanglingResource {
     /// A task, this danlging would leave processes running that arent useful anymore.
     /// This holds the container id
     Task(Box<str>),
+    /// A container network
+    Network(Box<str>),
 }
 
 /// A docker client wrapper
@@ -266,6 +268,8 @@ pub struct Client {
     exec_lock: tokio::sync::Semaphore,
     /// Dangling resources
     dangling: Mutex<HashSet<DanglingResource>>,
+    /// Networks that arent currently in use.
+    free_networks: Mutex<Vec<Box<str>>>,
 }
 
 impl Client {
@@ -297,6 +301,7 @@ impl Client {
             tui,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
             dangling: Mutex::new(HashSet::new()),
+            free_networks: Mutex::new(Vec::new()),
         })
     }
 
@@ -682,7 +687,26 @@ impl Client {
         lease: &str,
     ) -> Result<Result<String, String>, RuntimeError> {
         log::debug!("Prepearing to execute {cmd:?} in {state:?}");
-        let container = self.create_container(state, cmd.clone(), lease).await?;
+        let network_namespace = if let Some(namespace) = self.free_networks.lock().await.pop() {
+            log::debug!("Re using namespace {namespace}");
+            namespace
+        } else {
+            let namespace = self.sidecar.create_network_namespace().await?;
+            self.dangling
+                .lock()
+                .await
+                .insert(DanglingResource::Network(namespace.clone()));
+            namespace
+        };
+
+        let container = self
+            .create_container(
+                state,
+                cmd.clone(),
+                network_namespace.to_string().into(),
+                lease,
+            )
+            .await?;
 
         log::debug!("Loading mounts for {:?}", state.snapshot);
         let mounts = self
@@ -711,8 +735,8 @@ impl Client {
                     rootfs: mounts,
                     terminal: false,
                     stdin: String::new(),
-                    stdout: stdout_path.clone(),
-                    stderr: stdout_path.clone(),
+                    stdout: stdout_path.clone().into(),
+                    stderr: stdout_path.into(),
                     checkpoint: None,
                     options: None,
                     runtime_path: String::new(),
@@ -745,6 +769,8 @@ impl Client {
             .into_inner()
             .exit_status;
 
+        self.free_networks.lock().await.push(network_namespace);
+
         drop(exec_lock);
         self.dangling
             .lock()
@@ -756,6 +782,7 @@ impl Client {
             .map_err(|_| RuntimeError::internal("Failed to join task"))?;
 
         log::debug!("Got exit code {exit_code}");
+
         if exit_code == 0 {
             Ok(stdout)
         } else {
@@ -773,6 +800,7 @@ impl Client {
         &self,
         state: &ContainerState,
         cmd: String,
+        network_namespace: PathBuf,
         lease: &str,
     ) -> Result<String, RuntimeError> {
         let container = uuid::Uuid::new_v4().to_string();
@@ -797,14 +825,13 @@ impl Client {
         ));
         process.set_cwd(state.config.working_dir.clone());
 
-        let network_namespace = self.sidecar.create_network_namespace().await?;
         let mut linux = oci_spec::runtime::Linux::default();
         if let Some(namespaces) = linux.namespaces_mut()
             && let Some(namespace) = namespaces
                 .iter_mut()
                 .find(|namespace| namespace.typ() == oci_spec::runtime::LinuxNamespaceType::Network)
         {
-            namespace.set_path(Some(network_namespace.into()));
+            namespace.set_path(Some(network_namespace));
         }
 
         let mut spec = oci_spec::runtime::Spec::default();
@@ -975,6 +1002,9 @@ impl Client {
                             all: true,
                         })
                         .await;
+                }
+                DanglingResource::Network(network) => {
+                    let _ = self.sidecar.delete_network_namespace(network).await;
                 }
             }
         }
