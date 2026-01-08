@@ -17,7 +17,7 @@ use crate::engine::{RuntimeError, sidecar_client};
 use crate::tui::TuiSender;
 
 /// The snapshoter to use for containers.
-const SNAPSHOTER: &str = "overlayfs";
+const SNAPSHOTTER: &str = "overlayfs";
 
 /// Connfiguration for the container
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -305,7 +305,7 @@ impl Client {
         self.containerd
             .snapshot()
             .stat(containerd_services::snapshots::StatSnapshotRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
+                snapshotter: SNAPSHOTTER.to_owned(),
                 key: (*snapshot.snapshot).to_owned(),
             })
             .await
@@ -363,7 +363,7 @@ impl Client {
             .containerd
             .snapshot()
             .stat(containerd_services::snapshots::StatSnapshotRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
+                snapshotter: SNAPSHOTTER.to_owned(),
                 key: last_layer_digest.clone(),
             })
             .await
@@ -416,7 +416,7 @@ impl Client {
                 .containerd
                 .snapshot()
                 .stat(containerd_services::snapshots::StatSnapshotRequest {
-                    snapshotter: SNAPSHOTER.to_owned(),
+                    snapshotter: SNAPSHOTTER.to_owned(),
                     key: layer.digest.clone(),
                 })
                 .await
@@ -433,7 +433,7 @@ impl Client {
                     .prepare(
                         containerd_services::snapshots::PrepareSnapshotRequest {
                             key: key.clone(),
-                            snapshotter: SNAPSHOTER.to_owned(),
+                            snapshotter: SNAPSHOTTER.to_owned(),
                             labels: HashMap::new(),
                             parent: parent.clone(),
                         }
@@ -468,7 +468,7 @@ impl Client {
                     .snapshot()
                     .commit(
                         containerd_services::snapshots::CommitSnapshotRequest {
-                            snapshotter: SNAPSHOTER.to_owned(),
+                            snapshotter: SNAPSHOTTER.to_owned(),
                             name: layer.digest.clone(),
                             key,
                             labels,
@@ -509,7 +509,7 @@ impl Client {
             .containerd
             .snapshot()
             .stat(containerd_services::snapshots::StatSnapshotRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
+                snapshotter: SNAPSHOTTER.to_owned(),
                 key: layer.digest.clone(),
             })
             .await
@@ -597,7 +597,7 @@ impl Client {
             .snapshot()
             .prepare(
                 containerd_services::snapshots::PrepareSnapshotRequest {
-                    snapshotter: SNAPSHOTER.to_owned(),
+                    snapshotter: SNAPSHOTTER.to_owned(),
                     key: snapshot.clone(),
                     parent: (*state.snapshot).to_owned(),
                     labels: HashMap::new(),
@@ -621,7 +621,7 @@ impl Client {
         self.containerd
             .snapshot()
             .commit(containerd_services::snapshots::CommitSnapshotRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
+                snapshotter: SNAPSHOTTER.to_owned(),
                 name: new_snapshot.clone(),
                 key: snapshot.clone(),
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
@@ -648,7 +648,7 @@ impl Client {
             .snapshot()
             .prepare(
                 containerd_services::snapshots::PrepareSnapshotRequest {
-                    snapshotter: SNAPSHOTER.to_owned(),
+                    snapshotter: SNAPSHOTTER.to_owned(),
                     key: snapshot.clone(),
                     parent: (*state.snapshot).to_owned(),
                     labels: HashMap::new(),
@@ -689,7 +689,7 @@ impl Client {
             .containerd
             .snapshot()
             .mounts(containerd_services::snapshots::MountsRequest {
-                snapshotter: SNAPSHOTER.to_owned(),
+                snapshotter: SNAPSHOTTER.to_owned(),
                 key: (*state.snapshot).to_owned(),
             })
             .await?
@@ -823,7 +823,7 @@ impl Client {
                 containerd_services::CreateContainerRequest {
                     container: Some(containerd_services::Container {
                         id: container.clone(),
-                        snapshotter: SNAPSHOTER.to_owned(),
+                        snapshotter: SNAPSHOTTER.to_owned(),
                         snapshot_key: (*state.snapshot).to_owned(),
                         runtime: Some(containerd_services::container::Runtime {
                             name: "io.containerd.runc.v2".to_owned(),

@@ -1,9 +1,5 @@
-FROM debian:bookworm-slim as download
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y \
-    tar \
-    && rm -rf /var/lib/apt/lists/*
+FROM alpine as download
+RUN apk add tar
 
 ADD https://github.com/krallin/tini/releases/latest/download/tini-static /tini
 RUN chmod +x /tini
