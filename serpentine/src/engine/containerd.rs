@@ -57,8 +57,7 @@ impl CacheData for ContainerConfig {
         &self,
         writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
     ) -> Result<(), RuntimeError> {
-        writer
-            .write_u64_variable_length(self.env.len() as u64)
+        serpentine_internal::write_u64_variable_length(&mut **writer, self.env.len() as u64)
             .await?;
         for (key, value) in &self.env {
             key.write(writer).await?;
@@ -66,10 +65,7 @@ impl CacheData for ContainerConfig {
         }
 
         let working_dir = self.working_dir.as_os_str().to_string_lossy();
-        writer
-            .write_u64_variable_length(working_dir.len() as u64)
-            .await?;
-        writer.write_all(working_dir.as_bytes()).await?;
+        serpentine_internal::write_length_prefixed(&mut **writer, working_dir.as_bytes()).await?;
 
         Ok(())
     }
@@ -78,23 +74,14 @@ impl CacheData for ContainerConfig {
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
         let mut env = HashMap::new();
-        let items = reader.read_u64_length_encoded().await?;
+        let items = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
         for _ in 0..items {
             let key = Rc::<str>::read(reader).await?;
             let value = Rc::<str>::read(reader).await?;
             env.insert(key, value);
         }
 
-        let length = reader
-            .read_u64_length_encoded()
-            .await?
-            .try_into()
-            .map_err(|_| RuntimeError::internal("Path length overflows usize for platform"))?;
-
-        let mut working_dir = vec![0; length];
-        reader.read_exact(&mut working_dir).await?;
-        let working_dir =
-            String::from_utf8(working_dir).map_err(|_| RuntimeError::internal("non-utf8 path"))?;
+        let working_dir = serpentine_internal::read_length_prefixed_string(&mut **reader).await?;
         let working_dir = PathBuf::from(working_dir);
 
         Ok(Self { env, working_dir })

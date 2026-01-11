@@ -1,0 +1,22 @@
+[package]
+name = "serpentine_internal"
+version = "0.1.0"
+edition = "2024"
+readme = "README.md"
+description = "internal shared library for serpentine"
+license = "MIT"
+repository = "https://github.com/Serpent-Tools/serpentine"
+keywords = ["internal"]
+categories = ["rust-patterns"]
+
+[dependencies]
+tokio = { version = "1.49.0", default-features = false }
+
+[dev-dependencies]
+proptest = { version = "1.8.0", features = ["attr-macro"] }
+proptest-derive = "0.7.0"
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "test-util"] }
+rstest = "0.26.1"
+
+[lints]
+workspace = true

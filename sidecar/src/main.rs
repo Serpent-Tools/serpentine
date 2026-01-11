@@ -14,6 +14,7 @@ use std::sync::Arc;
 use nix::sys::stat::Mode;
 use rand::TryRngCore;
 use rust_cni::libcni as cni;
+use serpentine_internal::sidecar::{MAGIC_NUMBER, RequestKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 
@@ -119,21 +120,20 @@ disabled_plugins = [
 
 /// Handle a incoming connection
 async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
-    let magic_should_be = "danger noodle".as_bytes();
-    let mut magic_number = vec![0; magic_should_be.len()];
+    let mut magic_number = vec![0; MAGIC_NUMBER.len()];
     remote_socket.read_exact(&mut magic_number).await?;
-    if magic_number != magic_should_be {
-        return Err(format!("magic number {magic_number:?} != {magic_should_be:?}").into());
+    if magic_number != MAGIC_NUMBER.as_bytes() {
+        return Err(format!("magic number {magic_number:?} != {MAGIC_NUMBER:?}",).into());
     }
 
     let event = remote_socket.read_u8().await?;
+    let event = RequestKind::try_from(event).map_err(|()| "Invalid event")?;
 
     match event {
-        0 => proxy_containerd(remote_socket).await,
-        1 => setup_fifo(remote_socket).await,
-        2 => create_network(remote_socket).await,
-        3 => delete_network(remote_socket).await,
-        _ => Err(format!("Unknown event kind {event}").into()),
+        RequestKind::Proxy => proxy_containerd(remote_socket).await,
+        RequestKind::CreateFifo => setup_fifo(remote_socket).await,
+        RequestKind::CreateNetwork => create_network(remote_socket).await,
+        RequestKind::DeleteNetwork => delete_network(remote_socket).await,
     }
 }
 
@@ -158,15 +158,7 @@ async fn setup_fifo(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Err
     let file_bytes = file.to_string_lossy();
     let file_bytes = file_bytes.as_bytes();
 
-    remote_socket
-        .write_u8(
-            file_bytes
-                .len()
-                .try_into()
-                .expect("The file path should never be above 255"),
-        )
-        .await?;
-    remote_socket.write_all(file_bytes).await?;
+    serpentine_internal::write_length_prefixed(&mut remote_socket, file_bytes).await?;
 
     let mut file_reader = tokio::fs::File::open(&file).await?;
     tokio::io::copy(&mut file_reader, &mut remote_socket).await?;
@@ -240,10 +232,8 @@ async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn
     )?;
     apply_network(cni_config, &namespace, "eth0".to_owned(), bridge)?;
 
-    remote_socket
-        .write_u64_le(namespace_path.len() as u64)
+    serpentine_internal::write_length_prefixed(&mut remote_socket, namespace_path.as_bytes())
         .await?;
-    remote_socket.write_all(namespace_path.as_bytes()).await?;
 
     Ok(())
 }
@@ -296,14 +286,7 @@ fn subnet_mask(mask_length: u8) -> u32 {
 
 /// Delete the given network interface.
 async fn delete_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
-    let length = remote_socket
-        .read_u64_le()
-        .await?
-        .try_into()
-        .map_err(|_| "u64 overflowed platform usize")?;
-    let mut path = vec![0; length];
-    remote_socket.read_exact(&mut path).await?;
-    let path = String::from_utf8(path)?;
+    let path = serpentine_internal::read_length_prefixed_string(&mut remote_socket).await?;
     let path = PathBuf::from(path);
 
     let namespace = path.file_name().ok_or("No filename in path")?;
