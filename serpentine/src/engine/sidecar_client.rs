@@ -2,7 +2,8 @@
 
 use std::net::SocketAddr;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use serpentine_internal::sidecar::{MAGIC_NUMBER, RequestKind};
+use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::net;
 
 use crate::engine::RuntimeError;
@@ -18,17 +19,16 @@ impl Client {
     }
 
     /// Connect to serpentine and send the needed magic bytes
-    async fn connect(&self) -> Result<net::TcpStream, RuntimeError> {
+    async fn connect(&self, kind: RequestKind) -> Result<net::TcpStream, RuntimeError> {
         let mut socket = net::TcpStream::connect(self.0).await?;
-        socket.write_all("danger noodle".as_bytes()).await?;
+        socket.write_all(MAGIC_NUMBER.as_bytes()).await?;
+        socket.write_u8(kind as u8).await?;
         Ok(socket)
     }
 
     /// Connect to the sidecar and setup a containerd proxy.
     pub async fn containerd(&self) -> Result<net::TcpStream, RuntimeError> {
-        let mut socket = self.connect().await?;
-        socket.write_u8(0).await?;
-        Ok(socket)
+        self.connect(RequestKind::Proxy).await
     }
 
     /// Connected to the sidecar and request it create a fifo pipe, returns its (in container) path and a reader of the contents.
@@ -36,15 +36,9 @@ impl Client {
         &self,
     ) -> Result<(Box<str>, impl AsyncRead + Unpin + Send + 'static), RuntimeError> {
         log::debug!("Creating fifo pipe");
-        let mut socket = self.connect().await?;
-        socket.write_u8(1).await?;
+        let mut socket = self.connect(RequestKind::CreateFifo).await?;
 
-        let length = socket.read_u8().await?;
-        let mut path = vec![0; length.into()];
-        socket.read_exact(&mut path).await?;
-
-        let path = String::from_utf8(path)
-            .map_err(|_| RuntimeError::internal("Sidecar responded with a non-utf8 path"))?;
+        let path = serpentine_internal::read_length_prefixed_string(&mut socket).await?;
 
         Ok((path.into(), socket))
     }
@@ -52,30 +46,18 @@ impl Client {
     /// Create a network namespace and return its (container) path
     pub async fn create_network_namespace(&self) -> Result<Box<str>, RuntimeError> {
         log::debug!("Creating network namespace");
-        let mut socket = self.connect().await?;
-        socket.write_u8(2).await?;
+        let mut socket = self.connect(RequestKind::CreateNetwork).await?;
 
-        let length = socket
-            .read_u64_le()
-            .await?
-            .try_into()
-            .map_err(|_| RuntimeError::internal("u64 overflowed platform usize"))?;
+        let namespace = serpentine_internal::read_length_prefixed_string(&mut socket).await?;
 
-        let mut namespace = vec![0; length];
-        socket.read_exact(&mut namespace).await?;
-
-        let namespace = String::from_utf8(namespace)
-            .map_err(|_| RuntimeError::internal("Sidecar responded with a non-utf8 path"))?;
         Ok(namespace.into())
     }
 
     /// Delete a network namespace
     pub async fn delete_network_namespace(&self, namespace: &str) -> Result<(), RuntimeError> {
-        let mut socket = self.connect().await?;
-        socket.write_u8(3).await?;
+        let mut socket = self.connect(RequestKind::DeleteNetwork).await?;
 
-        socket.write_u64_le(namespace.len() as u64).await?;
-        socket.write_all(namespace.as_bytes()).await?;
+        serpentine_internal::write_length_prefixed(&mut socket, namespace.as_bytes()).await?;
 
         Ok(())
     }

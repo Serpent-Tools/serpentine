@@ -12,6 +12,4 @@
 
 # Internals
 - [Contributing]()
-- [Caching](caching_internal.md)
 - [Containerd](containerd.md)
-- [Sidecar](sidecar.md)

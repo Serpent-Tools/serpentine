@@ -5,6 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
+serpentine_internal = {version="=0.1.0", path="../serpentine_internal"}
+
 log = "0.4.29"
 simple_logger = { version = "5.1.0", default-features = false }
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "net", "io-util", "fs"] }

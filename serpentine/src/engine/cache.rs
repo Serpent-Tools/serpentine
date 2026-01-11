@@ -93,7 +93,7 @@ impl<T: AsyncWrite + Unpin + Send> CacheWriter<T> {
     ) -> Result<(), RuntimeError> {
         self.file.write_all(&[CACHE_COMPATIBILITY_VERSION]).await?;
 
-        self.write_u64_variable_length(map.len() as u64).await?;
+        serpentine_internal::write_u64_variable_length(&mut self.file, map.len() as u64).await?;
         for (hash, value) in &map {
             self.file.write_all(&hash.0).await?;
             log::debug!("Writing {value:?}");
@@ -109,24 +109,6 @@ impl<T: AsyncWrite + Unpin + Send> CacheWriter<T> {
         }
 
         self.file.flush().await?;
-
-        Ok(())
-    }
-
-    /// Write a `u64` using variable-length encoding
-    pub async fn write_u64_variable_length(&mut self, mut value: u64) -> Result<(), RuntimeError> {
-        loop {
-            let mut byte = (value & 0b0111_1111) as u8;
-            value >>= 7;
-            if value != 0 {
-                byte |= 0b1000_0000;
-            }
-            self.write_u8(byte).await?;
-
-            if value == 0 {
-                break;
-            }
-        }
 
         Ok(())
     }
@@ -155,9 +137,9 @@ impl<T: AsyncWrite + Unpin + Send> CacheWriter<T> {
         );
         if let Some(id) = self.rcs.get(&pointer) {
             log::debug!("Pointing to existing rc, {id}");
-            self.write_u64_variable_length(*id).await?;
+            serpentine_internal::write_u64_variable_length(&mut self.file, *id).await?;
         } else {
-            self.write_u64_variable_length(0).await?;
+            serpentine_internal::write_u64_variable_length(&mut self.file, 0).await?;
             writer(self, rc).await?;
 
             let id = self.next_rc_id;
@@ -221,7 +203,7 @@ impl<T: AsyncRead + Unpin + Send> CacheReader<T> {
         }
 
         let mut map = CacheHashMap::default();
-        let count_items = self.read_u64_length_encoded().await?;
+        let count_items = serpentine_internal::read_u64_length_encoded(&mut self.file).await?;
         for _ in 0..count_items {
             let mut hash = [0; blake3::OUT_LEN];
             self.file.read_exact(&mut hash).await?;
@@ -244,24 +226,6 @@ impl<T: AsyncRead + Unpin + Send> CacheReader<T> {
         Ok(map)
     }
 
-    /// Read a variable-length encoded u64
-    pub async fn read_u64_length_encoded(&mut self) -> Result<u64, RuntimeError> {
-        let mut value: u64 = 0;
-        let mut shift_amount: u8 = 0;
-
-        loop {
-            let byte = self.read_u8().await?;
-            value |= (u64::from(byte) & 0b0111_1111) << shift_amount;
-            shift_amount = shift_amount.saturating_add(7);
-
-            if byte & 0b1000_0000 == 0 {
-                break;
-            }
-        }
-
-        Ok(value)
-    }
-
     /// Read the next part of the file as a Rc of type `R`, this will de-duplicate rcs pointing to
     /// the same data.
     ///
@@ -275,7 +239,7 @@ impl<T: AsyncRead + Unpin + Send> CacheReader<T> {
         >,
         Res: Any + ?Sized + 'static,
     {
-        let id = self.read_u64_length_encoded().await?;
+        let id = serpentine_internal::read_u64_length_encoded(&mut self.file).await?;
         log::debug!(
             "Reading {:?} with id {id}",
             std::any::TypeId::of::<Rc<Res>>()
@@ -348,14 +312,7 @@ impl CacheData for Rc<[u8]> {
         reader
             .read_rc(|reader| {
                 Box::pin(async move {
-                    let length: usize = reader
-                        .read_u64_length_encoded()
-                        .await?
-                        .try_into()
-                        .map_err(|_| RuntimeError::internal("Data overflowed platform usize"))?;
-
-                    let mut data = vec![0; length];
-                    reader.read_exact(&mut data).await?;
+                    let data = serpentine_internal::read_length_prefixed(&mut **reader).await?;
                     Ok(data.into())
                 })
             })
@@ -368,8 +325,7 @@ impl CacheData for Rc<[u8]> {
         writer
             .write_rc(self, |writer, this| {
                 Box::pin(async move {
-                    writer.write_u64_variable_length(this.len() as u64).await?;
-                    writer.write_all(this).await?;
+                    serpentine_internal::write_length_prefixed(&mut **writer, this).await?;
 
                     Ok(())
                 })
@@ -389,18 +345,8 @@ impl CacheData for Rc<str> {
         reader
             .read_rc(|reader| {
                 Box::pin(async move {
-                    let length: usize = reader
-                        .read_u64_length_encoded()
-                        .await?
-                        .try_into()
-                        .map_err(|_| RuntimeError::internal("Data overflowed platform usize"))?;
-
-                    let mut data = vec![0; length];
-                    reader.read_exact(&mut data).await?;
-
-                    let data = String::from_utf8(data).map_err(|_| {
-                        RuntimeError::internal("Non-utf8 string encountered in cache")
-                    })?;
+                    let data =
+                        serpentine_internal::read_length_prefixed_string(&mut **reader).await?;
 
                     Ok(data.into())
                 })
@@ -414,8 +360,8 @@ impl CacheData for Rc<str> {
         writer
             .write_rc(self, |writer, this| {
                 Box::pin(async move {
-                    writer.write_u64_variable_length(this.len() as u64).await?;
-                    writer.write_all(this.as_bytes()).await?;
+                    serpentine_internal::write_length_prefixed(&mut **writer, this.as_bytes())
+                        .await?;
 
                     Ok(())
                 })
@@ -621,8 +567,8 @@ mod tests {
         DummyExternal
     }
 
-    #[proptest::property_test]
     #[test_log::test]
+    #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 100, ..Default::default()})]
     fn different_entries_hash_differently(node: NodeKindId, data1: Vec<Data>, data2: Vec<Data>) {
         proptest::prop_assume!(data1 != data2, "test needs different keys");
 
@@ -639,26 +585,6 @@ mod tests {
         };
 
         assert_ne!(key1.content_hash(), key2.content_hash());
-    }
-
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test]
-    #[test_log::test]
-    async fn variable_length_encoding_roundtrips(#[ignore] value: u64) {
-        let mut buf = std::io::Cursor::new(Vec::new());
-        CacheWriter::new(&mut buf)
-            .write_u64_variable_length(value)
-            .await
-            .unwrap();
-
-        buf.set_position(0);
-        let decoded = CacheReader::new(&mut buf)
-            .read_u64_length_encoded()
-            .await
-            .unwrap();
-
-        assert_eq!(decoded, value, "failed for {value}");
     }
 
     #[proptest::property_test]

@@ -86,7 +86,6 @@ pub enum Data {
     /// A string, usually a short literal
     String(Rc<str>),
     /// A docker container
-    #[cfg_attr(test, proptest(weight = 3))]
     Container(containerd::ContainerState),
     /// A file/folder
     FileSystem(FileSystem),
