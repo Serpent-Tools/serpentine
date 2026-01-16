@@ -1,6 +1,6 @@
 export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox:latest")
-    > With(FromHost("justfile"), "justfile")
-    > Exec("cat justfile")
+    > With(FromHost("Cargo.toml"), "Cargo.toml")
+    > Exec("cat Cargo.toml")
     > With(FromHost("src"), "src")
     > Exec("ls src")
     > Exec("cat src/main.rs");

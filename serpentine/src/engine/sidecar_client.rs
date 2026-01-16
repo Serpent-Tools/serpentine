@@ -2,11 +2,12 @@
 
 use std::net::SocketAddr;
 
-use serpentine_internal::sidecar::{MAGIC_NUMBER, RequestKind};
-use tokio::io::{AsyncRead, AsyncWriteExt};
+use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 
 use crate::engine::RuntimeError;
+use crate::engine::filesystem::FileSystem;
 
 /// A sidecar client, holds the location to connect to for each connection.
 #[derive(Clone, Copy)]
@@ -58,6 +59,70 @@ impl Client {
         let mut socket = self.connect(RequestKind::DeleteNetwork).await?;
 
         serpentine_internal::write_length_prefixed(&mut socket, namespace.as_bytes()).await?;
+
+        Ok(())
+    }
+
+    /// Export a file/folder from the given mounts in the sidecar container
+    pub async fn export_files(
+        &self,
+        mounts: Vec<containerd_client::types::Mount>,
+        path: &str,
+    ) -> Result<impl AsyncRead + Unpin + Send, RuntimeError> {
+        let mut socket = self.connect(RequestKind::ExportFiles).await?;
+
+        serpentine_internal::write_u64_variable_length(&mut socket, mounts.len() as u64).await?;
+        for mount in mounts {
+            let mount = Mount {
+                type_: mount.r#type,
+                source: mount.source,
+                target: mount.target,
+                options: mount.options,
+            };
+            mount.write(&mut socket).await?;
+        }
+
+        serpentine_internal::write_length_prefixed(&mut socket, path.as_bytes()).await?;
+
+        let status = socket.read_u8().await?;
+        if status != 0 {
+            let os_error = socket.read_u8().await?;
+            let message = serpentine_internal::read_length_prefixed_string(&mut socket).await?;
+            let error = if os_error != 0 {
+                std::io::Error::from_raw_os_error(os_error as i32)
+            } else {
+                std::io::Error::new(std::io::ErrorKind::Other, message)
+            };
+            return Err(RuntimeError::IoError(error));
+        }
+
+        Ok(socket)
+    }
+
+    /// Export a file/folder from the given mounts in the sidecar container
+    pub async fn import_files(
+        &self,
+        mounts: Vec<containerd_client::types::Mount>,
+        path: &str,
+        filesystem: &FileSystem,
+    ) -> Result<(), RuntimeError> {
+        let mut socket = self.connect(RequestKind::ImportFiles).await?;
+
+        serpentine_internal::write_u64_variable_length(&mut socket, mounts.len() as u64).await?;
+        for mount in mounts {
+            let mount = Mount {
+                type_: mount.r#type,
+                source: mount.source,
+                target: mount.target,
+                options: mount.options,
+            };
+            mount.write(&mut socket).await?;
+        }
+
+        serpentine_internal::write_length_prefixed(&mut socket, path.as_bytes()).await?;
+
+        let mut reader = filesystem.get_reader().await?;
+        tokio::io::copy(&mut reader, &mut socket).await?;
 
         Ok(())
     }

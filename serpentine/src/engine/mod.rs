@@ -4,6 +4,7 @@ mod cache;
 mod containerd;
 pub mod data_model;
 mod docker;
+mod filesystem;
 pub mod nodes;
 mod scheduler;
 mod sidecar_client;

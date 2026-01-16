@@ -302,7 +302,7 @@ pub trait CacheData: Sized {
     /// Hash this value
     ///
     /// Enums snould make sure to include their discriminants.
-    fn content_hash(&self, hasher: &mut blake3::Hasher);
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError>;
 }
 
 impl CacheData for Rc<[u8]> {
@@ -333,9 +333,11 @@ impl CacheData for Rc<[u8]> {
             .await
     }
 
-    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
         hasher.update(&(self.len() as u64).to_le_bytes());
         hasher.update(self);
+
+        Ok(())
     }
 }
 impl CacheData for Rc<str> {
@@ -369,9 +371,11 @@ impl CacheData for Rc<str> {
             .await
     }
 
-    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
         hasher.update(&(self.len() as u64).to_le_bytes());
         hasher.update(self.as_bytes());
+
+        Ok(())
     }
 }
 
@@ -392,8 +396,8 @@ impl<T: CacheData + Clone + 'static> CacheData for Rc<T> {
             .await
     }
 
-    fn content_hash(&self, hasher: &mut blake3::Hasher) {
-        T::content_hash(self, hasher);
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        T::content_hash(self, hasher).await
     }
 }
 
@@ -408,16 +412,16 @@ pub struct CacheKey<'caller> {
 
 impl CacheKey<'_> {
     /// Hash this key
-    pub fn content_hash(&self) -> CacheHash {
+    pub async fn content_hash(&self) -> Result<CacheHash, RuntimeError> {
         let mut hasher = blake3::Hasher::new();
-        self.node.content_hash(&mut hasher);
+        hasher.update(&self.node.index().to_le_bytes());
         hasher.update(&(self.inputs.len() as u64).to_le_bytes());
 
         for input in self.inputs {
-            input.content_hash(&mut hasher);
+            input.content_hash(&mut hasher).await?;
         }
 
-        CacheHash(hasher.finalize().into())
+        Ok(CacheHash(hasher.finalize().into()))
     }
 }
 
@@ -567,11 +571,16 @@ mod tests {
         DummyExternal
     }
 
-    #[test_log::test]
+    #[tokio::test]
+    #[rstest]
     #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 100, ..Default::default()})]
-    fn different_entries_hash_differently(node: NodeKindId, data1: Vec<Data>, data2: Vec<Data>) {
-        proptest::prop_assume!(data1 != data2, "test needs different keys");
+    #[test_log::test]
 
+    async fn different_entries_hash_differently(
+        #[ignore] node: NodeKindId,
+        #[ignore] data1: Vec<Data>,
+        #[ignore] data2: Vec<Data>,
+    ) {
         let data1 = data1.iter().collect::<Vec<_>>();
         let key1 = CacheKey {
             node,
@@ -584,19 +593,31 @@ mod tests {
             inputs: &data2,
         };
 
-        assert_ne!(key1.content_hash(), key2.content_hash());
+        let hash_1 = key1.content_hash().await.unwrap();
+        let hash_2 = key2.content_hash().await.unwrap();
+
+        if key1 != key2 {
+            assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
+        } else {
+            assert_eq!(hash_1, hash_2, "Keys equal expected same hash.");
+        }
     }
 
+    #[tokio::test]
+    #[rstest]
     #[proptest::property_test]
     #[test_log::test]
-    fn same_entry_hashes_equal(node: NodeKindId, data: Vec<Data>) {
+    async fn same_entry_hashes_equal(#[ignore] node: NodeKindId, #[ignore] data: Vec<Data>) {
         let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
             inputs: &data,
         };
 
-        assert_eq!(key.content_hash(), key.content_hash());
+        assert_eq!(
+            key.content_hash().await.unwrap(),
+            key.content_hash().await.unwrap()
+        );
     }
 
     #[tokio::test]
@@ -616,7 +637,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.content_hash(), value.clone());
+        cache.insert(key.content_hash().await.unwrap(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -627,7 +648,7 @@ mod tests {
         cache_file.set_position(0);
         let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         let loaded_value = loaded_cache
-            .get(key.content_hash())
+            .get(key.content_hash().await.unwrap())
             .expect("Value not found");
 
         assert_eq!(*loaded_value, value);
@@ -720,7 +741,7 @@ mod tests {
                 inputs: &data,
             };
 
-            cache.insert(key.content_hash(), value.clone());
+            cache.insert(key.content_hash().await.unwrap(), value.clone());
         }
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
@@ -740,7 +761,7 @@ mod tests {
             };
 
             let _ = loaded_cache
-                .get(key.content_hash())
+                .get(key.content_hash().await.unwrap())
                 .expect("Value not found");
             // We do not check what the value is as proptest might (and likely will) generate
             // duplicate keys.
@@ -766,7 +787,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.content_hash(), value.clone());
+        cache.insert(key.content_hash().await.unwrap(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -777,7 +798,7 @@ mod tests {
         cache_file.set_position(0);
         let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         loaded_cache
-            .get(key.content_hash())
+            .get(key.content_hash().await.unwrap())
             .expect("Value not found");
 
         // Even tho `keep_old_cache` is false it should still keep the entry in there since we used
@@ -792,7 +813,7 @@ mod tests {
         cache_file.set_position(0);
         let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         second_loaded_cache
-            .get(key.content_hash())
+            .get(key.content_hash().await.unwrap())
             .expect("Value not found");
     }
 
@@ -813,7 +834,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.content_hash(), value.clone());
+        cache.insert(key.content_hash().await.unwrap(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -833,7 +854,7 @@ mod tests {
 
         cache_file.set_position(0);
         let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        let result = second_loaded_cache.get(key.content_hash());
+        let result = second_loaded_cache.get(key.content_hash().await.unwrap());
         assert!(result.is_none(), "unused old_cache value was saved.");
     }
 
@@ -854,7 +875,7 @@ mod tests {
         };
 
         let mut cache = Cache::new();
-        cache.insert(key.content_hash(), value.clone());
+        cache.insert(key.content_hash().await.unwrap(), value.clone());
 
         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
         cache
@@ -875,7 +896,7 @@ mod tests {
         cache_file.set_position(0);
         let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
         second_loaded_cache
-            .get(key.content_hash())
+            .get(key.content_hash().await.unwrap())
             .expect("Value not found");
     }
 }

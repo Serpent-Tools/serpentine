@@ -2,17 +2,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{FutureExt, StreamExt, TryStreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
-use crate::engine::data_model::FileSystem;
+use crate::engine::filesystem::{FileSystem, FileSystemProvider};
 use crate::engine::{RuntimeError, sidecar_client};
 use crate::tui::TuiSender;
 
@@ -26,12 +26,16 @@ pub struct ContainerConfig {
     /// Environment
     env: HashMap<Rc<str>, Rc<str>>,
     /// The working directory
-    working_dir: PathBuf,
+    working_dir: Rc<str>,
 }
 
 impl Hash for ContainerConfig {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u8(0);
+        for (key, value) in &self.env {
+            key.hash(state);
+            value.hash(state);
+        }
+        self.working_dir.hash(state);
     }
 }
 
@@ -64,8 +68,7 @@ impl CacheData for ContainerConfig {
             value.write(writer).await?;
         }
 
-        let working_dir = self.working_dir.as_os_str().to_string_lossy();
-        serpentine_internal::write_length_prefixed(&mut **writer, working_dir.as_bytes()).await?;
+        self.working_dir.write(writer).await?;
 
         Ok(())
     }
@@ -81,21 +84,21 @@ impl CacheData for ContainerConfig {
             env.insert(key, value);
         }
 
-        let working_dir = serpentine_internal::read_length_prefixed_string(&mut **reader).await?;
-        let working_dir = PathBuf::from(working_dir);
-
+        let working_dir = Rc::<str>::read(reader).await?;
         Ok(Self { env, working_dir })
     }
 
-    fn content_hash(&self, hasher: &mut blake3::Hasher) {
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        hasher.update(&(self.env.len() as u64).to_le_bytes());
         for (key, value) in &self.env {
-            key.content_hash(hasher);
-            value.content_hash(hasher);
+            key.content_hash(hasher).await?;
+            value.content_hash(hasher).await?;
         }
 
-        let working_dir = self.working_dir.as_os_str().to_string_lossy();
-        hasher.update(&(working_dir.len() as u64).to_le_bytes());
-        hasher.update(working_dir.as_bytes());
+        hasher.update(&(self.working_dir.len() as u64).to_le_bytes());
+        hasher.update(self.working_dir.as_bytes());
+
+        Ok(())
     }
 }
 
@@ -127,11 +130,11 @@ impl CacheData for ContainerState {
         Ok(Self { snapshot, config })
     }
 
-    fn content_hash(&self, hasher: &mut blake3::Hasher) {
-        self.snapshot.content_hash(hasher);
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        self.snapshot.content_hash(hasher).await?;
+        self.config.content_hash(hasher).await?;
 
-        hasher.update(&(self.config.env.len() as u64).to_le_bytes());
-        self.config.content_hash(hasher);
+        Ok(())
     }
 }
 
@@ -706,6 +709,7 @@ impl Client {
             .await?
             .into_inner()
             .mounts;
+        log::debug!("Mounts: {mounts:#?}");
 
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
         let log_id = cmd.clone();
@@ -810,7 +814,7 @@ impl Client {
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect(),
         ));
-        process.set_cwd(state.config.working_dir.clone());
+        process.set_cwd(state.config.working_dir.as_ref().into());
 
         let mut linux = oci_spec::runtime::Linux::default();
         if let Some(namespaces) = linux.namespaces_mut()
@@ -902,20 +906,88 @@ impl Client {
     /// Copy the given file/directory into the container
     pub async fn copy_fs_into_container(
         &self,
-        container: &ContainerState,
+        state: &ContainerState,
         src: FileSystem,
         dest: &str,
     ) -> Result<ContainerState, RuntimeError> {
-        todo!()
+        let snapshot = uuid::Uuid::new_v4().to_string();
+        let lease = self.new_lease().await?;
+
+        let mounts = self
+            .containerd
+            .snapshot()
+            .prepare(
+                containerd_services::snapshots::PrepareSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.to_owned(),
+                    key: snapshot.clone(),
+                    parent: (*state.snapshot).to_owned(),
+                    labels: HashMap::new(),
+                }
+                .with_lease(&lease),
+            )
+            .await?
+            .into_inner()
+            .mounts;
+
+        log::debug!("Copying filesystem into container at {dest}");
+        let dest = PathBuf::from(state.config.working_dir.to_string()).join(dest);
+
+        self.sidecar
+            .import_files(mounts, &dest.to_string_lossy(), &src)
+            .await?;
+
+        let new_snapshot = uuid::Uuid::new_v4().to_string();
+        self.containerd
+            .snapshot()
+            .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                snapshotter: SNAPSHOTTER.to_owned(),
+                name: new_snapshot.clone(),
+                key: snapshot.clone(),
+                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
+            })
+            .await?;
+        self.drop_lease(lease).await?;
+
+        Ok(ContainerState {
+            snapshot: new_snapshot.into(),
+            config: Rc::clone(&state.config),
+        })
     }
 
     /// Export the given path from the container into a `FileSystem`
     pub async fn export_path(
         &self,
-        image: &ContainerState,
+        state: &ContainerState,
         docker_path: &str,
     ) -> Result<FileSystem, RuntimeError> {
-        todo!()
+        log::debug!("Creating file system provider for {state:?} at {docker_path}");
+        let snapshot = format!("{}/view/{}", state.snapshot, uuid::Uuid::new_v4());
+
+        let lease = self.new_lease().await?;
+        let mounts = self
+            .containerd
+            .snapshot()
+            .view(
+                containerd_services::snapshots::ViewSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.into(),
+                    parent: state.snapshot.to_string(),
+                    key: snapshot,
+                    labels: HashMap::new(),
+                }
+                .with_lease(&lease),
+            )
+            .await?
+            .into_inner()
+            .mounts;
+
+        let docker_path = PathBuf::from(state.config.working_dir.to_string()).join(docker_path);
+
+        Ok(ContainerFileExport {
+            sidecar: self.sidecar,
+            mounts: mounts.into(),
+            path: docker_path.to_string_lossy().into(),
+        }
+        .into())
     }
 
     /// Set the working directory of the container
@@ -925,7 +997,12 @@ impl Client {
     )]
     pub fn set_working_dir(&self, state: &ContainerState, dir: &str) -> ContainerState {
         let mut config = (*state.config).clone();
-        config.working_dir = config.working_dir.join(dir);
+
+        config.working_dir = Path::new(config.working_dir.as_ref())
+            .join(dir)
+            .to_string_lossy()
+            .into();
+
         ContainerState {
             snapshot: Rc::clone(&state.snapshot),
             config: Rc::new(config),
@@ -1020,8 +1097,43 @@ impl Drop for Client {
     fn drop(&mut self) {
         let dangling_count = self.dangling.get_mut().len();
         if dangling_count != 0 {
-            log::warn!("Leaving {dangling_count} dangling resources running in contained.")
+            log::warn!("Leaving {dangling_count} dangling resources running in contained.");
         }
+    }
+}
+
+/// A file system provider for a file/folder in a container
+#[derive(Clone)]
+struct ContainerFileExport {
+    /// The sidecar client to use
+    sidecar: sidecar_client::Client,
+    /// The mounts to use
+    mounts: Rc<[containerd_client::types::Mount]>,
+    /// The path to export
+    path: Rc<str>,
+}
+
+impl FileSystemProvider for ContainerFileExport {
+    fn get_reader<'this>(
+        &'this self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = Result<crate::engine::filesystem::Reader<'this>, RuntimeError>>
+                + 'this,
+        >,
+    > {
+        Box::pin(async move {
+            log::debug!("Creating reader for {} in container", self.path);
+            let reader = self
+                .sidecar
+                .export_files(self.mounts.to_vec(), &self.path)
+                .await?;
+            Ok(crate::engine::filesystem::Reader::from(Box::new(reader)))
+        })
+    }
+
+    fn dyn_clone(&self) -> Box<dyn FileSystemProvider> {
+        Box::new(self.clone())
     }
 }
 
@@ -1248,6 +1360,11 @@ mod tests {
             .expect("Failed to copy into container");
 
         containerd_client
+            .exec(&to, "ls".to_owned())
+            .await
+            .expect("Exec failed");
+
+        containerd_client
             .exec(&to, "grep -q hello nice.txt || exit 1".to_owned())
             .await
             .expect("Exec failed");
@@ -1352,9 +1469,15 @@ mod tests {
             .await
             .expect("Failed to create image");
 
-        let result = containerd_client
+        let fs = containerd_client
             .export_path(&base, "i_am_not_real.txt")
+            .await
+            .expect("Export only creates lazy reader");
+
+        let result = containerd_client
+            .copy_fs_into_container(&base, fs, "huh.txt")
             .await;
+
         assert!(
             result.is_err(),
             "Expected reading non-existent path to fail"
