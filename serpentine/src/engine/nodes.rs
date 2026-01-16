@@ -2,21 +2,13 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use async_compat::CompatExt;
-
 use crate::engine::cache::CacheKey;
-use crate::engine::data_model::{
-    Data,
-    DataType,
-    FILE_SYSTEM_FILE_TAR_NAME,
-    FileSystem,
-    NodeInstanceId,
-    NodeKindId,
-};
+use crate::engine::data_model::{Data, DataType, NodeInstanceId, NodeKindId};
+use crate::engine::filesystem::{self, FileSystem};
 use crate::engine::scheduler::Scheduler;
 use crate::engine::{RuntimeContext, RuntimeError, containerd};
 use crate::snek::CompileError;
@@ -66,35 +58,39 @@ pub trait NodeImpl {
                 .tui
                 .send(crate::tui::TuiMessage::RunningNode);
 
-            let key = CacheKey {
-                node: kind,
-                inputs: &inputs,
-            };
-            let key = key.content_hash();
-            log::debug!("Checking cache with {key:?}");
-            if self.should_be_cached()
-                && let Some(cached_value) = scheduler.context().cache.lock().await.get(key).cloned()
-            {
-                log::debug!("Cache hit on {}", self.describe());
-                if cached_value.healthcheck(scheduler.context()).await {
-                    return Ok(cached_value);
-                }
-                log::warn!("value {cached_value:?} failed health-check, not using cache.");
-            }
-
-            log::debug!("Executing {}", self.describe());
-            let result = self.execute(scheduler.context(), inputs).await?;
-
             if self.should_be_cached() {
-                scheduler
-                    .context()
-                    .cache
-                    .lock()
-                    .await
-                    .insert(key, result.clone());
-            }
+                let key = CacheKey {
+                    node: kind,
+                    inputs: &inputs,
+                };
+                let key = key.content_hash().await?;
+                log::debug!("Checking cache with {key:?}");
+                if let Some(cached_value) = scheduler.context().cache.lock().await.get(key).cloned()
+                {
+                    log::debug!("Cache hit on {}", self.describe());
+                    if cached_value.healthcheck(scheduler.context()).await {
+                        return Ok(cached_value);
+                    }
+                    log::warn!("value {cached_value:?} failed health-check, not using cache.");
+                }
 
-            Ok(result)
+                log::debug!("Executing {}", self.describe());
+                let result = self.execute(scheduler.context(), inputs).await?;
+
+                if self.should_be_cached() {
+                    scheduler
+                        .context()
+                        .cache
+                        .lock()
+                        .await
+                        .insert(key, result.clone());
+                }
+
+                Ok(result)
+            } else {
+                log::debug!("Cache not enabled for node, executing directly.");
+                self.execute(scheduler.context(), inputs).await
+            }
         })
     }
 
@@ -401,79 +397,7 @@ async fn exec_output(
 /// Read a file/folder into a tar from the host system.
 // PERF: Rewrite to use `tar_async`?
 async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSystem, RuntimeError> {
-    let src: std::path::PathBuf = src.to_string().into();
-
-    if src.is_dir() {
-        let tar_data = read_folder_to_tar(src).await?;
-        Ok(FileSystem::Folder(tar_data))
-    } else {
-        let mut tar_data = Vec::new();
-        let mut tar_builder = async_tar::Builder::new(&mut tar_data);
-        let file = tokio::fs::File::open(src).await?;
-        let mut header = async_tar::Header::new_gnu();
-        let metadata = file.metadata().await?;
-        header.set_entry_type(async_tar::EntryType::Regular);
-        header.set_mode(metadata.mode());
-        header.set_size(metadata.len());
-        header.set_cksum();
-        tar_builder
-            .append_data(&mut header, FILE_SYSTEM_FILE_TAR_NAME, file.compat())
-            .await?;
-        tar_builder.finish().await?;
-
-        drop(tar_builder);
-        Ok(FileSystem::File(tar_data.into()))
-    }
-}
-
-/// Read the given path into a tar
-async fn read_folder_to_tar(src: std::path::PathBuf) -> Result<Rc<[u8]>, RuntimeError> {
-    let mut tar_data = Vec::new();
-    let paths = ignore::WalkBuilder::new(&src)
-        .hidden(false)
-        .git_ignore(true)
-        .git_exclude(true)
-        .git_global(true)
-        .build()
-        .filter_map(Result::ok);
-
-    {
-        let mut tar_builder = async_tar::Builder::new(&mut tar_data);
-
-        for entry in paths {
-            let path = entry.path();
-            let relative_path = path.strip_prefix(&src).unwrap_or(path);
-
-            if relative_path.to_string_lossy().is_empty() {
-                continue;
-            }
-
-            if path.is_file() {
-                let file = tokio::fs::File::open(path).await?;
-                let mut header = async_tar::Header::new_gnu();
-                let metadata = file.metadata().await?;
-                header.set_entry_type(async_tar::EntryType::Regular);
-                header.set_mode(metadata.mode());
-                header.set_size(metadata.len());
-                header.set_cksum();
-                tar_builder
-                    .append_data(&mut header, relative_path, file.compat())
-                    .await?;
-            } else if path.is_dir() {
-                let mut header = async_tar::Header::new_gnu();
-                header.set_entry_type(async_tar::EntryType::Directory);
-                header.set_mode(path.metadata()?.mode());
-                header.set_size(0);
-                header.set_cksum();
-                tar_builder
-                    .append(&header, tokio::io::empty().compat())
-                    .await?;
-            }
-        }
-
-        tar_builder.finish().await?;
-    }
-    Ok(tar_data.into())
+    Ok(filesystem::LocalFiles(src.as_ref().into()).into())
 }
 
 /// Extract a `FileSystem` from a container at the given path
@@ -492,13 +416,10 @@ async fn to_host(
     fs: FileSystem,
     path: Rc<str>,
 ) -> Result<i128, RuntimeError> {
-    let data = match fs {
-        FileSystem::File(data) | FileSystem::Folder(data) => data,
-    };
+    let mut reader = fs.get_reader().await?;
 
-    let archive = async_tar::Archive::new(&*data);
-    log::info!("Writing fs to {path}");
-    archive.unpack(&*path).await?;
+    serpentine_internal::read_filesystem_stream_to_disk(Path::new(&*path), &mut reader, false)
+        .await?;
 
     Ok(0)
 }

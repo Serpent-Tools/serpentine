@@ -8,13 +8,15 @@
 
 use std::error::Error;
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
 use rand::TryRngCore;
 use rust_cni::libcni as cni;
-use serpentine_internal::sidecar::{MAGIC_NUMBER, RequestKind};
+use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 
@@ -48,7 +50,7 @@ fn main() -> ! {
                 .expect("Failed to bind address");
             loop {
                 let (socket, _addr) = listener.accept().await.expect("Failed to get connection");
-                log::info!("Got connection, proxying");
+                log::info!("Got connection");
                 tokio::spawn(async move {
                     if let Err(err) = handle_connection(socket).await {
                         log::error!("{err}");
@@ -134,6 +136,8 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
         RequestKind::CreateFifo => setup_fifo(remote_socket).await,
         RequestKind::CreateNetwork => create_network(remote_socket).await,
         RequestKind::DeleteNetwork => delete_network(remote_socket).await,
+        RequestKind::ExportFiles => export_files(remote_socket).await,
+        RequestKind::ImportFiles => import_files(remote_socket).await,
     }
 }
 
@@ -296,6 +300,144 @@ async fn delete_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn
     namespace.remove()?;
 
     Ok(())
+}
+
+/// Export files from a given mount to the path
+async fn export_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+    log::debug!("Exporting files");
+    let mount_folder =
+        PathBuf::from("/run/serpentine/mounts/").join(uuid::Uuid::new_v4().to_string());
+    let mount_folder = DemountOnDrop(mount_folder);
+
+    let mount_count = serpentine_internal::read_u64_length_encoded(&mut remote_socket).await?;
+    for _ in 0..mount_count {
+        let mount = Mount::read(&mut remote_socket).await?;
+        mount_containerd(&mount, &mount_folder).await?;
+    }
+
+    let path_to_export =
+        serpentine_internal::read_length_prefixed_string(&mut remote_socket).await?;
+    log::debug!("Exporting {path_to_export}");
+
+    let full_path = mount_folder.join(path_to_export.strip_prefix("/").unwrap_or(&path_to_export));
+
+    if let Err(err) = tokio::fs::metadata(&full_path).await {
+        log::debug!("Export pre-flight failed: {err}");
+        remote_socket.write_u8(1).await?; // Error status
+        remote_socket
+            .write_u8(err.raw_os_error().unwrap_or(0).try_into().unwrap_or(0))
+            .await?;
+        serpentine_internal::write_length_prefixed(&mut remote_socket, err.to_string().as_bytes())
+            .await?;
+        return Ok(());
+    }
+
+    remote_socket.write_u8(0).await?;
+    serpentine_internal::read_disk_to_filesystem_stream(
+        &full_path,
+        Path::new(""),
+        &mut remote_socket,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Write files from the socket into a mount given on the socket.
+async fn import_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+    log::debug!("Importing files");
+
+    let mount_folder =
+        PathBuf::from("/run/serpentine/mounts/").join(uuid::Uuid::new_v4().to_string());
+    let mount_folder = DemountOnDrop(mount_folder);
+
+    let mount_count = serpentine_internal::read_u64_length_encoded(&mut remote_socket).await?;
+    for _ in 0..mount_count {
+        let mount = Mount::read(&mut remote_socket).await?;
+        mount_containerd(&mount, &mount_folder).await?;
+    }
+
+    let destination_path =
+        serpentine_internal::read_length_prefixed_string(&mut remote_socket).await?;
+    log::debug!("Importing files into {destination_path}");
+    serpentine_internal::read_filesystem_stream_to_disk(
+        &mount_folder.join(
+            destination_path
+                .strip_prefix('/')
+                .unwrap_or(&destination_path),
+        ),
+        &mut remote_socket,
+        true,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Call `nix::mount::unmount` on drop
+struct DemountOnDrop(PathBuf);
+
+impl Deref for DemountOnDrop {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for DemountOnDrop {
+    fn drop(&mut self) {
+        let res = nix::mount::umount(&*self.0);
+        if let Err(err) = res {
+            log::debug!("{err}");
+        }
+    }
+}
+
+/// Mount the provided containerd mount at the given location
+async fn mount_containerd(mount: &Mount, target: &Path) -> Result<(), Box<dyn Error>> {
+    let (flags, data) = parse_containerd_mount_options(&mount.options);
+    let fstype = if mount.type_ == "bind" {
+        None
+    } else {
+        Some(&*mount.type_)
+    };
+
+    let target = target.join(mount.target.strip_prefix("/").unwrap_or(&mount.target));
+    tokio::fs::create_dir_all(&target).await?;
+
+    nix::mount::mount(Some(&*mount.source), &target, fstype, flags, Some(&*data))?;
+
+    Ok(())
+}
+
+/// Parse the `options` array given in containerd mounts into low level linux mount flags and mount
+/// data strings
+fn parse_containerd_mount_options(options: &[String]) -> (MsFlags, String) {
+    let mut flags = MsFlags::empty();
+    let mut data = Vec::new();
+
+    for opt in options {
+        match opt.as_str() {
+            "ro" => flags |= MsFlags::MS_RDONLY,
+            "rw" => {} // default
+            "bind" => flags |= MsFlags::MS_BIND,
+            "rbind" => flags |= MsFlags::MS_BIND | MsFlags::MS_REC,
+            "nosuid" => flags |= MsFlags::MS_NOSUID,
+            "nodev" => flags |= MsFlags::MS_NODEV,
+            "noexec" => flags |= MsFlags::MS_NOEXEC,
+            "remount" => flags |= MsFlags::MS_REMOUNT,
+            "private" => flags |= MsFlags::MS_PRIVATE,
+            "rprivate" => flags |= MsFlags::MS_PRIVATE | MsFlags::MS_REC,
+            "shared" => flags |= MsFlags::MS_SHARED,
+            "rshared" => flags |= MsFlags::MS_SHARED | MsFlags::MS_REC,
+            "slave" => flags |= MsFlags::MS_SLAVE,
+            "rslave" => flags |= MsFlags::MS_SLAVE | MsFlags::MS_REC,
+            other => data.push(other),
+        }
+    }
+
+    (flags, data.join(","))
 }
 
 #[cfg(test)]

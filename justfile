@@ -12,6 +12,9 @@ clean: build_container
     cargo clean
     docker system reset -f
 
+sidecar_logs:
+    docker logs serpent-tools.containerd
+
 run_sidecar: build_container
     docker run --rm -it serpent-tools/containerd:dev
 

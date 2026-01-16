@@ -19,7 +19,6 @@ ignore = "0.4.23"
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "fs", "signal"] }
 futures-util = { version = "0.3.31", default-features = false }
 bollard = { version = "0.19.3", default-features = false, features = ["http", "pipe"] }
-async-tar = { version = "0.5.1", default-features = false }
 containerd-client = { version = "0.8.0", default-features = false }
 oci-client = { version = "0.15.0", default-features = false, features = ["rustls-tls"] }
 serde_json = "1.0.145"
@@ -27,7 +26,6 @@ oci-spec = { version = "0.8.3", default-features = false, features = ["runtime"]
 prost-types = "0.13"
 tokio-util = { version = "0.7.17", features = ["rt"] }
 tower = { version = "0.5.2", default-features = false }
-async-compat = "0.2.5"
 blake3 = "1.8.2"
 
 # Compiler
