@@ -1,6 +1,9 @@
 run entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}}
 
+run_ci entry_point="DEFAULT": build_container
+    cargo run -p serpentine -- run --entry-point {{entry_point}} --standalone-cache --ci
+
 test filter="": build_container
     RUST_LOG="serpentine=trace" cargo nextest run --features _test_docker --no-fail-fast {{filter}}
 

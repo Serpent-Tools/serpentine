@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
@@ -14,7 +15,7 @@ use tokio::sync::Mutex;
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
 use crate::engine::{RuntimeError, sidecar_client};
-use crate::tui::TuiSender;
+use crate::tui::{TuiMessage, TuiSender};
 
 /// The snapshoter to use for containers.
 const SNAPSHOTTER: &str = "overlayfs";
@@ -256,6 +257,8 @@ pub struct Client {
     tui: TuiSender,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
+    /// Lock to serialize image pulls (avoids race conditions with content/snapshot stores)
+    pull_lock: Mutex<()>,
     /// Dangling resources
     dangling: Mutex<HashSet<DanglingResource>>,
     /// Networks that arent currently in use.
@@ -290,6 +293,7 @@ impl Client {
             oci,
             tui,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
+            pull_lock: Mutex::new(()),
             dangling: Mutex::new(HashSet::new()),
             free_networks: Mutex::new(Vec::new()),
         })
@@ -354,6 +358,11 @@ impl Client {
             .last()
             .map(|layer| layer.digest.clone())
             .unwrap_or_default();
+
+        // Serialize pulls to avoid race conditions with content/snapshot stores.
+        // The manifest fetch above is outside the lock to allow concurrent registry access.
+        let pull_guard = self.pull_lock.lock().await;
+
         let image_exists = self
             .containerd
             .snapshot()
@@ -386,9 +395,15 @@ impl Client {
             self.drop_lease(lease).await?;
         }
 
-        let config: oci_client::config::Config =
+        drop(pull_guard);
+
+        let config: oci_client::config::ConfigFile =
             serde_json::from_str(&config).map_err(|err| RuntimeError::internal(err.to_string()))?;
-        let config = ContainerConfig::from(config);
+        let config = if let Some(config) = config.config {
+            ContainerConfig::from(config)
+        } else {
+            ContainerConfig::default()
+        };
 
         Ok(ContainerState {
             snapshot: last_layer_digest.into(),
@@ -520,7 +535,7 @@ impl Client {
         log::debug!("Pulling layer {layer}");
 
         let layer_stream = self.oci.pull_blob_stream(image, &layer).await?;
-        let total_size = layer_stream
+        let total_size: i64 = layer_stream
             .content_length
             .and_then(|len| len.try_into().ok())
             .unwrap_or(0);
@@ -528,6 +543,19 @@ impl Client {
         let upload_ref_clone = upload_ref.clone();
         let digest = layer.digest.clone();
         let digest_clone = digest.clone();
+
+        let task_id = format!("pull-{digest}").into();
+        let task_id_cloned = Arc::clone(&task_id);
+        let task_title = "pulling layer".into();
+        self.tui.send(TuiMessage::UpdateTask(crate::tui::Task {
+            identifier: Arc::clone(&task_id),
+            title: Arc::clone(&task_title),
+            progress: crate::tui::TaskProgress::Measurable {
+                completed: 0,
+                total: total_size.cast_unsigned(),
+            },
+        }));
+        let tui = self.tui.clone();
 
         self.containerd
             .content()
@@ -545,6 +573,14 @@ impl Client {
                             labels: HashMap::new(),
                         };
                         *current_offset = current_offset.saturating_add(layer_data.len());
+                        tui.send(TuiMessage::UpdateTask(crate::tui::Task {
+                            identifier: Arc::clone(&task_id),
+                            title: Arc::clone(&task_title),
+                            progress: crate::tui::TaskProgress::Measurable {
+                                completed: *current_offset as u64,
+                                total: total_size.cast_unsigned(),
+                            },
+                        }));
                         futures_util::future::ready(Some(write))
                     })
                     .with_lease(lease),
@@ -575,6 +611,8 @@ impl Client {
             .into_inner()
             .try_for_each(async |_| Ok(()))
             .await?;
+
+        self.tui.send(TuiMessage::FinishTask(task_id_cloned));
 
         Ok::<_, RuntimeError>(())
     }
@@ -1043,9 +1081,10 @@ impl Client {
 
     /// Shutdown any dangling references
     pub async fn shutdown(self) {
-        for dangling in &*self.dangling.lock().await {
+        for dangling in self.dangling.lock().await.drain() {
             match dangling {
                 DanglingResource::Lease(lease) => {
+                    log::debug!("Deleating dangling lease");
                     let _ = self
                         .containerd
                         .leases()
@@ -1056,6 +1095,7 @@ impl Client {
                         .await;
                 }
                 DanglingResource::Task(container) => {
+                    log::debug!("Stopping dangling task");
                     let _ = self
                         .containerd
                         .tasks()
@@ -1068,7 +1108,8 @@ impl Client {
                         .await;
                 }
                 DanglingResource::Network(network) => {
-                    let _ = self.sidecar.delete_network_namespace(network).await;
+                    log::debug!("Stopping dangling network namespace");
+                    let _ = self.sidecar.delete_network_namespace(&network).await;
                 }
             }
         }
