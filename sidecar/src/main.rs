@@ -337,6 +337,7 @@ async fn export_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn E
         &full_path,
         Path::new(""),
         &mut remote_socket,
+        |_path, _is_dir| true,
     )
     .await?;
 
