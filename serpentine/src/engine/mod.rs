@@ -180,7 +180,7 @@ impl RuntimeContext {
         let _ = tokio::fs::create_dir_all(cli.get_cache().parent().unwrap_or(Path::new(""))).await;
         match tokio::fs::File::create(cli.get_cache()).await {
             Ok(cache_file) => {
-                let _ = cache
+                let res = cache
                     .into_inner()
                     .save_cache(
                         &mut tokio::io::BufWriter::new(cache_file),
@@ -189,6 +189,9 @@ impl RuntimeContext {
                         cli.standalone_cache,
                     )
                     .await;
+                if let Err(err) = res {
+                    log::error!("Failed to write cache file: {err}");
+                }
             }
             Err(err) => {
                 log::error!("Failed to create cache file {err}");

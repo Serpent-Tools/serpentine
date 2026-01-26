@@ -4,12 +4,11 @@ expression: err
 ---
   x Compile Error
 
-Error: compiler::argument_count
+Error: parsing::unexpected_token
 
-  x Expected 1 arguments got 2
-   ,-[<redacted-path>:1:18]
- 1 | export DEFAULT = Noop("hello" "world");
-   :                  ^^^^^^^^^^^|^^^^^^^^^^
-   :                             `-- This node expects 1 arguments
+  x Expected `,`
+   ,-[<redacted-path>:1:44]
+ 1 | export DEFAULT = Exec(Image("rust:latest") "world");
+   :                                            ^^^|^^^
+   :                                               `-- Got `"world"`
    `----
-  help: Remember that chaining counts as a argument, `... > Foo(1, 2)` has 3 arguments passed for example.
