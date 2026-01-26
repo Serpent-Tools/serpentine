@@ -39,7 +39,7 @@ pub struct CacheHash([u8; blake3::OUT_LEN]);
 // https://docs.rs/nohash/latest/nohash/trait.IsEnabled.html
 //
 // This function does this by just taking the first 8 bytes of the hash.
-// This is okay because they are as evenly distrubted in isolation as the whole hash.
+// This is okay because they are as evenly distributed in isolation as the whole hash.
 // And secondly because the `HashMap` will compare the full hashes anyway in the unlikely event of
 // a collision.
 impl std::hash::Hash for CacheHash {
@@ -115,7 +115,7 @@ impl<T: AsyncWrite + Unpin + Send> CacheWriter<T> {
 
     /// Write the given rc to the file, this will duplicate rcs that point to the same data.
     ///
-    /// If the rc hasnt been writen yet calls `writer`
+    /// If the rc hasnt been written yet calls `writer`
     pub async fn write_rc<Value, Func>(
         &mut self,
         rc: &Rc<Value>,

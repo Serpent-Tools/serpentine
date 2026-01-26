@@ -1,6 +1,5 @@
 ---
 source: serpentine/src/snek/mod.rs
-assertion_line: 267
 expression: err
 ---
   x Compile Error

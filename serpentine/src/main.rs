@@ -26,10 +26,10 @@ struct Cli {
 fn get_default_cache_file() -> PathBuf {
     if let Some(project_dirs) = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
     {
-        project_dirs.cache_dir().join("cache.bincode")
+        project_dirs.cache_dir().join("cache.serpentine_cache")
     } else {
         log::warn!("Failed to determine default cache location.");
-        PathBuf::from("./cache.bincode")
+        PathBuf::from("./cache.serpentine_cache")
     }
 }
 

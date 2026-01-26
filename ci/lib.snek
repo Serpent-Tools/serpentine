@@ -1,6 +1,6 @@
 // Most of this will be moved into the stdlib
 
-export rust = Image("rustlang/rust:nightly") > WorkingDir("/app");
+export rust = Image("rustlang/rust:nightly") > WorkingDir("/app") > Exec("apt-get update && apt-get install -y protobuf-compiler");
 
 export def Binstall(container, crate, bin_name) {
     binary = rust 

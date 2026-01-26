@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 
 use crate::engine::{RuntimeError, sidecar_client};
 
-/// The name of the containerd deamon serpetnine spawns.
+/// The name of the containerd daemon serpetnine spawns.
 const CONTAINER_NAME: &str = "serpent-tools.containerd";
 
 /// The name of the docker volume container
