@@ -17,7 +17,11 @@ use crate::engine::filesystem::{FileSystem, FileSystemProvider};
 use crate::engine::{RuntimeError, docker, sidecar_client};
 use crate::tui::{TuiMessage, TuiSender};
 
-/// The snapshoter to use for containers.
+/// The snapshotter to use for containers.
+// WARN: While most of the code is snapshotter agnostic, the ExternalCache implementation uses
+// overlayfs specific knowledge to efficiently produce filesystem diffs.
+// If we change snapshotter in the future that code will need to be updated (likely using the diff
+// service).
 const SNAPSHOTTER: &str = "overlayfs";
 
 /// Connfiguration for the container
@@ -350,8 +354,8 @@ impl Client {
     }
 
     /// download the given image if necessary
-    pub async fn pull_image(&self, image: &str) -> Result<ContainerState, RuntimeError> {
-        let image = oci_client::Reference::try_from(image)?;
+    pub async fn pull_image(&self, image_name: &str) -> Result<ContainerState, RuntimeError> {
+        let image = oci_client::Reference::try_from(image_name)?;
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
 
         log::debug!("Pulling image {image} manifest");
@@ -394,7 +398,7 @@ impl Client {
             log::debug!("Uploaded all layers to containerd");
 
             log::debug!("Creating snapshot from image");
-            self.create_snapshots(manifest, &lease).await?;
+            self.create_snapshots(image_name, manifest, &lease).await?;
 
             self.drop_lease(lease).await?;
         }
@@ -419,6 +423,7 @@ impl Client {
     /// store
     async fn create_snapshots(
         &self,
+        image: &str,
         manifest: oci_client::manifest::OciImageManifest,
         lease: &str,
     ) -> Result<(), RuntimeError> {
@@ -474,7 +479,10 @@ impl Client {
 
                 log::debug!("Committing {key} to {}", layer.digest);
                 let labels = if index == layer_count.saturating_sub(1) {
-                    HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())])
+                    HashMap::from([
+                        ("containerd.io/gc.root".to_owned(), "1".to_owned()),
+                        ("serpentine/image".to_owned(), image.to_owned()),
+                    ])
                 } else {
                     HashMap::new()
                 };
@@ -1025,7 +1033,11 @@ impl Client {
         let dest = PathBuf::from(state.config.working_dir.to_string()).join(dest);
 
         self.sidecar
-            .import_files(mounts, &dest.to_string_lossy(), &src)
+            .import_files(
+                mounts,
+                &dest.to_string_lossy(),
+                &mut src.get_reader().await?,
+            )
             .await?;
 
         let new_snapshot = uuid::Uuid::new_v4().to_string();
@@ -1139,7 +1151,7 @@ impl Client {
         for dangling in self.dangling.lock().await.drain() {
             match dangling {
                 DanglingResource::Lease(lease) => {
-                    log::debug!("Deleating dangling lease");
+                    log::debug!("Deleting dangling lease");
                     let _ = self
                         .containerd
                         .leases()
@@ -1169,11 +1181,161 @@ impl Client {
             }
         }
     }
+
+    /// Export the given snapshot recursively to the given file.
+    ///
+    /// The `seen` hashmap will be used to ensure each snapshot is only exported once.
+    async fn export_snapshot(
+        &self,
+        file: &mut (impl AsyncWrite + Unpin + Send),
+        lease: &str,
+        seen: &mut HashSet<Box<str>>,
+        snapshot: &str,
+    ) -> Result<(), RuntimeError> {
+        if seen.contains(snapshot) {
+            return Ok(());
+        }
+        seen.insert(snapshot.into());
+
+        log::debug!("Exporting {snapshot}");
+        let Some(info) = self
+            .containerd
+            .snapshot()
+            .stat(containerd_services::snapshots::StatSnapshotRequest {
+                snapshotter: SNAPSHOTTER.into(),
+                key: snapshot.to_owned(),
+            })
+            .await?
+            .into_inner()
+            .info
+        else {
+            return Err(RuntimeError::internal("Snapshot not found"));
+        };
+
+        if let Some(image) = info.labels.get("serpentine/image") {
+            log::debug!("Image layer found, writing image name.");
+            file.write_u8(1).await?;
+            serpentine_internal::write_length_prefixed(file, &info.name).await?;
+            file.write_u8(1).await?;
+            serpentine_internal::write_length_prefixed(file, image).await?;
+        } else {
+            log::debug!("Ensuring parent is exported");
+            Box::pin(self.export_snapshot(file, lease, seen, &info.parent)).await?;
+
+            log::debug!("Exporting (actually) {snapshot}");
+            file.write_u8(1).await?;
+            serpentine_internal::write_length_prefixed(file, &info.name).await?;
+            file.write_u8(0).await?;
+            serpentine_internal::write_length_prefixed(file, &info.parent).await?;
+            let view_snapshot = format!("{}/export/{}", info.name, uuid::Uuid::new_v4());
+            let mounts = self
+                .containerd
+                .snapshot()
+                .view(
+                    containerd_services::snapshots::ViewSnapshotRequest {
+                        snapshotter: SNAPSHOTTER.into(),
+                        key: view_snapshot,
+                        parent: info.name,
+                        labels: HashMap::new(),
+                    }
+                    .with_lease(lease),
+                )
+                .await?
+                .into_inner()
+                .mounts;
+            debug_assert_eq!(mounts.len(), 1, "overlayfs should only produce one mount");
+            let Some(mount) = mounts.first() else {
+                return Err(RuntimeError::internal(
+                    "snapshotter did not return any mounts",
+                ));
+            };
+            let Some(lowerdir_option) = mount
+                .options
+                .iter()
+                .find_map(|option| option.strip_prefix("lowerdir="))
+            else {
+                return Err(RuntimeError::internal(
+                    "No lowerdir option found in mounts.",
+                ));
+            };
+            let Some(snapshot_dir) = lowerdir_option.split(':').next() else {
+                return Err(RuntimeError::internal("No dirs found in lowerdir option"));
+            };
+            let mut filesystem = self
+                .sidecar
+                .export_files(
+                    vec![containerd_client::types::Mount {
+                        r#type: "bind".to_owned(),
+                        source: snapshot_dir.to_owned(),
+                        target: String::new(),
+                        options: vec!["ro".to_owned(), "rbind".to_owned()],
+                    }],
+                    "",
+                )
+                .await?;
+            log::debug!("Streaming layer to cache.");
+            tokio::io::copy(&mut filesystem, file).await?;
+        }
+
+        Ok(())
+    }
 }
 
 impl ExternalCache for Client {
     async fn cleanup(&self, data: super::data_model::Data) {
-        todo!()
+        if let super::data_model::Data::Container(container) = data {
+            let delete_result = self
+                .containerd
+                .snapshot()
+                .remove(containerd_services::snapshots::RemoveSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.into(),
+                    key: container.snapshot.to_string(),
+                })
+                .await;
+            if let Err(delete_error) = delete_result {
+                log::error!("Error deleting snapshot, {delete_error}, marking as free instead.");
+
+                let Ok(info) = self
+                    .containerd
+                    .snapshot()
+                    .stat(containerd_services::snapshots::StatSnapshotRequest {
+                        snapshotter: SNAPSHOTTER.into(),
+                        key: container.snapshot.to_string(),
+                    })
+                    .await
+                else {
+                    log::error!("Failed to get labels");
+                    return;
+                };
+
+                let mut labels = info
+                    .into_inner()
+                    .info
+                    .map(|info| info.labels)
+                    .unwrap_or_default();
+                labels.remove("containerd.io/gc.root");
+
+                let update_result = self
+                    .containerd
+                    .snapshot()
+                    .update(containerd_services::snapshots::UpdateSnapshotRequest {
+                        snapshotter: SNAPSHOTTER.into(),
+                        update_mask: Some(prost_types::FieldMask {
+                            paths: vec!["labels".to_owned()],
+                        }),
+                        info: Some(containerd_services::snapshots::Info {
+                            labels,
+                            name: container.snapshot.to_string(),
+                            ..Default::default()
+                        }),
+                    })
+                    .await;
+
+                if let Err(update_error) = update_result {
+                    log::error!("Failed to remove labels from snapshot {update_error}");
+                }
+            }
+        }
     }
 
     async fn export(
@@ -1181,11 +1343,125 @@ impl ExternalCache for Client {
         values: impl IntoIterator<Item = &super::data_model::Data>,
         file: &mut (impl AsyncWrite + Unpin + Send),
     ) -> Result<(), RuntimeError> {
-        todo!()
+        log::info!("Exporting from containerd into cache.");
+        let lease = self.new_lease().await?;
+
+        let mut seen = HashSet::new();
+
+        for value in values {
+            if let super::data_model::Data::Container(container) = value {
+                self.export_snapshot(file, &lease, &mut seen, &container.snapshot)
+                    .await?;
+            }
+        }
+
+        self.drop_lease(lease).await?;
+
+        file.write_u8(0).await?;
+
+        Ok(())
     }
 
     async fn import(&self, file: &mut (impl AsyncRead + Send + Unpin)) -> Result<(), RuntimeError> {
-        todo!()
+        log::info!("Importing from cache into containerd.");
+        let lease = self.new_lease().await?;
+
+        while file.read_u8().await? == 1 {
+            let name = serpentine_internal::read_length_prefixed_string(file).await?;
+            log::debug!("Importing {name}");
+            let kind = file.read_u8().await?;
+
+            match kind {
+                1 => {
+                    let image = serpentine_internal::read_length_prefixed_string(file).await?;
+                    match self.pull_image(&image).await {
+                        Ok(state) => {
+                            let pulled_layer = state.snapshot;
+                            if *pulled_layer != *name {
+                                log::warn!("Image name resolved to different image than in cache.");
+                            }
+                        }
+                        Err(err) => log::error!("Failed to restore {image}: {err}"),
+                    }
+                }
+                0 => {
+                    let parent = serpentine_internal::read_length_prefixed_string(file).await?;
+                    let temp_snapshot = format!("{name}/import/{}", uuid::Uuid::new_v4());
+                    let mounts = self
+                        .containerd
+                        .snapshot()
+                        .prepare(
+                            containerd_services::snapshots::PrepareSnapshotRequest {
+                                snapshotter: SNAPSHOTTER.into(),
+                                key: temp_snapshot.clone(),
+                                parent,
+                                labels: HashMap::new(),
+                            }
+                            .with_lease(&lease),
+                        )
+                        .await?
+                        .into_inner()
+                        .mounts;
+                    debug_assert_eq!(mounts.len(), 1, "There should only be one mount.");
+
+                    let Some(mount) = mounts.first() else {
+                        return Err(RuntimeError::internal(
+                            "snapshotter did not return any mounts",
+                        ));
+                    };
+                    let Some(upperdir_option) = mount
+                        .options
+                        .iter()
+                        .find_map(|option| option.strip_prefix("upperdir="))
+                    else {
+                        return Err(RuntimeError::internal(
+                            "No lowerdir option found in mounts.",
+                        ));
+                    };
+
+                    log::debug!("Copying in filesystem");
+                    self.sidecar
+                        .import_files(
+                            vec![containerd_client::types::Mount {
+                                r#type: "bind".to_owned(),
+                                source: upperdir_option.to_owned(),
+                                target: String::new(),
+                                options: vec!["rw".to_owned(), "rbind".to_owned()],
+                            }],
+                            "",
+                            file,
+                        )
+                        .await?;
+
+                    let commit_result = self
+                        .containerd
+                        .snapshot()
+                        .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                            snapshotter: SNAPSHOTTER.into(),
+                            name,
+                            key: temp_snapshot,
+                            labels: HashMap::from([(
+                                "containerd.io/gc.root".to_owned(),
+                                "1".to_owned(),
+                            )]),
+                        })
+                        .await;
+                    match commit_result {
+                        Ok(_) => {}
+                        Err(status)
+                            if status.code() == containerd_client::tonic::Code::AlreadyExists => {}
+                        Err(err) => return Err(err.into()),
+                    }
+                }
+                _ => {
+                    return Err(RuntimeError::internal("Unknown layer kind."));
+                }
+            }
+        }
+
+        self.drop_lease(lease).await?;
+
+        Ok(())
     }
 }
 
@@ -1193,7 +1469,7 @@ impl Drop for Client {
     fn drop(&mut self) {
         let dangling_count = self.dangling.get_mut().len();
         if dangling_count != 0 {
-            log::warn!("Leaving {dangling_count} dangling resources running in contained.");
+            log::warn!("Leaving {dangling_count} dangling resources running in containerd.");
         }
     }
 }
@@ -1240,6 +1516,7 @@ mod tests {
     use rstest::{fixture, rstest};
 
     use super::*;
+    use crate::engine::data_model::Data;
 
     const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:latest";
 
@@ -1706,35 +1983,125 @@ mod tests {
             .expect("Exec failed");
     }
 
-    // #[rstest]
-    // #[tokio::test]
-    // #[test_log::test]
-    // async fn export_import(#[future] containerd_client: DockerClient) {
-    //     let containerd_client = containerd_client.await;
-    //     let image = containerd_client
-    //         .pull_image(TEST_IMAGE)
-    //         .await
-    //         .expect("Failed to create image");
-    //     let image = containerd_client
-    //         .exec(&image, "touch hello.txt".to_owned())
-    //         .await
-    //         .expect("Failed to create file");
-    //
-    //     let mut data = tokio::io::join;
-    //     containerd_client
-    //         .export(std::iter::once(&image), &mut data)
-    //         .await
-    //         .expect("Failed to export");
-    //     containerd_client.delete_image(&image).await;
-    //     containerd_client
-    //         .import(std::io::Cursor::new(data))
-    //         .await
-    //         .expect("Failed to import");
-    //
-    //     containerd_client
-    //         .exec(&image, "cat hello.txt".to_owned())
-    //         .await
-    //         .expect("Failed to find file");
-    //
-    // }
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn external_cache(#[future] containerd_client: Client) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+
+        let image1 = containerd_client
+            .exec(&image, "mkdir foo".to_owned())
+            .await
+            .expect("Exec failed");
+        let image2 = containerd_client
+            .exec(&image1, "mkdir bar".to_owned())
+            .await
+            .expect("Exec failed");
+
+        let mut export = std::io::Cursor::new(Vec::new());
+        containerd_client
+            .export([&Data::Container(image2.clone())], &mut export)
+            .await
+            .expect("Failed to export");
+
+        containerd_client
+            .cleanup(Data::Container(image.clone()))
+            .await;
+        containerd_client
+            .cleanup(Data::Container(image1.clone()))
+            .await;
+        containerd_client
+            .cleanup(Data::Container(image2.clone()))
+            .await;
+
+        // FIXME: This is flaky
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        export.set_position(0);
+        containerd_client
+            .import(&mut export)
+            .await
+            .expect("Failed to import");
+
+        containerd_client
+            .exec(&image2, "ls foo && ls bar".to_owned())
+            .await
+            .expect("Exec failed");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn external_cache_cleanup_in_use_parent_doesnt_actually_delete(
+        #[future] containerd_client: Client,
+    ) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+
+        let image1 = containerd_client
+            .exec(&image, "mkdir foo".to_owned())
+            .await
+            .expect("Exec failed");
+        let image2 = containerd_client
+            .exec(&image1, "mkdir bar".to_owned())
+            .await
+            .expect("Exec failed");
+
+        containerd_client
+            .cleanup(Data::Container(image1.clone()))
+            .await;
+
+        containerd_client
+            .exec(&image2, "ls foo && ls bar".to_owned())
+            .await
+            .expect("Exec failed");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn external_cache_cleanup_in_wrong_order_still_works(
+        #[future] containerd_client: Client,
+    ) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+
+        let image1 = containerd_client
+            .exec(&image, "mkdir foo".to_owned())
+            .await
+            .expect("Exec failed");
+        let image2 = containerd_client
+            .exec(&image1, "mkdir bar".to_owned())
+            .await
+            .expect("Exec failed");
+
+        containerd_client
+            .cleanup(Data::Container(image1.clone()))
+            .await;
+        containerd_client
+            .cleanup(Data::Container(image2.clone()))
+            .await;
+
+        // FIXME: This is flaky
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        containerd_client
+            .exec(&image2, "echo hello".to_owned())
+            .await
+            .expect_err("This should fail as image2 should be gone");
+        containerd_client
+            .exec(&image1, "echo hello".to_owned())
+            .await
+            .expect_err("This should fail as image1 should be gone");
+    }
 }

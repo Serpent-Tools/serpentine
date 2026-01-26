@@ -104,7 +104,7 @@ impl Client {
         &self,
         mounts: Vec<containerd_client::types::Mount>,
         path: &str,
-        filesystem: &FileSystem,
+        fs_reader: &mut (impl AsyncRead + Send + Unpin),
     ) -> Result<(), RuntimeError> {
         let mut socket = self.connect(RequestKind::ImportFiles).await?;
 
@@ -121,8 +121,7 @@ impl Client {
 
         serpentine_internal::write_length_prefixed(&mut socket, path.as_bytes()).await?;
 
-        let mut reader = filesystem.get_reader().await?;
-        tokio::io::copy(&mut reader, &mut socket).await?;
+        crate::engine::filesystem::copy_filesystem_stream(fs_reader, &mut socket).await?;
 
         Ok(())
     }

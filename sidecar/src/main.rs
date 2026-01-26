@@ -393,7 +393,7 @@ impl Drop for DemountOnDrop {
     fn drop(&mut self) {
         let res = nix::mount::umount(&*self.0);
         if let Err(err) = res {
-            log::debug!("{err}");
+            log::error!("Failed to unmount {}: {err}", self.0.display());
         }
     }
 }

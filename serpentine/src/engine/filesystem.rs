@@ -138,26 +138,7 @@ impl CacheData for FileSystem {
     ) -> Result<Self, RuntimeError> {
         let mut data = Vec::new();
 
-        let mut folder_stack = vec![1_u64];
-        while let Some(current_folder) = folder_stack.last_mut() {
-            if *current_folder == 0 {
-                folder_stack.pop();
-            } else {
-                *current_folder = current_folder.saturating_sub(1);
-
-                let header = FileSystemEntryHeader::read(&mut **reader).await?;
-                match header {
-                    FileSystemEntryHeader::File { length, .. } => {
-                        header.write(&mut data).await?;
-                        tokio::io::copy(&mut (&mut **reader).take(length), &mut data).await?;
-                    }
-                    FileSystemEntryHeader::Folder { entries, .. } => {
-                        header.write(&mut data).await?;
-                        folder_stack.push(entries);
-                    }
-                }
-            }
-        }
+        copy_filesystem_stream(&mut **reader, &mut data).await?;
 
         Ok(InMemoryFile(data.into()).into())
     }
@@ -165,6 +146,36 @@ impl CacheData for FileSystem {
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
         self.0.hash_data(hasher).await
     }
+}
+
+/// Copy the following file system stream from reader to writer.
+/// Leaving the data after the filesystem in the reader.
+pub async fn copy_filesystem_stream(
+    reader: &mut (impl AsyncRead + Unpin + Send),
+    writer: &mut (impl AsyncWrite + Unpin + Send),
+) -> Result<(), RuntimeError> {
+    let mut folder_stack = vec![1_u64];
+    while let Some(current_folder) = folder_stack.last_mut() {
+        if *current_folder == 0 {
+            folder_stack.pop();
+        } else {
+            *current_folder = current_folder.saturating_sub(1);
+
+            let header = FileSystemEntryHeader::read(reader).await?;
+            match header {
+                FileSystemEntryHeader::File { length, .. } => {
+                    header.write(writer).await?;
+                    tokio::io::copy(&mut reader.take(length), writer).await?;
+                }
+                FileSystemEntryHeader::Folder { entries, .. } => {
+                    header.write(writer).await?;
+                    folder_stack.push(entries);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// A FileSystemProvider that reads from the given path on the current system

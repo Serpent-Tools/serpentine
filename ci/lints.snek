@@ -10,7 +10,7 @@ fmt = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo fmt --check");
 
-spelling = Image("debian")
+export spelling = Image("debian")
     > WorkingDir("/app")
     > lib::Binstall("typos-cli", "typos")
     > With(lib::source_code, ".")
