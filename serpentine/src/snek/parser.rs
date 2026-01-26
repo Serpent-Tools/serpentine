@@ -286,12 +286,16 @@ impl<'arena> Parser<'arena> {
     ) -> Result<Vec<T>, CompileError> {
         let separator = separator.as_ref();
         let mut result = Vec::new();
-        while self.peek()? != closing {
-            result.push(parser(self)?);
 
-            if let Some(separator) = separator {
-                self.next_if(*separator)?;
+        let mut first = true;
+
+        while self.peek()? != closing {
+            if !first && let Some(separator) = separator {
+                self.expect(*separator)?;
             }
+
+            result.push(parser(self)?);
+            first = false;
         }
         self.next()?;
         Ok(result)
