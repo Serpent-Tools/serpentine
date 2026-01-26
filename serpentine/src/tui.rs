@@ -33,10 +33,6 @@ pub enum TuiMessage {
     FinishTask(Arc<str>),
     /// Add a line to the logs
     Log(Box<str>),
-    /// A new container was created
-    Container(Box<str>),
-    /// A new container was created
-    StopContainer(Box<str>),
 }
 
 /// Wrapper around a threaded channel, allows channel to not be set.
@@ -58,7 +54,6 @@ impl TuiSender {
 #[derive(Debug)]
 pub enum TaskProgress {
     /// A task with a measurable progress
-    #[expect(dead_code, reason = "Will be used in the future")]
     Measurable {
         /// How many units have been completed
         completed: u64,
@@ -97,8 +92,6 @@ struct UiState {
     tasks: HashMap<Arc<str>, Task>,
     /// Log lines
     logs: heapless::Deque<Box<str>, 20>,
-    /// Containers spawned by serpentine
-    containers: Vec<Box<str>>,
     /// Logs from tasks
     task_logs: heapless::Deque<Box<str>, 40>,
 }
@@ -114,7 +107,6 @@ impl UiState {
             shutting_down: false,
             tasks: HashMap::new(),
             logs: heapless::Deque::new(),
-            containers: Vec::new(),
             task_logs: heapless::Deque::new(),
         }
     }
@@ -154,13 +146,6 @@ impl UiState {
                     self.logs.pop_front();
                 }
                 let _ = self.logs.push_back(msg.clone());
-            }
-            TuiMessage::Container(id) => {
-                self.containers.push(id);
-            }
-            TuiMessage::StopContainer(id) => {
-                // Containers are spun down rarely enough to this to be okay.
-                self.containers.retain(|container| *container != id);
             }
         }
     }
@@ -385,8 +370,7 @@ impl UiState {
 
     /// Draw the various status readouts
     fn draw_status(&self, area: Rect, frame: &mut ratatui::Frame) {
-        let [log_area, container_area] =
-            Layout::new(Direction::Horizontal, [Constraint::Fill(1); 2]).areas(area);
+        let [log_area] = Layout::new(Direction::Horizontal, [Constraint::Fill(1); 1]).areas(area);
 
         let logs = Block::default()
             .borders(Borders::ALL)
@@ -403,11 +387,6 @@ impl UiState {
             ),
             log_inner,
         );
-
-        let containers = Block::default().borders(Borders::ALL).title(" Containers ");
-        let container_inner = containers.inner(container_area);
-        frame.render_widget(containers, container_area);
-        frame.render_widget(Paragraph::new(self.containers.join("\n")), container_inner);
     }
 }
 

@@ -750,9 +750,17 @@ impl Client {
         log::debug!("Mounts: {mounts:#?}");
 
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
+
         let log_id = cmd.clone();
+        let task_id = format!("exec-{container}").into();
+        let task_title = log_id.clone().into();
+
         let stdout = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(Self::read_stdout(
-            stdout, log_id,
+            stdout,
+            log_id,
+            Arc::clone(&task_id),
+            task_title,
+            self.tui.clone(),
         )));
 
         log::debug!("Creating task in {container}");
@@ -811,6 +819,7 @@ impl Client {
             .map_err(|_| RuntimeError::internal("Failed to join task"))?;
 
         log::debug!("Got exit code {exit_code}");
+        self.tui.send(TuiMessage::FinishTask(task_id));
 
         if exit_code == 0 {
             Ok(stdout)
@@ -911,6 +920,9 @@ impl Client {
     async fn read_stdout(
         stdout: impl AsyncRead + Unpin + Send + 'static,
         log_id: String,
+        task_id: Arc<str>,
+        task_title: Arc<str>,
+        tui: TuiSender,
     ) -> Result<String, String> {
         let mut stdout = tokio::io::BufReader::new(stdout).lines();
         let mut result = String::new();
@@ -920,7 +932,14 @@ impl Client {
                 Ok(None) => break,
                 Ok(Some(line)) => {
                     let line = strip_ansi_escapes::strip_str(line);
+
                     log::trace!("{log_id}: {line}");
+                    tui.send(TuiMessage::UpdateTask(crate::tui::Task {
+                        identifier: Arc::clone(&task_id),
+                        title: Arc::clone(&task_title),
+                        progress: crate::tui::TaskProgress::Log(line.clone().into()),
+                    }));
+
                     if !result.is_empty() {
                         result.push('\n');
                     }
