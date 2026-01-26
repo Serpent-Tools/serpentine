@@ -4,7 +4,7 @@ Serpentine uses [containerd](https://github.com/containerd/containerd) in much t
 
 ## Running containerd
 Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github, and a few other supporting tools.
-It also loads up a small `sidecar` proxy that primarly proxies a tcp port to the containerd unix socket, but also executes a few smaller tasks in the container, for example setting up and streaming stdout and stderr pipes.
+It also loads up a small `sidecar` proxy that primarily proxies a tcp port to the containerd unix socket, but also executes a few smaller tasks in the container, for example setting up and streaming stdout and stderr pipes.
 
 ```mermaid
 flowchart LR
@@ -19,14 +19,14 @@ flowchart LR
 
 ## Snapshots
 Snapshots are essentially a docker layer, they are modification to the file system.
-They are generally created via the containerd api by pointing at a parent, running a action against them, then commiting them to a read-only snapshot.
+They are generally created via the containerd api by pointing at a parent, running a action against them, then committing them to a read-only snapshot.
 These snapshots are the core part of serpentines `ContainerState` (which also holds other container data such as env vars).
 
 Essentially, a specific `ContainerState` represents a specific layer in a dockerfile, while a snapshot represents a specific state of the file system. They are closely related, but different.
 For example setting a environment variable does not require creating a new snapshot. 
 
 ## Pulling images
-Pulling a image works similar to docker, serpentine will conntact a OCI compataible hub and pull the image manifest, then it will in parallel query containerd for if it contains the needed layers and if not stream them directly from the hub to the containerd (i.e serpentine never holds the entire image in memory itself). The `pull_image` function returns a `ContainerState` representing the image, to keep the abstractions consistent serpentine doesnt actually register a image with containerd, instead serpentine converts the image metadata to its generic `ContainerState` struct instead.
+Pulling a image works similar to docker, serpentine will contact a OCI compatible hub and pull the image manifest, then it will in parallel query containerd for if it contains the needed layers and if not stream them directly from the hub to the containerd (i.e serpentine never holds the entire image in memory itself). The `pull_image` function returns a `ContainerState` representing the image, to keep the abstractions consistent serpentine doesnt actually register a image with containerd, instead serpentine converts the image metadata to its generic `ContainerState` struct instead.
 
 ```mermaid
 sequenceDiagram
@@ -48,7 +48,7 @@ sequenceDiagram
     end
 
     loop each layer
-        opt if mising 
+        opt if missing 
             serpentine ->> containerd : Prepare snapshot
             serpentine ->> containerd : Apply layer
             serpentine ->> containerd : Commit snapshot

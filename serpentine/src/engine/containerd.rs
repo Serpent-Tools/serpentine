@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
-use crate::engine::{RuntimeError, sidecar_client};
+use crate::engine::{RuntimeError, docker, sidecar_client};
 use crate::tui::{TuiMessage, TuiSender};
 
 /// The snapshoter to use for containers.
@@ -91,7 +91,11 @@ impl CacheData for ContainerConfig {
 
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
         hasher.update(&(self.env.len() as u64).to_le_bytes());
-        for (key, value) in &self.env {
+
+        let mut env: Vec<_> = self.env.iter().collect();
+        env.sort();
+
+        for (key, value) in env {
             key.content_hash(hasher).await?;
             value.content_hash(hasher).await?;
         }
@@ -155,7 +159,7 @@ fn system_goarch() -> &'static str {
     }
 }
 
-/// Return wether the given Oci platform object is compatible with the current system.
+/// Return whether the given Oci platform object is compatible with the current system.
 fn platform_resolver(manifests: &[oci_client::manifest::ImageIndexEntry]) -> Option<String> {
     manifests
         .iter()
@@ -227,7 +231,7 @@ where
         let mut this = self.into_request();
         this.metadata_mut().insert(
             "containerd-lease",
-            lease.parse().expect("Invalid metadta value"),
+            lease.parse().expect("Invalid metadata value"),
         );
         this
     }
@@ -236,7 +240,7 @@ where
 /// A resource that might be left hanging on operation abort, should be cleared out at shutdown
 #[derive(PartialEq, Eq, Hash)]
 enum DanglingResource {
-    /// A lease, this dangling would lead to gc holding onto uneeded data
+    /// A lease, this dangling would lead to gc holding onto unneeded data
     Lease(Box<str>),
     /// A task, this danlging would leave processes running that arent useful anymore.
     /// This holds the container id
@@ -251,7 +255,7 @@ pub struct Client {
     containerd: ContainerdRootClient,
     /// Client to the sidecar
     sidecar: sidecar_client::Client,
-    /// Container registery client
+    /// Container registry client
     oci: oci_client::Client,
     /// Sender to the TUI
     tui: TuiSender,
@@ -468,7 +472,7 @@ impl Client {
                     })
                     .await?;
 
-                log::debug!("Commiting {key} to {}", layer.digest);
+                log::debug!("Committing {key} to {}", layer.digest);
                 let labels = if index == layer_count.saturating_sub(1) {
                     HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())])
                 } else {
@@ -617,7 +621,7 @@ impl Client {
         Ok::<_, RuntimeError>(())
     }
 
-    /// Execute a command on top of a given state and reuturn a new state representing the result
+    /// Execute a command on top of a given state and return a new state representing the result
     pub async fn exec(
         &self,
         state: &ContainerState,
@@ -863,6 +867,35 @@ impl Client {
         ));
         process.set_cwd(state.config.working_dir.as_ref().into());
 
+        // Use Docker's default capabilities
+        let caps: oci_spec::runtime::Capabilities = [
+            oci_spec::runtime::Capability::AuditWrite,
+            oci_spec::runtime::Capability::Chown,
+            oci_spec::runtime::Capability::DacOverride,
+            oci_spec::runtime::Capability::Fowner,
+            oci_spec::runtime::Capability::Fsetid,
+            oci_spec::runtime::Capability::Kill,
+            oci_spec::runtime::Capability::Mknod,
+            oci_spec::runtime::Capability::NetBindService,
+            oci_spec::runtime::Capability::NetRaw,
+            oci_spec::runtime::Capability::Setfcap,
+            oci_spec::runtime::Capability::Setgid,
+            oci_spec::runtime::Capability::Setpcap,
+            oci_spec::runtime::Capability::Setuid,
+            oci_spec::runtime::Capability::SysChroot,
+        ]
+        .into_iter()
+        .collect();
+        let linux_caps = oci_spec::runtime::LinuxCapabilitiesBuilder::default()
+            .bounding(caps.clone())
+            .effective(caps.clone())
+            .inheritable(caps.clone())
+            .permitted(caps.clone())
+            .ambient(caps)
+            .build()
+            .expect("capabilities should be valid");
+        process.set_capabilities(Some(linux_caps));
+
         let mut linux = oci_spec::runtime::Linux::default();
         if let Some(namespaces) = linux.namespaces_mut()
             && let Some(namespace) = namespaces
@@ -915,7 +948,7 @@ impl Client {
         Ok(container)
     }
 
-    /// Read the stdout to a String, returns `Err` if encountered non-utf (containg the output
+    /// Read the stdout to a String, returns `Err` if encountered non-utf (containing the output
     /// without those lines), and `Ok` if all data was utf-8
     async fn read_stdout(
         stdout: impl AsyncRead + Unpin + Send + 'static,
@@ -1021,6 +1054,7 @@ impl Client {
     ) -> Result<FileSystem, RuntimeError> {
         log::debug!("Creating file system provider for {state:?} at {docker_path}");
         let snapshot = format!("{}/view/{}", state.snapshot, uuid::Uuid::new_v4());
+        let docker_path = if docker_path == "." { "" } else { docker_path };
 
         let lease = self.new_lease().await?;
         let mounts = self
@@ -1373,7 +1407,7 @@ mod tests {
             .exec(&image, r"printf '\xff\xfe\xfa'".to_owned())
             .await
             .expect(
-                "Exec failed on non-utf8 stdout, even tho we werent explictly capturing it here. ",
+                "Exec failed on non-utf8 stdout, even tho we werent explicitly capturing it here. ",
             );
     }
 

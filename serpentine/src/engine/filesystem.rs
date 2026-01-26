@@ -17,7 +17,7 @@ pub type Reader<'this> = Box<dyn AsyncRead + Send + Unpin + 'this>;
 
 /// Trait for a object that can provide file system data.
 pub trait FileSystemProvider {
-    /// Get a reader matching the format specififed in `serpentine_internal` from this file system
+    /// Get a reader matching the format specified in `serpentine_internal` from this file system
     /// source.
     fn get_reader<'this>(
         &'this self,

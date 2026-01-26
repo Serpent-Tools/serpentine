@@ -23,7 +23,7 @@ use tokio::net;
 /// The location serpentine connects to the containerd over
 const SOCKET_LOCATION: &str = "/run/containerd.sock";
 
-/// The port serpentine listend on
+/// The port serpentine listened on
 const PORT: u16 = 8000;
 
 /// The size of container subnets
@@ -246,14 +246,14 @@ async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn
 fn apply_network(
     cni_config: CniConfig,
     namespace: &rust_cni::namespace::Namespace,
-    adapater_name: String,
+    adapter_name: String,
     config: cni::api::NetworkConfigList,
 ) -> Result<(), Box<dyn Error>> {
-    log::debug!("Applying adapter {adapater_name}");
+    log::debug!("Applying adapter {adapter_name}");
     let network = rust_cni::namespace::Network {
         cni: cni_config,
         config,
-        ifname: adapater_name,
+        ifname: adapter_name,
     };
     network.attach(namespace)?;
 
@@ -322,7 +322,10 @@ async fn export_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn E
     let full_path = mount_folder.join(path_to_export.strip_prefix("/").unwrap_or(&path_to_export));
 
     if let Err(err) = tokio::fs::metadata(&full_path).await {
-        log::debug!("Export pre-flight failed: {err}");
+        log::error!(
+            "Export pre-flight failed for {}: {err}",
+            full_path.display()
+        );
         remote_socket.write_u8(1).await?; // Error status
         remote_socket
             .write_u8(err.raw_os_error().unwrap_or(0).try_into().unwrap_or(0))

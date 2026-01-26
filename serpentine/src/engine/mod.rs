@@ -29,7 +29,7 @@ pub enum RuntimeError {
     /// Containerd API error (for transport)
     #[error("Containerd API error: {0}")]
     #[diagnostic(code(containerd_error))]
-    ContainerdTranport(#[from] containerd_client::tonic::transport::Error),
+    ContainerdTransport(#[from] containerd_client::tonic::transport::Error),
 
     /// Containerd API error (for containerd itself)
     #[error("Containerd API error: {0}")]
@@ -79,7 +79,7 @@ pub enum RuntimeError {
         output: String,
     },
 
-    /// Attmpted to capture non-utf8 output
+    /// Attempted to capture non-utf8 output
     #[error("Failed to capture stdout of command as non-utf8 was found: \n{output}")]
     #[diagnostic(code(command_execution_error))]
     NonUtf8Capture {

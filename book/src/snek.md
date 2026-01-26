@@ -15,7 +15,7 @@ export DEFAULT = Image("rust:latest")
 ## Syntax 
 
 ### Comments
-Comments in snek are either pre-fixed with `//`, or are multi-line or even inline conent deliminated by `/*` and `*/`
+Comments in snek are either pre-fixed with `//`, or are multi-line or even inline content delimited by `/*` and `*/`
 ```snek
 // I am a single line comment
 
@@ -30,7 +30,7 @@ foo = /* I am a inline comment */ 10;
 The core primitive in snek is the node, its defined like a function call, `A()`, and it can take arguments, `A(1, 2, 3)`.
 In fact this is all you need to express everything snek can express, the rest is simple ergonomics and de-duplications. 
 
-while generally you might think of most operations as a chain of operations, and we will get to the syntatic sugar for that, but its important to keep in mind that at the end of the day serpentine just sees nodes and their arguments. For example a chain of commands is really just one `Exec` call taking the output of another as a argument.
+while generally you might think of most operations as a chain of operations, and we will get to the syntactic sugar for that, but its important to keep in mind that at the end of the day serpentine just sees nodes and their arguments. For example a chain of commands is really just one `Exec` call taking the output of another as a argument.
 
 For example `Exec(Exec(Image("rust:latest"), "rustup component add clippy"), "rustup component add rustfmt")` is represented as the following graph:
 ```mermaid
@@ -47,7 +47,7 @@ flowchart LR
     Image --> E1 --> E2
 ```
 
-For the rest of this page for simplicitly we will inline literals into their nodes, as such:
+For the rest of this page for simplicity we will inline literals into their nodes, as such:
 ```mermaid
 flowchart LR
     Image["Image(rust:latest)"]
@@ -100,7 +100,7 @@ export DEFAULT = Image("rust:latest")
 (See further down about modules and other uses of `export`)
 
 ### Phantom inputs
-Phantom inputs lets you make the scheduler wait on certain other nodes before contiuning with the execution of the given node, it can also be used to create a group of nodes. Phantom inputs are marked by adding a `!` before the node call and then the name of the label to wait on, for example `!tests Exec("cargo build")` will wait for the node pointed to by the `tests` label to complete before starting to pull the build exec. if you want to specify multiple phantom inputs use `()`, for example to define a set of tests one might do 
+Phantom inputs lets you make the scheduler wait on certain other nodes before containing with the execution of the given node, it can also be used to create a group of nodes. Phantom inputs are marked by adding a `!` before the node call and then the name of the label to wait on, for example `!tests Exec("cargo build")` will wait for the node pointed to by the `tests` label to complete before starting to pull the build exec. if you want to specify multiple phantom inputs use `()`, for example to define a set of tests one might do 
 ```snek
 tests = !(unit_tests, integration_tests) Noop(0);
 ```
@@ -121,7 +121,7 @@ now we can use this function in the rest of our pipeline.
 ```snek
 Image("rust:latest") > Install("cargo-nextest");
 ```
-(remmember that `>` puts the left hand side as the first argument, this is why most functions take say `container` as their first argument.)
+(remember that `>` puts the left hand side as the first argument, this is why most functions take say `container` as their first argument.)
 
 Internally functions work by inlining, you might think this leads to duplication, but the optimizer (see below) actually means this leads to less duplication. Hence this leads to the following graph:
 ```mermaid
@@ -152,12 +152,12 @@ flowchart LR
 ```
 
 ## Modules 
-While snek has a nice selection of builtins it is often nice to share more compelx functions or even just labels between files, in fact everything in the standard library (except the prelude) is implemented in snek itself. 
+While snek has a nice selection of builtins it is often nice to share more complex functions or even just labels between files, in fact everything in the standard library (except the prelude) is implemented in snek itself. 
 Modules in snek mark what they wish to be public using the `export` keyword, generally this can be prefixed between labels, functions, or imports.
 ```snek
 export import "./abc.snek" as abc;
 
-export def Foo(contanier) { /* ... */ }
+export def Foo(container) { /* ... */ }
 
 export bar = Foo(Image("rust:latest"));
 ```
@@ -172,7 +172,7 @@ example = module::bar > module::Foo() > module::abc::SomethingElse();
 The std-lib is imported in the same way, with the caveat that `@` is used as a alias to the stdlibs installation path, for example `import "@/rust.snek" as rust;`
 
 ## Naming connventions 
-Snek identifiers must consist of a alphabetic characther followed by a mix of alphanumeric and `-` and `_` values.
+Snek identifiers must consist of a alphabetic character followed by a mix of alphanumeric and `-` and `_` values.
 In other words they must match the following regex, `[a-zA-Z][a-zA-Z0-9_-]+`.
 
 While not a requirement, in general snek code should use snake_case for labels and modules, and PascalCase for functions, these are the connventions the stdlib uses.
@@ -203,4 +203,4 @@ flowchart LR
 ```
 
 This becomes even more important with Functions take our `Binstall` function from before, without this optimization every call to it would install binstall and the given tool every time, but with the de-duplicator binstall is only installed ones, and each specific tool is also only installed once.
-This means you can write functions as ergonomicly as you want and as long as you are smart with at wich points you introduce the arguments you can still get amazing performance.
+This means you can write functions as ergonomicly as you want and as long as you are smart with at which points you introduce the arguments you can still get amazing performance.

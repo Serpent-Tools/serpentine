@@ -69,7 +69,7 @@ pub async fn write_length_prefixed(
 /// Read a length-prefixed `Vec<u8>`.
 ///
 /// # Errors
-/// If writting the value causes IO error.
+/// If writing the value causes IO error.
 pub async fn read_length_prefixed(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> {
     let length = read_u64_length_encoded(reader)
         .await?
@@ -84,7 +84,7 @@ pub async fn read_length_prefixed(reader: &mut (impl AsyncRead + Unpin)) -> Resu
 /// Read a length-prefixed `String`.
 ///
 /// # Errors
-/// If writting the value causes IO error.
+/// If writing the value causes IO error.
 /// Or if the data read isnt utf8.
 pub async fn read_length_prefixed_string(reader: &mut (impl AsyncRead + Unpin)) -> Result<String> {
     let bytes = read_length_prefixed(reader).await?;
@@ -168,8 +168,8 @@ impl FileSystemEntryHeader {
 /// the relative path specifies the specific sub item being written right now (in most cases this
 /// should be `.`)
 ///
-/// The given filter is given each path and bool indicating wether it is a directory, if the
-/// returned value is false the item is not emmited.
+/// The given filter is given each path and bool indicating whether it is a directory, if the
+/// returned value is false the item is not emitted.
 ///
 /// # Errors
 /// If the `writer` returns a error or reading from the filesystem runs into a error.
@@ -195,48 +195,44 @@ pub async fn read_disk_to_filesystem_stream(
     let metadata = tokio::fs::metadata(&absolute_path_to_item).await?;
 
     if metadata.is_file() {
-        if filter(&absolute_path_to_item, false) {
-            let header = FileSystemEntryHeader::File {
-                name,
-                length: metadata.len(),
-            };
-            header.write(writer).await?;
+        let header = FileSystemEntryHeader::File {
+            name,
+            length: metadata.len(),
+        };
+        header.write(writer).await?;
 
-            let mut file = tokio::fs::File::open(absolute_path_to_item).await?;
-            tokio::io::copy(&mut file, writer).await?;
-        } else {
-            log::debug!("File {} ignored", absolute_path_to_item.display());
-        }
+        let mut file = tokio::fs::File::open(absolute_path_to_item).await?;
+        tokio::io::copy(&mut file, writer).await?;
     } else if metadata.is_dir() {
-        if filter(&absolute_path_to_item, true) {
-            let entries = {
-                let mut entries = Vec::new();
-                let mut entry_stream = tokio::fs::read_dir(absolute_path_to_item).await?;
+        let entries = {
+            let mut entries = Vec::new();
+            let mut entry_stream = tokio::fs::read_dir(&absolute_path_to_item).await?;
 
-                while let Some(entry) = entry_stream.next_entry().await? {
+            while let Some(entry) = entry_stream.next_entry().await? {
+                if filter(&entry.path(), entry.metadata().await?.is_dir()) {
                     entries.push(entry);
+                } else {
+                    log::debug!("File {} ignored", absolute_path_to_item.display());
                 }
-
-                entries
-            };
-            let header = FileSystemEntryHeader::Folder {
-                name,
-                entries: entries.len() as u64,
-            };
-            header.write(writer).await?;
-
-            for entry in entries {
-                let relative_path = relative_path.join(entry.file_name());
-                Box::pin(read_disk_to_filesystem_stream(
-                    absolute_path,
-                    &relative_path,
-                    writer,
-                    filter,
-                ))
-                .await?;
             }
-        } else {
-            log::debug!("File {} ignored", absolute_path_to_item.display());
+
+            entries
+        };
+        let header = FileSystemEntryHeader::Folder {
+            name,
+            entries: entries.len() as u64,
+        };
+        header.write(writer).await?;
+
+        for entry in entries {
+            let relative_path = relative_path.join(entry.file_name());
+            Box::pin(read_disk_to_filesystem_stream(
+                absolute_path,
+                &relative_path,
+                writer,
+                filter,
+            ))
+            .await?;
         }
     }
     Ok(())

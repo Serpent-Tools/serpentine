@@ -62,6 +62,6 @@ export light_tests = !(basic_tests) Noop(0);
 export update_snapshot = lib::rust
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-insta", "cargo-insta")
-    > Exec("cargo insta test --accept --unreferenced delete --frozen")
-    > Export("./src")
-    > ToHost("./src");
+    > Exec("cargo insta test --accept --unreferenced delete")
+    > Export("./serpentine/src")
+    > ToHost("./serpentine/src");
