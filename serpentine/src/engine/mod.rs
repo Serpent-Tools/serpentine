@@ -177,16 +177,22 @@ impl RuntimeContext {
             cache,
         } = self;
         tui.send(TuiMessage::ShuttingDown);
-        if let Ok(cache_file) = tokio::fs::File::create(cli.get_cache()).await {
-            let _ = cache
-                .into_inner()
-                .save_cache(
-                    &mut tokio::io::BufWriter::new(cache_file),
-                    &containerd,
-                    !cli.clean_old,
-                    cli.standalone_cache,
-                )
-                .await;
+        let _ = tokio::fs::create_dir_all(cli.get_cache().parent().unwrap_or(Path::new(""))).await;
+        match tokio::fs::File::create(cli.get_cache()).await {
+            Ok(cache_file) => {
+                let _ = cache
+                    .into_inner()
+                    .save_cache(
+                        &mut tokio::io::BufWriter::new(cache_file),
+                        &containerd,
+                        !cli.clean_old,
+                        cli.standalone_cache,
+                    )
+                    .await;
+            }
+            Err(err) => {
+                log::error!("Failed to create cache file {err}");
+            }
         }
 
         containerd.shutdown().await;
