@@ -970,6 +970,8 @@ impl Client {
         let snapshot = uuid::Uuid::new_v4().to_string();
         let lease = self.new_lease().await?;
 
+        let dest = if dest == "." { "" } else { dest };
+
         let mounts = self
             .containerd
             .snapshot()
@@ -1514,6 +1516,53 @@ mod tests {
             .exec(
                 &to,
                 "grep -q hello ./hello/bar/baz/nice.txt || exit 1".to_owned(),
+            )
+            .await
+            .expect("Exec failed");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn copy_folder_between_containers_relative_paths_dot(
+        #[future] containerd_client: Client,
+    ) {
+        let containerd_client = containerd_client.await;
+        let base = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        let base = containerd_client.set_working_dir(&base, "/testing");
+
+        let from = containerd_client
+            .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
+            .await
+            .expect("Exec failed");
+
+        let from = containerd_client
+            .exec(&from, "echo hello > ./foo/bar/baz/nice.txt".to_owned())
+            .await
+            .expect("Exec failed");
+
+        let file = containerd_client
+            .export_path(&from, ".")
+            .await
+            .expect("Export failed");
+
+        let to = containerd_client
+            .copy_fs_into_container(&base, file, ".")
+            .await
+            .expect("Failed to copy into container");
+
+        containerd_client
+            .exec(&to, "ls ./foo/bar/baz".to_owned())
+            .await
+            .expect("Exec failed");
+
+        containerd_client
+            .exec(
+                &to,
+                "grep -q hello ./foo/bar/baz/nice.txt || exit 1".to_owned(),
             )
             .await
             .expect("Exec failed");

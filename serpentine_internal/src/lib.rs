@@ -168,12 +168,16 @@ impl FileSystemEntryHeader {
 /// the relative path specifies the specific sub item being written right now (in most cases this
 /// should be `.`)
 ///
+/// The given filter is given each path and bool indicating wether it is a directory, if the
+/// returned value is false the item is not emmited.
+///
 /// # Errors
 /// If the `writer` returns a error or reading from the filesystem runs into a error.
 pub async fn read_disk_to_filesystem_stream(
     absolute_path: &Path,
     relative_path: &Path,
     writer: &mut (impl AsyncWrite + Unpin + Send),
+    filter: impl Fn(&Path, bool) -> bool + Copy,
 ) -> Result<()> {
     let name = relative_path
         .file_name()
@@ -191,39 +195,48 @@ pub async fn read_disk_to_filesystem_stream(
     let metadata = tokio::fs::metadata(&absolute_path_to_item).await?;
 
     if metadata.is_file() {
-        let header = FileSystemEntryHeader::File {
-            name,
-            length: metadata.len(),
-        };
-        header.write(writer).await?;
+        if filter(&absolute_path_to_item, false) {
+            let header = FileSystemEntryHeader::File {
+                name,
+                length: metadata.len(),
+            };
+            header.write(writer).await?;
 
-        let mut file = tokio::fs::File::open(absolute_path_to_item).await?;
-        tokio::io::copy(&mut file, writer).await?;
+            let mut file = tokio::fs::File::open(absolute_path_to_item).await?;
+            tokio::io::copy(&mut file, writer).await?;
+        } else {
+            log::debug!("File {} ignored", absolute_path_to_item.display());
+        }
     } else if metadata.is_dir() {
-        let entries = {
-            let mut entries = Vec::new();
-            let mut entry_stream = tokio::fs::read_dir(absolute_path_to_item).await?;
+        if filter(&absolute_path_to_item, true) {
+            let entries = {
+                let mut entries = Vec::new();
+                let mut entry_stream = tokio::fs::read_dir(absolute_path_to_item).await?;
 
-            while let Some(entry) = entry_stream.next_entry().await? {
-                entries.push(entry);
+                while let Some(entry) = entry_stream.next_entry().await? {
+                    entries.push(entry);
+                }
+
+                entries
+            };
+            let header = FileSystemEntryHeader::Folder {
+                name,
+                entries: entries.len() as u64,
+            };
+            header.write(writer).await?;
+
+            for entry in entries {
+                let relative_path = relative_path.join(entry.file_name());
+                Box::pin(read_disk_to_filesystem_stream(
+                    absolute_path,
+                    &relative_path,
+                    writer,
+                    filter,
+                ))
+                .await?;
             }
-
-            entries
-        };
-        let header = FileSystemEntryHeader::Folder {
-            name,
-            entries: entries.len() as u64,
-        };
-        header.write(writer).await?;
-
-        for entry in entries {
-            let relative_path = relative_path.join(entry.file_name());
-            Box::pin(read_disk_to_filesystem_stream(
-                absolute_path,
-                &relative_path,
-                writer,
-            ))
-            .await?;
+        } else {
+            log::debug!("File {} ignored", absolute_path_to_item.display());
         }
     }
     Ok(())

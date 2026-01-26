@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serpentine_internal::FileSystemEntryHeader;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
@@ -176,12 +177,20 @@ impl FileSystemProvider for LocalFiles {
         Box::pin(async move {
             let (mut writer, reader) = tokio::io::duplex(4048);
             let path = self.0.clone();
+            let ignore = discover_gitignore(&self.0);
 
             tokio::spawn(async move {
                 let res = serpentine_internal::read_disk_to_filesystem_stream(
                     &path,
                     Path::new(""),
                     &mut writer,
+                    |path, is_dir| {
+                        if let Some(ignore) = &ignore {
+                            !ignore.matched(path, is_dir).is_ignore()
+                        } else {
+                            true
+                        }
+                    },
                 )
                 .await;
 
@@ -197,4 +206,28 @@ impl FileSystemProvider for LocalFiles {
     fn dyn_clone(&self) -> Box<dyn FileSystemProvider> {
         Box::new(Self(self.0.clone()))
     }
+}
+
+/// Find all relevant ignore files and construct a ignore matcher.
+fn discover_gitignore(within_dir: &Path) -> Option<Gitignore> {
+    let within_dir = within_dir.canonicalize().ok()?;
+    let repo_root = within_dir
+        .ancestors()
+        .find(|path| path.join(".git").exists())?;
+    log::debug!("Found git root at {}", repo_root.display());
+    let mut builder = GitignoreBuilder::new(repo_root);
+
+    if let Some(user_dirs) = directories::UserDirs::new() {
+        let _ = builder.add(user_dirs.home_dir().join(".config/git/ignore"));
+    }
+
+    let _ = builder.add(repo_root.join(".git/info/exclude"));
+    for ancestor in within_dir.ancestors() {
+        let _ = builder.add(ancestor.join(".gitignore"));
+        if ancestor == repo_root {
+            break;
+        }
+    }
+
+    builder.build().ok()
 }
