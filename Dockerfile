@@ -1,13 +1,13 @@
 FROM alpine as download
-RUN apk add tar
+RUN apk add tar curl
 
-ADD https://github.com/krallin/tini/releases/latest/download/tini-static /tini
-RUN chmod +x /tini
+RUN curl -fsSL https://github.com/krallin/tini/releases/latest/download/tini-static -o /tini && \
+    chmod +x /tini
 
 ARG CNI_VERSION=v1.9.0
-ADD https://github.com/containernetworking/plugins/releases/download/$CNI_VERSION/cni-plugins-linux-amd64-$CNI_VERSION.tgz /cni.tgz
-RUN mkdir -p /cni_all && \
-    tar -xvzf cni.tgz -C /cni_all && \
+RUN curl -fsSL https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-amd64-${CNI_VERSION}.tgz -o /cni.tgz && \
+    mkdir -p /cni_all && \
+    tar -xzf /cni.tgz -C /cni_all && \
     mkdir -p /cni && \
     mv /cni_all/loopback /cni_all/bridge /cni_all/host-local /cni
 
