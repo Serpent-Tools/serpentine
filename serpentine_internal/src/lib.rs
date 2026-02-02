@@ -1,8 +1,7 @@
 //! Internal crate for serpentine, Nothing in this crate follows semantic versioning.
 
 use std::io::{Error, Result};
-#[cfg(unix)]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -299,7 +298,16 @@ pub async fn read_filesystem_stream_to_disk(
 /// `serpentine/src/engine/sidecar_clinet.rs` for the server and client sides, this module exists to
 /// share certain values.
 pub mod sidecar {
-    use super::*;
+    use std::io::{Error, Result};
+
+    use tokio::io::{AsyncRead, AsyncWrite};
+
+    use super::{
+        read_length_prefixed_string,
+        read_u64_length_encoded,
+        write_length_prefixed,
+        write_u64_variable_length,
+    };
 
     /// Magic number to protect sidecar from garbage data as well as XSRF attacks.
     pub const MAGIC_NUMBER: &str = "danger noodle";

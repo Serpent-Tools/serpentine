@@ -13,6 +13,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use crate::engine::RuntimeError;
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
 
+/// Type alias for a boxed async reader.
 pub type Reader<'this> = Box<dyn AsyncRead + Send + Unpin + 'this>;
 
 /// Trait for a object that can provide file system data.
@@ -38,8 +39,12 @@ pub trait FileSystemProvider {
                 match reader.read(&mut buffer).await {
                     Err(err) => return Err(err.into()),
                     Ok(0) => break,
-                    Ok(n) => {
-                        hasher.update(&buffer[..n]);
+                    Ok(bytes_read) => {
+                        #[expect(
+                            clippy::indexing_slicing,
+                            reason = "We cannot not read more data than what fits in the buffer"
+                        )]
+                        hasher.update(&buffer[..bytes_read]);
                     }
                 }
             }
@@ -97,6 +102,9 @@ impl std::hash::Hash for FileSystem {
     }
 }
 
+/// A in memory file system stream.
+///
+/// Should be avoided when possible, used when a filesystem is restored from cache.
 #[derive(Clone)]
 struct InMemoryFile(Rc<[u8]>);
 
@@ -178,7 +186,7 @@ pub async fn copy_filesystem_stream(
     Ok(())
 }
 
-/// A FileSystemProvider that reads from the given path on the current system
+/// A `FileSystemProvider` that reads from the given path on the current system
 pub struct LocalFiles(pub PathBuf);
 
 impl FileSystemProvider for LocalFiles {

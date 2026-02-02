@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
-use futures_util::{FutureExt, StreamExt, TryStreamExt};
+use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
-use crate::engine::{RuntimeError, docker, sidecar_client};
+use crate::engine::{RuntimeError, sidecar_client};
 use crate::tui::{TuiMessage, TuiSender};
 
 /// The snapshotter to use for containers.
@@ -507,6 +507,7 @@ impl Client {
     }
 
     /// Pull the given layer into containerd.
+    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
     async fn pull_layer(
         &self,
         image: &oci_client::Reference,
@@ -720,6 +721,7 @@ impl Client {
 
     /// Execute a command on the given mutable snapshot, returning its stdout and stderr
     /// The stdout will be wrapeed in `Ok` is all the data was utf-8, `Err` if not.
+    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
     async fn exec_internal(
         &self,
         state: &ContainerState,
@@ -894,6 +896,7 @@ impl Client {
         ]
         .into_iter()
         .collect();
+        #[expect(clippy::expect_used, reason = "Hardcoded values.")]
         let linux_caps = oci_spec::runtime::LinuxCapabilitiesBuilder::default()
             .bounding(caps.clone())
             .effective(caps.clone())
@@ -902,6 +905,7 @@ impl Client {
             .ambient(caps)
             .build()
             .expect("capabilities should be valid");
+
         process.set_capabilities(Some(linux_caps));
 
         let mut linux = oci_spec::runtime::Linux::default();

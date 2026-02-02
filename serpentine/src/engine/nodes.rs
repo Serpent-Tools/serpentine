@@ -457,6 +457,19 @@ async fn env(
     Ok(context.containerd.set_env_var(&container, env, value))
 }
 
+/// get a environment variable.
+async fn get_env(
+    context: Rc<RuntimeContext>,
+    container: containerd::ContainerState,
+    env: Rc<str>,
+) -> Result<Rc<str>, RuntimeError> {
+    Ok(context
+        .containerd
+        .get_env_var(&container, &env)
+        .map(Rc::clone)
+        .unwrap_or_default())
+}
+
 /// A node for joining strings
 struct Join;
 
@@ -558,6 +571,12 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         (
             "Env",
             Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>, Rc<str>)>::new(env, false)),
+        ),
+        (
+            "GetEnv",
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
+                get_env, false,
+            )),
         ),
         ("Join", Box::new(Join)),
     ]

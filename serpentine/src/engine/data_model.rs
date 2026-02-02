@@ -15,10 +15,13 @@ use crate::engine::{RuntimeContext, RuntimeError, containerd};
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum Data {
     /// A numeric whole number value
+    #[cfg_attr(test, proptest(weight = 3))]
     Int(i128),
     /// A string, usually a short literal
+    #[cfg_attr(test, proptest(weight = 3))]
     String(Rc<str>),
     /// A docker container
+    #[cfg_attr(test, proptest(weight = 1))]
     Container(containerd::ContainerState),
     /// A file/folder
     #[cfg_attr(test, proptest(skip))]
