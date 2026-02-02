@@ -761,6 +761,7 @@ impl Client {
             .await?
             .into_inner()
             .mounts;
+
         log::debug!("Mounts: {mounts:#?}");
 
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
@@ -848,6 +849,7 @@ impl Client {
 
     /// Create a container according to the given container state and the given command and returns
     /// its id
+    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
     async fn create_container(
         &self,
         state: &ContainerState,
@@ -918,6 +920,15 @@ impl Client {
         }
 
         let mut spec = oci_spec::runtime::Spec::default();
+
+        let mut dns_mount = oci_spec::runtime::Mount::default();
+        dns_mount
+            .set_typ(Some("bind".to_owned()))
+            .set_source(Some("/etc/resolv.conf".into()))
+            .set_destination("/etc/resolv.conf".into())
+            .set_options(Some(vec!["ro".to_owned(), "bind".to_owned()]));
+        spec.mounts_mut().get_or_insert_default().push(dns_mount);
+
         spec.set_root(Some(root))
             .set_process(Some(process))
             .set_linux(Some(linux));
@@ -1983,6 +1994,21 @@ mod tests {
             .expect("Failed to create image");
         containerd_client
             .exec(&image, "curl 1.1.1.1".to_owned())
+            .await
+            .expect("Exec failed");
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn dns_access(#[future] containerd_client: Client) {
+        let containerd_client = containerd_client.await;
+        let image = containerd_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Failed to create image");
+        containerd_client
+            .exec(&image, "curl https://google.com".to_owned())
             .await
             .expect("Exec failed");
     }
