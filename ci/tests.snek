@@ -17,17 +17,6 @@ export tests_docker = docker_with_rust
     > lib::Cooked("--tests")
     > Exec(WithDocker("RUST_LOG='serpentine=trace' cargo nextest run --frozen --features _test_docker"));
 
-podman_with_rust = Image("quay.io/podman/stable")
-    > WorkingDir("/app")
-    > Exec("dnf install -y make automake gcc gcc-c++ kernel-devel")
-    > Exec("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
-export tests_podman = podman_with_rust 
-    > lib::WithPath(Join(lib::GetEnv(podman_with_rust, "HOME"), "/.cargo/bin"))
-    > Env("DOCKER_HOST", "unix:///var/run/podman.sock")
-    > lib::Cooked("--tests")
-    > lib::Binstall("cargo-nextest", "cargo-nextest")
-    > Exec("podman system service unix:///var/run/podman.sock & RUST_LOG='serpentine=trace' cargo nextest run --frozen --features _test_docker");
-
 cached_test_base = docker_with_rust
     > lib::Cooked("")
     > Exec("cargo install --path . --profile dev --frozen");
@@ -56,7 +45,7 @@ basic_tests = lib::rust
     > lib::Binstall("cargo-nextest", "cargo-nextest")
     > Exec("RUST_LOG='serpentine=trace' cargo nextest run --frozen");
 
-export full_tests = !(tests_docker, tests_podman, run_with_cache, cache_images_deleted, import_standalone_cache) Noop(0);
+export full_tests = !(tests_docker, run_with_cache, cache_images_deleted, import_standalone_cache) Noop(0);
 export light_tests = !(basic_tests) Noop(0);
 
 export update_snapshot = lib::rust

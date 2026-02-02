@@ -7,7 +7,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 
 use crate::engine::RuntimeError;
-use crate::engine::filesystem::FileSystem;
 
 /// A sidecar client, holds the location to connect to for each connection.
 #[derive(Clone, Copy)]
@@ -89,9 +88,9 @@ impl Client {
             let os_error = socket.read_u8().await?;
             let message = serpentine_internal::read_length_prefixed_string(&mut socket).await?;
             let error = if os_error != 0 {
-                std::io::Error::from_raw_os_error(os_error as i32)
+                std::io::Error::from_raw_os_error(i32::from(os_error))
             } else {
-                std::io::Error::new(std::io::ErrorKind::Other, message)
+                std::io::Error::other(message)
             };
             return Err(RuntimeError::IoError(error));
         }

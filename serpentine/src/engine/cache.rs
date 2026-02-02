@@ -596,10 +596,10 @@ mod tests {
         let hash_1 = key1.content_hash().await.unwrap();
         let hash_2 = key2.content_hash().await.unwrap();
 
-        if key1 != key2 {
-            assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
-        } else {
+        if key1 == key2 {
             assert_eq!(hash_1, hash_2, "Keys equal expected same hash.");
+        } else {
+            assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
         }
     }
 

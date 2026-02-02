@@ -142,8 +142,7 @@ fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
 
     let current_timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|timestamp| timestamp.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |timestamp| timestamp.as_secs());
 
     let log_file = log_dir.join(format!("{current_timestamp}.log"));
     println!("Saving logs in {}", log_file.display());
