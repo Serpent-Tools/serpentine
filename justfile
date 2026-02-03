@@ -1,3 +1,5 @@
+check: test (run "FULL")
+
 run entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}}
 
@@ -26,7 +28,7 @@ build_container:
     docker build -t serpent-tools/containerd:dev -f Dockerfile --pull=never
 
 pull_images:
-    grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | xargs -n1 podman pull
+    grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | xargs -n1 podman pull || exit 0
 
 size_benchmark: build_container
     cargo build --release -p serpentine

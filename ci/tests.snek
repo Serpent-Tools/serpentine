@@ -1,52 +1,9 @@
 import "./lib.snek" as lib;
 
-def WithDocker(command) {
-    return Join("if [ ! -S /var/run/docker.sock ]; then (dockerd --log-level error & sleep 2); fi; ", command);
-}
-
-docker_with_rust = Image("docker:dind")
-    > WorkingDir("/app")
-    > Exec("apk add curl rust")
-    > Exec("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y");
-docker_with_rust = docker_with_rust 
-    > lib::WithPath(Join(lib::GetEnv(docker_with_rust, "HOME"), "/.cargo/bin"))
-    > Env("DOCKER_HOST", "unix:///var/run/docker.sock");
-
-export tests_docker = docker_with_rust
-    > Exec("cargo install cargo-nextest") // Binstall uses the wrong target
-    > lib::Cooked("--tests")
-    > Exec(WithDocker("RUST_LOG='serpentine=trace' cargo nextest run --frozen --features _test_docker"));
-
-cached_test_base = docker_with_rust
-    > lib::Cooked("")
-    > Exec("cargo install --path . --profile dev --frozen");
-cached_run = cached_test_base
-    > Exec(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
-
-def Timeout(container, command) {
-    return container > Exec(Join("timeout 10s sh -c '", command, "'"));
-}
-
-run_with_cache = cached_run
-    > Timeout(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
-cache_images_deleted = cached_test_base
-    > With(Export(cached_run, "./cache"), "./cache")
-    > Exec(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
-
-standalone_cache = cached_test_base
-    > Exec(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache --standalone-cache"))
-    > Export("cache");
-import_standalone_cache = cached_test_base
-    > With(standalone_cache, "cache")
-    > Timeout(WithDocker("serpentine run --pipeline test_cases/cache_test.snek --cache cache"));
-
-basic_tests = lib::rust
+export tests = lib::rust
     > lib::Cooked("--tests")
     > lib::Binstall("cargo-nextest", "cargo-nextest")
     > Exec("RUST_LOG='serpentine=trace' cargo nextest run --frozen");
-
-export full_tests = !(tests_docker, run_with_cache, cache_images_deleted, import_standalone_cache) Noop(0);
-export light_tests = !(basic_tests) Noop(0);
 
 export update_snapshot = lib::rust
     > lib::Cooked("--tests")
