@@ -8,6 +8,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
         with:
             toolchain: stable
+
+      - name: Install just
+        run: apt install -y just
+
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
             cache-on-failure: true
@@ -18,8 +22,18 @@ jobs:
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
 
+
+      - name: Download images 
+        run: just pull_images
+
+      - name: Build container 
+        run: just build_container
+
+      - name: Run tests
+        run: cargo test --all-features --jobs 1
+
       - name: Run serpentine pipeline
-        run: cargo run -p serpentine --locked -- run --cache ./serpentine_cache --standalone-cache --clean-old --ci --entry-point DEFAULT --jobs 1 
+        run: cargo run -p serpentine --locked -- run --cache ./serpentine_cache --standalone-cache --clean-old --ci --entry-point FULL --jobs 1 
 
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         if: always()

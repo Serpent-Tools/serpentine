@@ -2,8 +2,8 @@ import "./ci/tests.snek" as tests;
 import "./ci/lints.snek" as lints;
 import "./ci/build.snek" as build;
 
-export DEFAULT = !(tests::light_tests, lints::light_lints) Noop(0);
-export FULL = !(tests::full_tests, lints::full_lints) Noop(0);
+export DEFAULT = !(tests::tests, lints::light_lints) Noop(0);
+export FULL = !(tests::tests, lints::full_lints) Noop(0);
 
 export BUILD = ToHost(build::bundle, "./target/out");
 export SNAPSHOT = tests::update_snapshot;

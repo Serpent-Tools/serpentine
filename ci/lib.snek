@@ -27,10 +27,6 @@ export def Cooked(container, build_kind) {
         > With(source_code, ".");
 }
 
-export def GetEnv(container, env) {
-    return container > ExecOutput(Join("sh -c 'echo $", env, "'"));
-}
-
 export def WithPath(container, path) {
     return container > Env("PATH", Join(path, ":", GetEnv(container, "PATH")));
 }
