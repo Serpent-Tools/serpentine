@@ -1,6 +1,6 @@
 # Containerd
 
-Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [Buikit](https://github.com/moby/buildkit) does, this page documents the the high level flow of the code in `src/engine/containerd.rs`.
+Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [BuildKit](https://github.com/moby/buildkit) does, this page documents the the high level flow of the code in `src/engine/containerd.rs`.
 
 ## Running containerd
 Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github, and a few other supporting tools.
@@ -119,7 +119,7 @@ sequenceDiagram
     deactivate sidecar
 ```
 
-### Nettwork access
+### Network access
 To provide isolated network access to containers we use [CNI](https://www.cni.dev/) to attach a loopback and a bridge adapter to it. The sidecar will construct a network namespace and use CNI to setup the needed adapters.
 Serpetine will only create a new name-space when required, and will re-use once not actively in use by a container when running steps, on exit a serpentine process will instruct the sidecar to clean up the network namespaces created this run.
 
@@ -147,5 +147,3 @@ sequenceDiagram
         process <<->> lan : network traffic over bridge plugin
     end
 ```
-
-## Export

@@ -153,7 +153,7 @@ flowchart LR
 
 ## Modules 
 While snek has a nice selection of builtins it is often nice to share more complex functions or even just labels between files, in fact everything in the standard library (except the prelude) is implemented in snek itself. 
-Modules in snek mark what they wish to be public using the `export` keyword, generally this can be prefixed between labels, functions, or imports.
+Modules in snek mark what they wish to be public using the `export` keyword, generally this can be prefixed before labels, functions, or imports.
 ```snek
 export import "./abc.snek" as abc;
 
@@ -162,7 +162,7 @@ export def Foo(container) { /* ... */ }
 export bar = Foo(Image("rust:latest"));
 ```
 
-And as seen just above imports take the form of `import "relative_path" as name`, the path is relative to the current file (i.e **not** relatiev to the cwd of the process). Item paths use the rust syntax of `::`, for example if we import the above file we might use it like:
+And as seen just above imports take the form of `import "relative_path" as name`, the path is relative to the current file (i.e **not** relative to the cwd of the process). Item paths use the rust syntax of `::`, for example if we import the above file we might use it like:
 ```snek
 import "path_to_file.snek" as module;
 
@@ -171,11 +171,11 @@ example = module::bar > module::Foo() > module::abc::SomethingElse();
 
 The std-lib is imported in the same way, with the caveat that `@` is used as a alias to the stdlibs installation path, for example `import "@/rust.snek" as rust;`
 
-## Naming connventions 
+## Naming conventions 
 Snek identifiers must consist of a alphabetic character followed by a mix of alphanumeric and `-` and `_` values.
 In other words they must match the following regex, `[a-zA-Z][a-zA-Z0-9_-]+`.
 
-While not a requirement, in general snek code should use snake_case for labels and modules, and PascalCase for functions, these are the connventions the stdlib uses.
+While not a requirement, in general snek code should use snake_case for labels and modules, and PascalCase for functions, these are the conventions the stdlib uses.
 
 ## Optimizer 
 

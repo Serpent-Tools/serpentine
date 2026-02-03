@@ -1,4 +1,4 @@
-//! Side car proxy, facilities serpentines communication with containerd.
+//! Side car proxy, facilitates serpentines communication with containerd.
 //!
 //! As well as carries out operations that need to happen on the same host as containerd.
 #![expect(
@@ -16,15 +16,12 @@ use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
 use rand::TryRngCore;
 use rust_cni::libcni as cni;
-use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
+use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, PORT, RequestKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 
 /// The location serpentine connects to the containerd over
 const SOCKET_LOCATION: &str = "/run/containerd.sock";
-
-/// The port serpentine listened on
-const PORT: u16 = 8000;
 
 /// The size of container subnets
 const SUBNET_SIZE: u8 = 28;

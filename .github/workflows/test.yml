@@ -8,10 +8,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
         with:
             toolchain: stable
-
-      - name: Install just
-        run: apt install -y just
-
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
             cache-on-failure: true
@@ -22,15 +18,17 @@ jobs:
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
 
+      - name: Install deps
+        run: sudo apt-get install -y protobuf-compiler
 
-      - name: Download images 
-        run: just pull_images
+      - name: Install nextets
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
 
       - name: Build container 
-        run: just build_container
+        run: docker build -t serpent-tools/containerd:dev . 
 
       - name: Run tests
-        run: cargo test --all-features --jobs 1
+        run: cargo nextest run --all-features --fail-fast
 
       - name: Run serpentine pipeline
         run: cargo run -p serpentine --locked -- run --cache ./serpentine_cache --standalone-cache --clean-old --ci --entry-point FULL --jobs 1 
