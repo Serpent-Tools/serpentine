@@ -1,4 +1,4 @@
-//! Code for working with the files, defines traits for abbstracting over file providers and
+//! Code for working with the files, defines traits for abstracting over file providers and
 //! ensuring they can be cached if needed.
 
 use std::ops::Deref;

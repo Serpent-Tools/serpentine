@@ -301,7 +301,7 @@ pub trait CacheData: Sized {
 
     /// Hash this value
     ///
-    /// Enums snould make sure to include their discriminants.
+    /// Enums should make sure to include their discriminants.
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError>;
 }
 

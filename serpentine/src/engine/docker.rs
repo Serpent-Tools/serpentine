@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 
 use crate::engine::{RuntimeError, sidecar_client};
 
-/// The name of the containerd daemon serpetnine spawns.
+/// The name of the containerd daemon serpentine spawns.
 const CONTAINER_NAME: &str = "serpent-tools.containerd";
 
 /// The name of the docker volume container
@@ -119,7 +119,7 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketA
                             config: None,
                         }),
                         port_bindings: Some(HashMap::from([(
-                            "8000/tcp".to_owned(),
+                            format!("{}/tcp", serpentine_internal::sidecar::PORT),
                             Some(vec![bollard::secret::PortBinding {
                                 host_ip: Some("127.0.0.1".to_owned()),
                                 host_port: None,
@@ -153,15 +153,15 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketA
         .ok_or_else(|| RuntimeError::internal("No network settings for container"))?
         .ports
         .ok_or_else(|| RuntimeError::internal("No port settings for container"))?
-        .get("8000/tcp")
-        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .get(&format!("{}/tcp", serpentine_internal::sidecar::PORT))
+        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
         .as_ref()
-        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
         .first()
-        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
         .host_port
         .as_ref()
-        .ok_or_else(|| RuntimeError::internal("No port settings for port 8000 in container"))?
+        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
         .parse()
         .map_err(|_| RuntimeError::internal("Port wasnt a number"))?;
 

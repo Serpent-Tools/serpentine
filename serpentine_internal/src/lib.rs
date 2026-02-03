@@ -312,6 +312,9 @@ pub mod sidecar {
     /// Magic number to protect sidecar from garbage data as well as XSRF attacks.
     pub const MAGIC_NUMBER: &str = "danger noodle";
 
+    /// The port the sidecar listens on
+    pub const PORT: u16 = 8000;
+
     /// The kind of events the sidecar supports.
     #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]

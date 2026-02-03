@@ -7,7 +7,7 @@ run_ci entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}} --standalone-cache --ci
 
 test filter="": build_container
-    RUST_LOG="serpentine=trace" cargo nextest run --features _test_docker --no-fail-fast {{filter}}
+    RUST_LOG="serpentine=trace" cargo nextest run --features _test_docker {{filter}}
 
 graph:
     cargo run -- graph
@@ -25,10 +25,10 @@ run_sidecar: build_container
 
 build_container:
     docker container rm -f serpent-tools.containerd
-    docker build -t serpent-tools/containerd:dev -f Dockerfile --pull=never
+    docker build -t serpent-tools/containerd:dev . --pull=false
 
 pull_images:
-    grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | xargs -n1 podman pull || exit 0
+    grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | xargs -n1 docker pull || exit 0
 
 size_benchmark: build_container
     cargo build --release -p serpentine
