@@ -361,47 +361,27 @@ impl Client {
         log::debug!("Pulling image {image} manifest");
         let (manifest, _, config) = self.oci.pull_manifest_and_config(&image, &auth).await?;
 
-        let last_layer_digest = manifest
-            .layers
-            .last()
-            .map(|layer| layer.digest.clone())
-            .unwrap_or_default();
-
         // Serialize pulls to avoid race conditions with content/snapshot stores.
         // The manifest fetch above is outside the lock to allow concurrent registry access.
         let pull_guard = self.pull_lock.lock().await;
 
-        let image_exists = self
-            .containerd
-            .snapshot()
-            .stat(containerd_services::snapshots::StatSnapshotRequest {
-                snapshotter: SNAPSHOTTER.to_owned(),
-                key: last_layer_digest.clone(),
-            })
-            .await
-            .is_ok();
+        let lease = self.new_lease().await?;
 
-        if image_exists {
-            log::debug!("image {image} already exists");
-        } else {
-            let lease = self.new_lease().await?;
+        log::debug!("Pulling image {image}");
+        futures_util::future::try_join_all(
+            manifest
+                .layers
+                .iter()
+                .map(|layer| self.pull_layer(&image, layer, &lease)),
+        )
+        .await?;
 
-            log::debug!("Pulling image {image}");
-            futures_util::future::try_join_all(
-                manifest
-                    .layers
-                    .iter()
-                    .map(|layer| self.pull_layer(&image, layer, &lease)),
-            )
-            .await?;
+        log::debug!("Uploaded all layers to containerd");
 
-            log::debug!("Uploaded all layers to containerd");
+        log::debug!("Creating snapshot from image");
+        let snapshot_name = self.create_snapshots(image_name, manifest, &lease).await?;
 
-            log::debug!("Creating snapshot from image");
-            self.create_snapshots(image_name, manifest, &lease).await?;
-
-            self.drop_lease(lease).await?;
-        }
+        self.drop_lease(lease).await?;
 
         drop(pull_guard);
 
@@ -414,7 +394,7 @@ impl Client {
         };
 
         Ok(ContainerState {
-            snapshot: last_layer_digest.into(),
+            snapshot: snapshot_name.into(),
             config: Rc::new(config),
         })
     }
@@ -426,23 +406,29 @@ impl Client {
         image: &str,
         manifest: oci_client::manifest::OciImageManifest,
         lease: &str,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<String, RuntimeError> {
         let mut parent = String::new();
         let layer_count = manifest.layers.len();
 
+        let mut layer_stack_hash = blake3::Hasher::new();
+        let mut snapshot_name = String::new();
+
         for (index, layer) in manifest.layers.into_iter().enumerate() {
+            layer_stack_hash.update(layer.digest.as_bytes());
+            snapshot_name = layer_stack_hash.finalize().to_hex().to_string();
+
             let layer_exists = self
                 .containerd
                 .snapshot()
                 .stat(containerd_services::snapshots::StatSnapshotRequest {
                     snapshotter: SNAPSHOTTER.to_owned(),
-                    key: layer.digest.clone(),
+                    key: snapshot_name.clone(),
                 })
                 .await
                 .is_ok();
 
             if layer_exists {
-                log::debug!("Snapshot {} already exists.", layer.digest);
+                log::debug!("Snapshot {snapshot_name} already exists.");
             } else {
                 let key = uuid::Uuid::new_v4().to_string();
                 log::debug!("Applying layer {} to {key}", layer.digest);
@@ -477,7 +463,7 @@ impl Client {
                     })
                     .await?;
 
-                log::debug!("Committing {key} to {}", layer.digest);
+                log::debug!("Committing {key} to {snapshot_name}");
                 let labels = if index == layer_count.saturating_sub(1) {
                     HashMap::from([
                         ("containerd.io/gc.root".to_owned(), "1".to_owned()),
@@ -491,7 +477,7 @@ impl Client {
                     .commit(
                         containerd_services::snapshots::CommitSnapshotRequest {
                             snapshotter: SNAPSHOTTER.to_owned(),
-                            name: layer.digest.clone(),
+                            name: snapshot_name.clone(),
                             key,
                             labels,
                         }
@@ -500,10 +486,10 @@ impl Client {
                     .await?;
             }
 
-            parent = layer.digest;
+            parent = snapshot_name.clone();
         }
 
-        Ok(())
+        Ok(snapshot_name)
     }
 
     /// Pull the given layer into containerd.

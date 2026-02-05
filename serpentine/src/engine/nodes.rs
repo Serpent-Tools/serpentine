@@ -529,7 +529,7 @@ impl NodeImpl for Join {
 pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
     vec![
         (NOOP_NAME, Box::new(Noop) as Box<dyn NodeImpl>),
-        ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, false))),
+        ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, true))),
         (
             "Exec",
             Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
