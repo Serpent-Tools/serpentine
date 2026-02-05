@@ -496,7 +496,14 @@ impl Cache {
             // Entries in old_cache can overwrite entries in new cache.
             // But it would be a larger bug if the two values werent semantically equivalent.
             cache.extend(old_cache);
+            CacheWriter::new(file)
+                .write_map(cache, external, export_standalone)
+                .await?;
         } else {
+            CacheWriter::new(file)
+                .write_map(cache.clone(), external, export_standalone)
+                .await?;
+
             let in_use: HashSet<_> = cache.values().collect();
             for value in old_cache
                 .into_values()
@@ -505,10 +512,6 @@ impl Cache {
                 external.cleanup(value).await;
             }
         }
-
-        CacheWriter::new(file)
-            .write_map(cache, external, export_standalone)
-            .await?;
 
         Ok(())
     }

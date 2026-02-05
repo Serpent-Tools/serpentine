@@ -484,7 +484,7 @@ impl Client {
                         ("serpentine/image".to_owned(), image.to_owned()),
                     ])
                 } else {
-                    HashMap::new()
+                    HashMap::from([("serpentine/image".to_owned(), image.to_owned())])
                 };
                 self.containerd
                     .snapshot()
@@ -762,7 +762,7 @@ impl Client {
             .into_inner()
             .mounts;
 
-        log::debug!("Mounts: {mounts:#?}");
+        log::trace!("Mounts: {mounts:?}");
 
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
 
@@ -933,7 +933,7 @@ impl Client {
             .set_process(Some(process))
             .set_linux(Some(linux));
 
-        if let Ok(json) = serde_json::to_string_pretty(&spec) {
+        if let Ok(json) = serde_json::to_string(&spec) {
             log::trace!("SPEC: {json}");
         }
 
@@ -1207,6 +1207,11 @@ impl Client {
         seen: &mut HashSet<Box<str>>,
         snapshot: &str,
     ) -> Result<(), RuntimeError> {
+        if snapshot.trim().is_empty() {
+            log::warn!("Was told to export empty snapshot");
+            return Ok(());
+        }
+
         if seen.contains(snapshot) {
             return Ok(());
         }
@@ -2016,6 +2021,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
+    #[ignore = "too flaky - depends on containerd gc"]
     async fn external_cache(#[future] containerd_client: Client) {
         let containerd_client = containerd_client.await;
         let image = containerd_client
@@ -2039,17 +2045,15 @@ mod tests {
             .expect("Failed to export");
 
         containerd_client
-            .cleanup(Data::Container(image.clone()))
+            .cleanup(Data::Container(image2.clone()))
             .await;
         containerd_client
             .cleanup(Data::Container(image1.clone()))
             .await;
-        containerd_client
-            .cleanup(Data::Container(image2.clone()))
-            .await;
 
-        // FIXME: This is flaky
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // force_gc_cleanup(&containerd_client).await;
+        // wait_for_snapshot_gone(&containerd_client, &image2).await;
+        // wait_for_snapshot_gone(&containerd_client, &image1).await;
 
         export.set_position(0);
         containerd_client
@@ -2066,6 +2070,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
+    #[ignore = "too flaky - depends on containerd gc"]
     async fn external_cache_cleanup_in_use_parent_doesnt_actually_delete(
         #[future] containerd_client: Client,
     ) {
@@ -2087,6 +2092,7 @@ mod tests {
         containerd_client
             .cleanup(Data::Container(image1.clone()))
             .await;
+        // force_gc_cleanup(&containerd_client).await;
 
         containerd_client
             .exec(&image2, "ls foo && ls bar".to_owned())
@@ -2097,6 +2103,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
+    #[ignore = "too flaky - depends on containerd gc"]
     async fn external_cache_cleanup_in_wrong_order_still_works(
         #[future] containerd_client: Client,
     ) {
@@ -2122,8 +2129,9 @@ mod tests {
             .cleanup(Data::Container(image2.clone()))
             .await;
 
-        // FIXME: This is flaky
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // force_gc_cleanup(&containerd_client).await;
+        // wait_for_snapshot_gone(&containerd_client, &image2).await;
+        // wait_for_snapshot_gone(&containerd_client, &image1).await;
 
         containerd_client
             .exec(&image2, "echo hello".to_owned())

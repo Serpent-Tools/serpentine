@@ -190,7 +190,7 @@ pub async fn read_disk_to_filesystem_stream(
         absolute_path.join(relative_path)
     };
 
-    log::debug!("Exporting {}", absolute_path_to_item.display());
+    log::trace!("Exporting {}", absolute_path_to_item.display());
     let metadata = tokio::fs::metadata(&absolute_path_to_item).await?;
 
     if metadata.is_file() {
@@ -211,7 +211,7 @@ pub async fn read_disk_to_filesystem_stream(
                 if filter(&entry.path(), entry.metadata().await?.is_dir()) {
                     entries.push(entry);
                 } else {
-                    log::debug!("File {} ignored", absolute_path_to_item.display());
+                    log::trace!("File {} ignored", absolute_path_to_item.display());
                 }
             }
 
@@ -257,7 +257,7 @@ pub async fn read_filesystem_stream_to_disk(
             } else {
                 target_path.join(&*name)
             };
-            log::debug!("Writing file at {}", target_path.display());
+            log::trace!("Writing file at {}", target_path.display());
 
             if let Some(parent) = target_path.parent() {
                 tokio::fs::create_dir_all(&parent).await?;
@@ -277,7 +277,7 @@ pub async fn read_filesystem_stream_to_disk(
         }
         FileSystemEntryHeader::Folder { name, entries } => {
             let target_path = target_path.join(&*name);
-            log::debug!("Writing directory at {}", target_path.display());
+            log::trace!("Writing directory at {}", target_path.display());
             tokio::fs::create_dir_all(&target_path).await?;
 
             for _ in 0..entries {
