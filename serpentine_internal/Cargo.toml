@@ -11,12 +11,12 @@ categories = ["rust-patterns"]
 
 [dependencies]
 tokio = { version = "1.49.0", default-features = false }
-log = "0.4.28"
+log = "0.4.29"
 
 [dev-dependencies]
-proptest = { version = "1.8.0", features = ["attr-macro"] }
+proptest = { version = "1.10.0", features = ["attr-macro"] }
 proptest-derive = "0.7.0"
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "test-util"] }
+tokio = { version = "1.49.0", default-features = false, features = ["macros", "test-util"] }
 rstest = "0.26.1"
 
 [lints]
