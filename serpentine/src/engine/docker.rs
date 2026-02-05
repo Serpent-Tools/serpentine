@@ -176,7 +176,7 @@ async fn create_containerd_volume(docker: &bollard::Docker) -> Result<&'static s
     if docker.inspect_volume(CONTAINER_VOLUME).await.is_err() {
         log::info!("Creating volume {CONTAINER_VOLUME}");
         docker
-            .create_volume(bollard::secret::VolumeCreateOptions {
+            .create_volume(bollard::secret::VolumeCreateRequest {
                 name: Some(CONTAINER_VOLUME.into()),
                 driver: Some("local".into()),
                 driver_opts: None,

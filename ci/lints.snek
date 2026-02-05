@@ -29,10 +29,13 @@ deny = lib::rust
 
 export light_lints = !(clippy, fmt, spelling) Noop(0);
 export full_lints = !(clippy, fmt, spelling, unused, deny) Noop(0);
+
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
     > lib::Binstall("typos-cli", "typos")
+    > lib::Binstall("cargo-edit", "cargo-upgrade")
     > With(lib::source_code, ".")
+    > Exec("cargo upgrade")
     > Exec("cargo fmt")
     > Exec("typos -w")
     > Export(".")

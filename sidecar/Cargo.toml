@@ -10,9 +10,9 @@ serpentine_internal = {version="=0.1.0", path="../serpentine_internal"}
 
 log = "0.4.29"
 simple_logger = { version = "5.1.0", default-features = false }
-tokio = { version = "1.48.0", default-features = false, features = ["rt", "net", "io-util", "fs"] }
+tokio = { version = "1.49.0", default-features = false, features = ["rt", "net", "io-util", "fs"] }
 nix = { version = "0.30.1", features = ["fs", "mount"] }
-uuid = { version = "1.18.1", features = ["v4"] }
+uuid = { version = "1.20.0", features = ["v4"] }
 rust-cni = "0.1.2"
 netns-rs = "0.1.0"
 rand = { version = "0.9.2", default-features = false, features = ["os_rng", "small_rng", "std"] }
