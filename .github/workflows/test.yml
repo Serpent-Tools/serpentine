@@ -28,7 +28,7 @@ jobs:
         run: docker build -t serpent-tools/containerd:dev . 
 
       - name: Run tests
-        run: cargo nextest run --all-features --fail-fast
+        run: cargo nextest run --all-features --fail-fast --test-threads 1
 
       - name: Run serpentine pipeline
         run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point FULL --jobs 1 

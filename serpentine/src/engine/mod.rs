@@ -8,6 +8,7 @@ mod filesystem;
 pub mod nodes;
 mod scheduler;
 mod sidecar_client;
+mod userdb;
 
 use std::path::Path;
 use std::rc::Rc;
@@ -100,6 +101,16 @@ pub enum RuntimeError {
     #[error("Execution interrupted by user (Ctrl-C)")]
     #[diagnostic(code(execution_interrupted))]
     CtrlC,
+
+    /// Could not parse / could not find user info in /etc/passwd
+    #[error("Could not resolver user {user:?}: {msg}")]
+    #[diagnostic(code(execution_interrupted))]
+    UserNotFound {
+        /// Which user couldnt be found
+        user: userdb::OciUser,
+        /// What specific part wasnt found.
+        msg: &'static str,
+    },
 
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]

@@ -28,7 +28,7 @@ use crate::engine::data_model::{Data, NodeKindId};
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-const CACHE_COMPATIBILITY_VERSION: u8 = 2;
+const CACHE_COMPATIBILITY_VERSION: u8 = 3;
 
 /// Wrapper around the raw blake3 hash output as its trait implementations (`Hash` and `Eq`) use
 /// constant time functions, which we do not require

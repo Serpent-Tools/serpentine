@@ -13,8 +13,6 @@ mod snek;
 mod tui;
 
 /// Serpentine is a build system and programming language.
-///
-/// CACHE CACHE CACHE CACHE -- HELLO CACHE
 #[derive(clap::Parser)]
 struct Cli {
     /// Action to take

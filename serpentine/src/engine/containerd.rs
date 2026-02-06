@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
-use crate::engine::{RuntimeError, sidecar_client};
+use crate::engine::{RuntimeError, sidecar_client, userdb};
 use crate::tui::{TuiMessage, TuiSender};
 
 /// The snapshotter to use for containers.
@@ -32,6 +32,11 @@ pub struct ContainerConfig {
     env: HashMap<Rc<str>, Rc<str>>,
     /// The working directory
     working_dir: Rc<str>,
+    /// The user to spawn the process as.
+    ///
+    /// This is stored in the same format as the oci image spec for linux.
+    /// > `user`, `uid`, `user:group`, `uid:gid`, `uid:group`, `user:gid`
+    user: Option<Rc<str>>,
 }
 
 impl Hash for ContainerConfig {
@@ -46,17 +51,20 @@ impl Hash for ContainerConfig {
 
 impl From<oci_client::config::Config> for ContainerConfig {
     fn from(config: oci_client::config::Config) -> Self {
+        let env = config
+            .env
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|env| {
+                env.split_once('=')
+                    .map(|(key, value)| (Rc::from(key), Rc::from(value)))
+            })
+            .collect();
+
         Self {
-            env: config
-                .env
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|env| {
-                    env.split_once('=')
-                        .map(|(key, value)| (Rc::from(key), Rc::from(value)))
-                })
-                .collect(),
+            env,
             working_dir: config.working_dir.unwrap_or("/".to_owned()).into(),
+            user: config.user.map(Rc::from),
         }
     }
 }
@@ -75,6 +83,13 @@ impl CacheData for ContainerConfig {
 
         self.working_dir.write(writer).await?;
 
+        if let Some(user) = &self.user {
+            writer.write_u8(1).await?;
+            user.write(writer).await?;
+        } else {
+            writer.write_u8(0).await?;
+        }
+
         Ok(())
     }
 
@@ -90,7 +105,18 @@ impl CacheData for ContainerConfig {
         }
 
         let working_dir = Rc::<str>::read(reader).await?;
-        Ok(Self { env, working_dir })
+
+        let user = if reader.read_u8().await? == 1 {
+            Some(Rc::<str>::read(reader).await?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            env,
+            working_dir,
+            user,
+        })
     }
 
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
@@ -106,6 +132,13 @@ impl CacheData for ContainerConfig {
 
         hasher.update(&(self.working_dir.len() as u64).to_le_bytes());
         hasher.update(self.working_dir.as_bytes());
+
+        if let Some(user) = &self.user {
+            hasher.update(&[1]);
+            user.content_hash(hasher).await?;
+        } else {
+            hasher.update(&[0]);
+        }
 
         Ok(())
     }
@@ -150,6 +183,16 @@ impl ContainerState {
     /// Get a environment variable in the container
     pub fn get_env_var(&self, env: &str) -> Option<&Rc<str>> {
         self.config.env.get(env)
+    }
+
+    /// Update the user config for the container
+    pub fn set_user(&self, user: Rc<str>) -> Self {
+        let mut config = (*self.config).clone();
+        config.user = Some(user);
+        ContainerState {
+            snapshot: Rc::clone(&self.snapshot),
+            config: Rc::new(config),
+        }
     }
 }
 
@@ -742,15 +785,6 @@ impl Client {
             namespace
         };
 
-        let container = self
-            .create_container(
-                state,
-                cmd.clone(),
-                network_namespace.to_string().into(),
-                lease,
-            )
-            .await?;
-
         log::debug!("Loading mounts for {:?}", state.snapshot);
         let mounts = self
             .containerd
@@ -762,8 +796,17 @@ impl Client {
             .await?
             .into_inner()
             .mounts;
-
         log::trace!("Mounts: {mounts:?}");
+
+        let container = self
+            .create_container(
+                state,
+                cmd.clone(),
+                network_namespace.to_string().into(),
+                &mounts,
+                lease,
+            )
+            .await?;
 
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
 
@@ -856,6 +899,7 @@ impl Client {
         state: &ContainerState,
         cmd: String,
         network_namespace: PathBuf,
+        mounts: &[containerd_client::types::Mount],
         lease: &str,
     ) -> Result<String, RuntimeError> {
         let container = uuid::Uuid::new_v4().to_string();
@@ -868,6 +912,12 @@ impl Client {
         root.set_path(PathBuf::from("rootfs"));
         root.set_readonly(Some(false));
 
+        let (user, home_dir) = if let Some(user_string) = &state.config.user {
+            self.construct_spec_user(mounts, user_string).await?
+        } else {
+            (oci_spec::runtime::User::default(), "/root".into())
+        };
+
         let mut process = oci_spec::runtime::Process::default();
         process.set_args(Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), cmd]));
         process.set_env(Some(
@@ -876,9 +926,12 @@ impl Client {
                 .env
                 .iter()
                 .map(|(key, value)| format!("{key}={value}"))
+                .chain(std::iter::once(format!("HOME={home_dir}")))
                 .collect(),
         ));
         process.set_cwd(state.config.working_dir.as_ref().into());
+
+        process.set_user(user);
 
         // Use Docker's default capabilities
         let caps: oci_spec::runtime::Capabilities = [
@@ -905,7 +958,7 @@ impl Client {
             .effective(caps.clone())
             .inheritable(caps.clone())
             .permitted(caps.clone())
-            .ambient(caps)
+            // .ambient(caps)
             .build()
             .expect("capabilities should be valid");
 
@@ -1015,6 +1068,37 @@ impl Client {
         }
 
         if success { Ok(result) } else { Err(result) }
+    }
+
+    /// read the /etc/passwd file to supplmenet the info given by the container config and
+    /// construct a full user object.
+    ///
+    /// Also returns the home directory.
+    async fn construct_spec_user(
+        &self,
+        mounts: &[containerd_client::types::Mount],
+        user: &str,
+    ) -> Result<(oci_spec::runtime::User, Box<str>), RuntimeError> {
+        let Ok(passwd) = self.read_file(mounts, "/etc/passwd").await?.parse();
+        let Ok(groups) = self.read_file(mounts, "/etc/group").await?.parse();
+
+        let Ok(user): Result<userdb::OciUser, _> = user.parse();
+        let (user, home_dir) = user.resolve(passwd, &groups)?;
+
+        Ok((user, home_dir))
+    }
+
+    /// Read the given file from the given mounts
+    async fn read_file(
+        &self,
+        mounts: &[containerd_client::types::Mount],
+        file: &str,
+    ) -> Result<String, RuntimeError> {
+        let mut file_system_stream = self.sidecar.export_files(mounts.to_vec(), file).await?;
+        let _ = serpentine_internal::FileSystemEntryHeader::read(&mut file_system_stream).await?;
+        let mut passwd = String::new();
+        file_system_stream.read_to_string(&mut passwd).await?;
+        Ok(passwd)
     }
 
     /// Copy the given file/directory into the container

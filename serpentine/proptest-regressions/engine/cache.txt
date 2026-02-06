@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7741140566b065b300fa80cb31be307af92239357da80534ebef99d41528a29d # shrinks to SaveAndLoadDuplicateArgs = SaveAndLoadDuplicateArgs { value: Container(ContainerState { snapshot: "", config: ContainerConfig { env: {}, working_dir: "", user: Some("") } }) }
+cc 2097838436c219e24de9c1a95aac7c7c5648ad6aedd3cb4f2cdef5733e27b6d4 # shrinks to SaveAndLoadDuplicateArgs = SaveAndLoadDuplicateArgs { value: Container(ContainerState { snapshot: "", config: ContainerConfig { env: {}, working_dir: "", user: Some("") } }) }
+cc 9fa8db2d84b32922a5ec384800e5f6dc51493389638f89edb119d21542c7c08d # shrinks to SaveAndLoadOneEntryArgs = SaveAndLoadOneEntryArgs { node: StoreId(0), data: [], value: Container(ContainerState { snapshot: "", config: ContainerConfig { env: {}, working_dir: "", user: Some("") } }) }

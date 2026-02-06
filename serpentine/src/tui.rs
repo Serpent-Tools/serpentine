@@ -400,12 +400,12 @@ impl UiState {
     clippy::cast_sign_loss,
     reason = "we want to round to usize"
 )]
-fn fraction_of(denominator: usize, numerator: usize, total_width: usize) -> usize {
-    let denominator = denominator as f32;
+fn fraction_of(numerator: usize, denominator: usize, total_width: usize) -> usize {
     let numerator = numerator as f32;
+    let denominator = denominator as f32;
     let total_width = total_width as f32;
 
-    let ratio = denominator / numerator;
+    let ratio = numerator / denominator;
     let perfect_width = ratio * total_width;
 
     perfect_width.round().abs() as usize

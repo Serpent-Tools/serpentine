@@ -469,6 +469,15 @@ async fn get_env(
         .unwrap_or_default())
 }
 
+/// Set container user.
+async fn set_user(
+    _context: Rc<RuntimeContext>,
+    container: containerd::ContainerState,
+    user: Rc<str>,
+) -> Result<containerd::ContainerState, RuntimeError> {
+    Ok(container.set_user(user))
+}
+
 /// A node for joining strings
 struct Join;
 
@@ -575,6 +584,12 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             "GetEnv",
             Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
                 get_env, false,
+            )),
+        ),
+        (
+            "User",
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
+                set_user, false,
             )),
         ),
         ("Join", Box::new(Join)),
