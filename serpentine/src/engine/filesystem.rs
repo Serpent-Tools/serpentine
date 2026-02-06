@@ -9,6 +9,7 @@ use std::rc::Rc;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serpentine_internal::FileSystemEntryHeader;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::sync::OnceCell;
 
 use crate::engine::RuntimeError;
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
@@ -59,25 +60,36 @@ pub trait FileSystemProvider {
 
 /// New type wrapper around a `dyn FileSystemProvider` which implements stubs for `PartialEq` and
 /// `Hash`, as well as a implementation of `CacheData`
-pub struct FileSystem(Box<dyn FileSystemProvider>);
+pub struct FileSystem {
+    /// The inner filesystem provider
+    provider: Box<dyn FileSystemProvider>,
+    /// The cached hash of the data.
+    hash: Rc<OnceCell<blake3::Hash>>,
+}
 
 impl Deref for FileSystem {
     type Target = dyn FileSystemProvider;
 
     fn deref(&self) -> &Self::Target {
-        &*self.0
+        &*self.provider
     }
 }
 
 impl<T: FileSystemProvider + 'static> From<T> for FileSystem {
     fn from(value: T) -> Self {
-        Self(Box::new(value))
+        Self {
+            provider: Box::new(value),
+            hash: Rc::new(OnceCell::new()),
+        }
     }
 }
 
 impl Clone for FileSystem {
     fn clone(&self) -> Self {
-        Self(self.0.dyn_clone())
+        Self {
+            provider: self.provider.dyn_clone(),
+            hash: Rc::clone(&self.hash),
+        }
     }
 }
 
@@ -97,8 +109,12 @@ impl PartialEq for FileSystem {
 impl Eq for FileSystem {}
 
 impl std::hash::Hash for FileSystem {
-    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {
-        log::warn!("Can not hash FileSystem");
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        log::warn!("Can not always hash FileSystem");
+
+        if let Some(hash) = self.hash.get() {
+            state.write(hash.as_bytes());
+        }
     }
 }
 
@@ -135,7 +151,7 @@ impl CacheData for FileSystem {
     ) -> Result<(), RuntimeError> {
         log::warn!("Storing filesystem in cache, this is often overkill.");
 
-        let mut reader = self.0.get_reader().await?;
+        let mut reader = self.provider.get_reader().await?;
         tokio::io::copy(&mut reader, &mut **writer).await?;
 
         Ok(())
@@ -152,7 +168,17 @@ impl CacheData for FileSystem {
     }
 
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
-        self.0.hash_data(hasher).await
+        let hash = self
+            .hash
+            .get_or_try_init::<RuntimeError, _, _>(async || {
+                let mut filesystem_hasher = blake3::Hasher::new();
+                self.provider.hash_data(&mut filesystem_hasher).await?;
+                Ok(filesystem_hasher.finalize())
+            })
+            .await?;
+
+        hasher.update(hash.as_bytes());
+        Ok(())
     }
 }
 

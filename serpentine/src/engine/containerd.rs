@@ -1273,6 +1273,8 @@ impl Client {
 impl ExternalCache for Client {
     async fn cleanup(&self, data: super::data_model::Data) {
         if let super::data_model::Data::Container(container) = data {
+            log::debug!("Deleting {container:?}");
+
             let delete_result = self
                 .containerd
                 .snapshot()
