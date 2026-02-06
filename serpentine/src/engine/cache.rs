@@ -504,6 +504,10 @@ impl Cache {
                 .write_map(cache.clone(), external, export_standalone)
                 .await?;
 
+            #[expect(
+                clippy::mutable_key_type,
+                reason = "Value of the interior mutable data will not change in the course of this loop"
+            )]
             let in_use: HashSet<_> = cache.values().collect();
             for value in old_cache
                 .into_values()

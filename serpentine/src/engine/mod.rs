@@ -265,7 +265,7 @@ pub fn clear_cache(file_path: &Path) -> Result<(), RuntimeError> {
 
             // When `keep_old_cache` is set to false `save_cache` will clean out the data not used
             // this run, which is everything.
-            let cache_file_write = tokio::fs::File::open(file_path).await?;
+            let cache_file_write = tokio::fs::File::create(file_path).await?;
             cache
                 .save_cache(
                     &mut tokio::io::BufWriter::new(cache_file_write),
