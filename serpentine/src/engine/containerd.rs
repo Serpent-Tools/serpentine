@@ -121,6 +121,38 @@ pub struct ContainerState {
     config: Rc<ContainerConfig>,
 }
 
+impl ContainerState {
+    /// Set the working directory of the container
+    pub fn set_working_dir(&self, dir: &str) -> ContainerState {
+        let mut config = (*self.config).clone();
+
+        config.working_dir = Path::new(config.working_dir.as_ref())
+            .join(dir)
+            .to_string_lossy()
+            .into();
+
+        ContainerState {
+            snapshot: Rc::clone(&self.snapshot),
+            config: Rc::new(config),
+        }
+    }
+
+    /// Set a environment variable in the container
+    pub fn set_env_var(&self, env: Rc<str>, value: Rc<str>) -> ContainerState {
+        let mut config = (*self.config).clone();
+        config.env.insert(env, value);
+        ContainerState {
+            snapshot: Rc::clone(&self.snapshot),
+            config: Rc::new(config),
+        }
+    }
+
+    /// Get a environment variable in the container
+    pub fn get_env_var(&self, env: &str) -> Option<&Rc<str>> {
+        self.config.env.get(env)
+    }
+}
+
 impl CacheData for ContainerState {
     async fn write(
         &self,
@@ -1079,57 +1111,6 @@ impl Client {
         .into())
     }
 
-    /// Set the working directory of the container
-    #[expect(
-        clippy::unused_self,
-        reason = "This struct is the api surface for this operation"
-    )]
-    pub fn set_working_dir(&self, state: &ContainerState, dir: &str) -> ContainerState {
-        let mut config = (*state.config).clone();
-
-        config.working_dir = Path::new(config.working_dir.as_ref())
-            .join(dir)
-            .to_string_lossy()
-            .into();
-
-        ContainerState {
-            snapshot: Rc::clone(&state.snapshot),
-            config: Rc::new(config),
-        }
-    }
-
-    /// Set a environment variable in the container
-    #[expect(
-        clippy::unused_self,
-        reason = "This struct is the api surface for this operation"
-    )]
-    pub fn set_env_var(
-        &self,
-        state: &ContainerState,
-        env: Rc<str>,
-        value: Rc<str>,
-    ) -> ContainerState {
-        let mut config = (*state.config).clone();
-        config.env.insert(env, value);
-        ContainerState {
-            snapshot: Rc::clone(&state.snapshot),
-            config: Rc::new(config),
-        }
-    }
-
-    /// Get a environment variable in the container
-    #[expect(
-        clippy::unused_self,
-        reason = "This struct is the api surface for this operation"
-    )]
-    pub fn get_env_var<'state>(
-        &self,
-        state: &'state ContainerState,
-        env: &str,
-    ) -> Option<&'state Rc<str>> {
-        state.config.env.get(env)
-    }
-
     /// Shutdown any dangling references
     pub async fn shutdown(self) {
         for dangling in self.dangling.lock().await.drain() {
@@ -1787,7 +1768,7 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let base = containerd_client.set_working_dir(&base, "/testing");
+        let base = base.set_working_dir("/testing");
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
@@ -1834,7 +1815,7 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let base = containerd_client.set_working_dir(&base, "/testing");
+        let base = base.set_working_dir("/testing");
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
@@ -1908,13 +1889,13 @@ mod tests {
             .exec(&image, "mkdir -p /foo/bar".to_owned())
             .await
             .expect("Exec failed");
-        let image = containerd_client.set_working_dir(&image, "/foo");
+        let image = image.set_working_dir("/foo");
         containerd_client
             .exec(&image, "ls bar".to_owned())
             .await
             .expect("Exec failed");
 
-        let image = containerd_client.set_working_dir(&image, "./bar");
+        let image = image.set_working_dir("./bar");
         let working_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
             .await
@@ -1925,7 +1906,7 @@ mod tests {
             "pwd reported wrong working directory"
         );
 
-        let image = containerd_client.set_working_dir(&image, "/app");
+        let image = image.set_working_dir("/app");
         let working_absolute_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
             .await
@@ -1946,14 +1927,12 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let image = containerd_client.set_env_var(&image, "HELLO".into(), "WORLD".into());
+        let image = image.set_env_var("HELLO".into(), "WORLD".into());
         let exec = containerd_client
             .exec_get_output(&image, "echo -n $HELLO".to_owned())
             .await
             .expect("Exec failed");
-        let get_env = containerd_client
-            .get_env_var(&image, "HELLO")
-            .expect("Env var not found");
+        let get_env = image.get_env_var("HELLO").expect("Env var not found");
 
         assert_eq!(exec, "WORLD", "echo $HELLO");
         assert_eq!(get_env.as_ref(), "WORLD", "get_env");

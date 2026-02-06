@@ -440,32 +440,31 @@ async fn with(
 
 /// Modify the working directory of the container
 async fn with_working_dir(
-    context: Rc<RuntimeContext>,
+    _context: Rc<RuntimeContext>,
     container: containerd::ContainerState,
     dir: Rc<str>,
 ) -> Result<containerd::ContainerState, RuntimeError> {
-    Ok(context.containerd.set_working_dir(&container, &dir))
+    Ok(container.set_working_dir(&dir))
 }
 
 /// Set a environment variable.
 async fn env(
-    context: Rc<RuntimeContext>,
+    _context: Rc<RuntimeContext>,
     container: containerd::ContainerState,
     env: Rc<str>,
     value: Rc<str>,
 ) -> Result<containerd::ContainerState, RuntimeError> {
-    Ok(context.containerd.set_env_var(&container, env, value))
+    Ok(container.set_env_var(env, value))
 }
 
 /// get a environment variable.
 async fn get_env(
-    context: Rc<RuntimeContext>,
+    _context: Rc<RuntimeContext>,
     container: containerd::ContainerState,
     env: Rc<str>,
 ) -> Result<Rc<str>, RuntimeError> {
-    Ok(context
-        .containerd
-        .get_env_var(&container, &env)
+    Ok(container
+        .get_env_var(&env)
         .map(Rc::clone)
         .unwrap_or_default())
 }
