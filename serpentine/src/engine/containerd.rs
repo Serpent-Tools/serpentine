@@ -493,7 +493,6 @@ impl Client {
     }
 
     /// Pull the given layer into containerd.
-    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
     async fn pull_layer(
         &self,
         image: &oci_client::Reference,
@@ -512,22 +511,6 @@ impl Client {
             .is_ok()
         {
             log::debug!("layer {} already exists", layer.digest);
-            return Ok(());
-        }
-        if self
-            .containerd
-            .snapshot()
-            .stat(containerd_services::snapshots::StatSnapshotRequest {
-                snapshotter: SNAPSHOTTER.to_owned(),
-                key: layer.digest.clone(),
-            })
-            .await
-            .is_ok()
-        {
-            log::debug!(
-                "Content for layer {} not found, but snapshot was.",
-                layer.digest
-            );
             return Ok(());
         }
 
