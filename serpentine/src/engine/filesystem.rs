@@ -43,7 +43,7 @@ pub trait FileSystemProvider {
                     Ok(bytes_read) => {
                         #[expect(
                             clippy::indexing_slicing,
-                            reason = "We cannot not read more data than what fits in the buffer"
+                            reason = "We cannot read more data than what fits in the buffer"
                         )]
                         hasher.update(&buffer[..bytes_read]);
                     }

@@ -72,8 +72,11 @@ sequenceDiagram
     participant process
 
     serpentine ->> containerd : Create new snapshot
-    serpentine <<->> containerd : Get mounts for snapshot
     note over serpentine : Setup networking (see below)
+
+    serpentine <<->> containerd : Get mounts for snapshot
+    containerd ->> serpentine : contents of /etc/passwd
+
     serpentine ->> containerd : Create new container
 
     note over serpentine : Set up stdout streaming (see below)

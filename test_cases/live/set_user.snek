@@ -1,0 +1,26 @@
+image_with_user = Image("quay.io/prometheus/prometheus") 
+    > Exec("test $(id -u) = 65534")
+    > Exec("test $(id -g) = 65534")
+    > Exec("test $(whoami) = nobody");
+
+default_is_root = Image("quay.io/toolbx-images/alpine-toolbox:latest")
+    > Exec("test $(id -u) = 0")
+    > Exec("test $(id -g) = 0")
+    > Exec("test $(whoami) = root");
+
+create_new_user = Image("quay.io/toolbx-images/alpine-toolbox:latest")
+    > WorkingDir("/run")
+    > Exec("useradd viv")
+    > Exec("install -m 600 -o root -g root /dev/null root.txt")
+    > Exec("install -m 600 -o viv -g viv /dev/null viv.txt")
+    > Exec("cat root.txt")
+    > Exec("cat viv.txt")
+    > Exec("apk update")
+    > User("viv")
+    > Exec("! cat root.txt")
+    > Exec("cat viv.txt")
+    > Exec("! apk update")
+    > Exec("! sudo apk update");
+
+export DEFAULT = !(image_with_user, default_is_root, create_new_user) Noop(0);
+
