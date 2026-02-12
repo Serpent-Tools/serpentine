@@ -5,8 +5,8 @@ export rust = Image("rustlang/rust:nightly") > WorkingDir("/app") > Exec("apt-ge
 export def Binstall(container, crate, bin_name) {
     binary = rust 
         > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash")
-        > Exec(Join("cargo binstall ", crate, " --install-path out"))
-        > Export(Join("out/", bin_name));
+        > Exec(Join("cargo binstall --root /out ", crate))
+        > Export(Join("/out/bin/", bin_name));
 
     return container > With(binary, Join("/bin/", bin_name));
 }

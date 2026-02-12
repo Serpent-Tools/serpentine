@@ -1,0 +1,24 @@
+base = Image("quay.io/toolbx-images/alpine-toolbox:latest");
+curl = base > Exec("apk add curl");
+
+python_server = Image("quay.io/toolbx-images/alpine-toolbox:latest")
+    > Exec("apk add python3")
+    > ToService("python3 -m http.server 8000")
+    > Port("8000", 8000);
+
+ping_python = curl 
+    > WithService(python_server, "server")
+    > Exec("curl http://server:8000");
+
+nested_service = base
+    > Exec("apk add caddy")
+    > WithService(python_server, "python")
+    > ToService("caddy reverse-proxy --from 8080 --to python:8000")
+    > Port("5000/tcp", 8080);
+
+test_nested = curl
+    > WithService(nested_service, "nested")
+    > Exec("curl http://nested:5000")
+    > Exec("! curl http://python:8000");
+
+export DEFAULT = !(ping_python, test_nested) Noop(0);

@@ -1,0 +1,2 @@
+export DEFAULT = Image("...")
+    > WithService(Image("..."), "...");
