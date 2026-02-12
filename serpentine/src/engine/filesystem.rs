@@ -220,7 +220,7 @@ impl FileSystemProvider for LocalFiles {
         &'this self,
     ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + 'this>> {
         Box::pin(async move {
-            let (mut writer, reader) = tokio::io::duplex(4048);
+            let (mut writer, reader) = tokio::io::duplex(4096);
             let path = self.0.clone();
             let ignore = discover_gitignore(&self.0);
 

@@ -1,0 +1,15 @@
+def assertIsService(service) {
+    return Image("...") > WithService(service, "hostname");
+}
+
+from_service = ImageService("...") > assertIsService();
+from_manual = Image("...") > ToService("...") > assertIsService();
+operations = ImageService("...") 
+    > Exec("...")
+    > Env("...", "...")
+    > WorkingDir("...")
+    > User("...")
+    > With(ImageService("...") > Export("..."), "...")
+    > assertIsService();
+
+export DEFAULT = Noop(0);

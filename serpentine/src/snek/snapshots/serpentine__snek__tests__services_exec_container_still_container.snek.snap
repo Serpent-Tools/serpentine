@@ -1,0 +1,19 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: compiler::type_mismatch
+
+  x Expected `service` got `container`
+   ,-[<redacted-path>:2:7]
+ 1 |     export DEFAULT = Image("...")
+ 2 | ,->     > WithService(
+ 3 | |           Image("...") > Exec("..."),
+   : |                          ^^^^^^|^^^^^
+   : |                                `-- Has type `container`
+ 4 | |           "..."
+ 5 | |->     );
+   : `---- In call to this node
+   `----

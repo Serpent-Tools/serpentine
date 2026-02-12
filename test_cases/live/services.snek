@@ -1,0 +1,22 @@
+postgres = ImageService("docker.io/library/postgres:16")
+    > Env("POSTGRES_PASSWORD", "test");
+
+app = Image("docker.io/library/postgres:16");
+
+with_user = app
+    > WithService(postgres, "db")
+    > Exec("psql -h db -U postgres -c 'CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)'");
+use_db = with_user
+    > Exec("psql -h db -U postgres -c 'INSERT INTO users (name) VALUES (\'alice\')'")
+    > Exec("psql -h db -U postgres -c 'SELECT * FROM users'");
+
+db_still_empty = app
+    > !use_db WithService(postgres, "db")
+    > Exec("! psql -h db -U postgres -c 'SELECT * FROM users'");
+
+fork1 = with_user
+    > Exec("psql -h db -U postgres -c 'CREATE TABLE fork1 (id SERIAL PRIMARY KEY, name TEXT)'");
+fork2 = with_user
+    > !fork1 Exec("! psql -h db -U postgres -c 'SELECT * FROM fork1'");
+
+export DEFAULT = !(use_db, db_still_empty, fork1, fork2) Noop(0); 

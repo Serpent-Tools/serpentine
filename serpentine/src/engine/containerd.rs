@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use containerd_client::services::v1 as containerd_services;
@@ -37,6 +38,39 @@ pub struct ContainerConfig {
     /// This is stored in the same format as the oci image spec for linux.
     /// > `user`, `uid`, `user:group`, `uid:gid`, `uid:group`, `user:gid`
     user: Option<Rc<str>>,
+    /// The services to attach to this container.
+    #[cfg_attr(test, proptest(value = "HashMap::new()"))]
+    services: HashMap<Rc<str>, ServiceState>,
+}
+
+impl ContainerConfig {
+    /// Set the working directory of the container
+    pub fn set_working_dir(&mut self, dir: &str) {
+        self.working_dir = Path::new(self.working_dir.as_ref())
+            .join(dir)
+            .to_string_lossy()
+            .into();
+    }
+
+    /// Set a environment variable in the container
+    pub fn set_env_var(&mut self, env: Rc<str>, value: Rc<str>) {
+        self.env.insert(env, value);
+    }
+
+    /// Get a environment variable in the container
+    pub fn get_env_var(&self, env: &str) -> Option<&Rc<str>> {
+        self.env.get(env)
+    }
+
+    /// Update the user config for the container
+    pub fn set_user(&mut self, user: Rc<str>) {
+        self.user = Some(user);
+    }
+
+    /// Attach service to this container
+    pub fn with_service(&mut self, service: ServiceState, hostname: Rc<str>) {
+        self.services.insert(hostname, service);
+    }
 }
 
 impl Hash for ContainerConfig {
@@ -65,6 +99,7 @@ impl From<oci_client::config::Config> for ContainerConfig {
             env,
             working_dir: config.working_dir.unwrap_or("/".to_owned()).into(),
             user: config.user.map(Rc::from),
+            services: HashMap::new(),
         }
     }
 }
@@ -90,6 +125,13 @@ impl CacheData for ContainerConfig {
             writer.write_u8(0).await?;
         }
 
+        serpentine_internal::write_u64_variable_length(&mut **writer, self.services.len() as u64)
+            .await?;
+        for (hostname, service) in &self.services {
+            hostname.write(writer).await?;
+            service.write(writer).await?;
+        }
+
         Ok(())
     }
 
@@ -112,10 +154,19 @@ impl CacheData for ContainerConfig {
             None
         };
 
+        let mut services = HashMap::new();
+        let service_count = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
+        for _ in 0..service_count {
+            let hostname = Rc::<str>::read(reader).await?;
+            let service = ServiceState::read(reader).await?;
+            services.insert(hostname, service);
+        }
+
         Ok(Self {
             env,
             working_dir,
             user,
+            services,
         })
     }
 
@@ -140,7 +191,313 @@ impl CacheData for ContainerConfig {
             hasher.update(&[0]);
         }
 
+        hasher.update(&(self.services.len() as u64).to_le_bytes());
+        for (hostname, service) in &self.services {
+            // ServiceState contains ContainerConfig recursively, which means this is techically a
+            // recursive call, and hence needs boxing.
+            hostname.content_hash(hasher).await?;
+            Box::pin(service.content_hash(hasher)).await?;
+        }
+
         Ok(())
+    }
+}
+
+/// The protocol to open the port on.
+#[derive(Clone, Hash, Eq, PartialEq, Debug, PartialOrd, Ord)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+pub enum PortProtocol {
+    /// TCP
+    Tcp,
+    /// UDP
+    Udp,
+}
+
+impl CacheData for PortProtocol {
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        match reader.read_u8().await? {
+            0 => Ok(Self::Tcp),
+            1 => Ok(Self::Udp),
+            other => Err(RuntimeError::internal(format!(
+                "Invalid protocol value {other}"
+            ))),
+        }
+    }
+
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        let value = match self {
+            Self::Tcp => 0,
+            Self::Udp => 1,
+        };
+        writer.write_u8(value).await?;
+        Ok(())
+    }
+
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        let value = match self {
+            Self::Tcp => 0,
+            Self::Udp => 1,
+        };
+        hasher.update(&[value]);
+        Ok(())
+    }
+}
+
+/// A port and protoco pair for descriping a port mapping
+#[derive(Clone, Hash, Eq, PartialEq, Debug, PartialOrd, Ord)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+pub struct PortMapping {
+    /// The outside port to open
+    port: u16,
+    /// The protocol to open the port on
+    protocol: PortProtocol,
+}
+
+impl CacheData for PortMapping {
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        let port = reader.read_u16().await?;
+        let protocol = PortProtocol::read(reader).await?;
+        Ok(Self { port, protocol })
+    }
+
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        writer.write_u16(self.port).await?;
+        self.protocol.write(writer).await?;
+        Ok(())
+    }
+
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        hasher.update(&self.port.to_le_bytes());
+        self.protocol.content_hash(hasher).await?;
+        Ok(())
+    }
+}
+
+impl FromStr for PortMapping {
+    type Err = RuntimeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((port, protocol)) = s.split_once('/') {
+            let port = port.parse().map_err(|err| {
+                RuntimeError::internal(format!("Invalid port value {port}: {err}"))
+            })?;
+            let protocol = match protocol.to_lowercase().as_str() {
+                "tcp" => PortProtocol::Tcp,
+                "udp" => PortProtocol::Udp,
+                other => {
+                    return Err(RuntimeError::internal(format!(
+                        "Invalid protocol value {other}"
+                    )));
+                }
+            };
+            Ok(Self { port, protocol })
+        } else {
+            let port = s
+                .parse()
+                .map_err(|err| RuntimeError::internal(format!("Invalid port value {s}: {err}")))?;
+            Ok(Self {
+                port,
+                protocol: PortProtocol::Tcp,
+            })
+        }
+    }
+}
+
+/// Extra config values for services
+#[derive(Clone, Eq, PartialEq, Debug)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+pub struct ServiceConfig {
+    /// The service entry point
+    entrypoint: Rc<str>,
+    /// The ports to expose on the servie and what port they map to.
+    ///
+    /// The key is the outside port and the vlaue is the destination (many to one)
+    ports: HashMap<PortMapping, u16>,
+}
+
+impl CacheData for ServiceConfig {
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        let entrypoint = Rc::<str>::read(reader).await?;
+
+        let mut ports = HashMap::new();
+        let port_count = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
+        for _ in 0..port_count {
+            let port = PortMapping::read(reader).await?;
+            let dest = reader.read_u16().await?;
+            ports.insert(port, dest);
+        }
+
+        Ok(Self { entrypoint, ports })
+    }
+
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        self.entrypoint.write(writer).await?;
+
+        serpentine_internal::write_u64_variable_length(&mut **writer, self.ports.len() as u64)
+            .await?;
+        for (port, dest) in &self.ports {
+            port.write(writer).await?;
+            writer.write_u16(*dest).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        self.entrypoint.content_hash(hasher).await?;
+        hasher.update(&self.ports.len().to_le_bytes());
+        for (port, dest) in &self.ports {
+            Box::pin(port.content_hash(hasher)).await?;
+            hasher.update(&dest.to_le_bytes());
+        }
+
+        Ok(())
+    }
+}
+
+impl From<oci_client::config::Config> for ServiceConfig {
+    fn from(config: oci_client::config::Config) -> Self {
+        let entrypoint = config.entrypoint.unwrap_or_default();
+        let entrypoint = shell_words::join(entrypoint);
+
+        let ports = if let Some(exposed) = config.exposed_ports {
+            exposed
+                .into_iter()
+                .filter_map(|port_str| match port_str.parse::<PortMapping>() {
+                    Ok(mapping) => {
+                        let port = mapping.port;
+                        Some((mapping, port))
+                    }
+                    Err(err) => {
+                        log::warn!("Invalid port mapping {port_str} in image config: {err}");
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
+        Self {
+            entrypoint: entrypoint.into(),
+            ports,
+        }
+    }
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            entrypoint: "while true; do sleep 1; done".into(),
+            ports: HashMap::new(),
+        }
+    }
+}
+
+impl Hash for ServiceConfig {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.entrypoint.hash(state);
+
+        let mut ports: Vec<_> = self.ports.iter().collect();
+        ports.sort();
+        for (mapping, dest) in ports {
+            mapping.hash(state);
+            dest.hash(state);
+        }
+    }
+}
+
+impl ServiceConfig {
+    /// Set a new exposed port on this service, mapping the given outside port to the given destination port.
+    pub fn set_port(&mut self, outside: PortMapping, dest: u16) {
+        self.ports.insert(outside, dest);
+    }
+}
+
+/// A services state
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+pub struct ServiceState {
+    /// The underlying container
+    container: ContainerState,
+    /// the service specific config.
+    service_config: Rc<ServiceConfig>,
+}
+
+impl CacheData for ServiceState {
+    async fn read(
+        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
+    ) -> Result<Self, RuntimeError> {
+        let container = ContainerState::read(reader).await?;
+        let service_config = Rc::<ServiceConfig>::read(reader).await?;
+
+        Ok(Self {
+            container,
+            service_config,
+        })
+    }
+
+    async fn write(
+        &self,
+        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
+    ) -> Result<(), RuntimeError> {
+        self.container.write(writer).await?;
+        self.service_config.write(writer).await?;
+
+        Ok(())
+    }
+
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        self.container.content_hash(hasher).await?;
+        self.service_config.content_hash(hasher).await?;
+        Ok(())
+    }
+}
+
+impl ServiceState {
+    /// Update this states service config using a closure.
+    ///
+    /// This does not change the input state but instead returns a new one.
+    pub fn update_service_config(&self, update: impl FnOnce(&mut ServiceConfig)) -> Self {
+        let mut service_config = (*self.service_config).clone();
+        update(&mut service_config);
+        ServiceState {
+            container: self.container.clone(),
+            service_config: Rc::new(service_config),
+        }
+    }
+
+    /// Get a reference to the service config.
+    pub fn get_service_config(&self) -> &ServiceConfig {
+        &self.service_config
+    }
+}
+
+impl std::ops::Deref for ServiceState {
+    type Target = ContainerState;
+    fn deref(&self) -> &ContainerState {
+        &self.container
+    }
+}
+
+impl std::ops::DerefMut for ServiceState {
+    fn deref_mut(&mut self) -> &mut ContainerState {
+        &mut self.container
     }
 }
 
@@ -155,43 +512,31 @@ pub struct ContainerState {
 }
 
 impl ContainerState {
-    /// Set the working directory of the container
-    pub fn set_working_dir(&self, dir: &str) -> ContainerState {
+    /// Update this states config using a closure.
+    ///
+    /// This does not change the input state but instead returns a new one.
+    pub fn update_config(&self, update: impl FnOnce(&mut ContainerConfig)) -> Self {
         let mut config = (*self.config).clone();
-
-        config.working_dir = Path::new(config.working_dir.as_ref())
-            .join(dir)
-            .to_string_lossy()
-            .into();
-
+        update(&mut config);
         ContainerState {
             snapshot: Rc::clone(&self.snapshot),
             config: Rc::new(config),
         }
     }
 
-    /// Set a environment variable in the container
-    pub fn set_env_var(&self, env: Rc<str>, value: Rc<str>) -> ContainerState {
-        let mut config = (*self.config).clone();
-        config.env.insert(env, value);
-        ContainerState {
-            snapshot: Rc::clone(&self.snapshot),
-            config: Rc::new(config),
-        }
+    /// Get a reference to the config.
+    pub fn get_config(&self) -> &ContainerConfig {
+        &self.config
     }
 
-    /// Get a environment variable in the container
-    pub fn get_env_var(&self, env: &str) -> Option<&Rc<str>> {
-        self.config.env.get(env)
-    }
-
-    /// Update the user config for the container
-    pub fn set_user(&self, user: Rc<str>) -> Self {
-        let mut config = (*self.config).clone();
-        config.user = Some(user);
-        ContainerState {
-            snapshot: Rc::clone(&self.snapshot),
-            config: Rc::new(config),
+    /// Convert this container into a service
+    pub fn into_service(self, entrypoint: Rc<str>) -> ServiceState {
+        ServiceState {
+            container: self,
+            service_config: Rc::new(ServiceConfig {
+                entrypoint,
+                ..ServiceConfig::default()
+            }),
         }
     }
 }
@@ -219,6 +564,53 @@ impl CacheData for ContainerState {
         self.config.content_hash(hasher).await?;
 
         Ok(())
+    }
+}
+
+/// Either a container or a service.
+///
+/// Many operations (env, working dir, user, etc.) apply equally to both containers and services.
+/// This type allows those operations to be written once and work on either.
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+pub enum ContainerLike {
+    /// A container
+    Container(ContainerState),
+    /// A service
+    Service(ServiceState),
+}
+
+impl ContainerLike {
+    /// Update this states config using a closure.
+    ///
+    /// This does not change the input state but instead returns a new one.
+    pub fn update_config(&self, update: impl FnOnce(&mut ContainerConfig)) -> Self {
+        match self {
+            Self::Container(container) => Self::Container(container.update_config(update)),
+            Self::Service(service) => {
+                let mut service = service.clone();
+                service.container = service.container.update_config(update);
+                Self::Service(service)
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for ContainerLike {
+    type Target = ContainerState;
+    fn deref(&self) -> &ContainerState {
+        match self {
+            Self::Container(container) => container,
+            Self::Service(service) => service,
+        }
+    }
+}
+
+impl std::ops::DerefMut for ContainerLike {
+    fn deref_mut(&mut self) -> &mut ContainerState {
+        match self {
+            Self::Container(container) => container,
+            Self::Service(service) => &mut *service,
+        }
     }
 }
 
@@ -428,40 +820,10 @@ impl Client {
         Ok(())
     }
 
-    /// download the given image if necessary
+    /// download the given image and return a normal `ContainerState` representing it.
     pub async fn pull_image(&self, image_name: &str) -> Result<ContainerState, RuntimeError> {
-        let image = oci_client::Reference::try_from(image_name)?;
-        let auth = oci_client::secrets::RegistryAuth::Anonymous;
+        let (config, snapshot_name) = self.fetch_image(image_name).await?;
 
-        log::debug!("Pulling image {image} manifest");
-        let (manifest, _, config) = self.oci.pull_manifest_and_config(&image, &auth).await?;
-
-        // Serialize pulls to avoid race conditions with content/snapshot stores.
-        // The manifest fetch above is outside the lock to allow concurrent registry access.
-        let pull_guard = self.pull_lock.lock().await;
-
-        let lease = self.new_lease().await?;
-
-        log::debug!("Pulling image {image}");
-        futures_util::future::try_join_all(
-            manifest
-                .layers
-                .iter()
-                .map(|layer| self.pull_layer(&image, layer, &lease)),
-        )
-        .await?;
-
-        log::debug!("Uploaded all layers to containerd");
-
-        log::debug!("Creating snapshot from image");
-        let snapshot_name = self.create_snapshots(image_name, manifest, &lease).await?;
-
-        self.drop_lease(lease).await?;
-
-        drop(pull_guard);
-
-        let config: oci_client::config::ConfigFile =
-            serde_json::from_str(&config).map_err(|err| RuntimeError::internal(err.to_string()))?;
         let config = if let Some(config) = config.config {
             ContainerConfig::from(config)
         } else {
@@ -472,6 +834,63 @@ impl Client {
             snapshot: snapshot_name.into(),
             config: Rc::new(config),
         })
+    }
+
+    /// download the given image and return a `ServiceState` representing it.
+    pub async fn pull_service(&self, image_name: &str) -> Result<ServiceState, RuntimeError> {
+        let (config, snapshot_name) = self.fetch_image(image_name).await?;
+
+        let (service_config, config) = if let Some(config) = config.config {
+            (
+                ServiceConfig::from(config.clone()),
+                ContainerConfig::from(config),
+            )
+        } else {
+            (ServiceConfig::default(), ContainerConfig::default())
+        };
+
+        Ok(ServiceState {
+            container: ContainerState {
+                snapshot: snapshot_name.into(),
+                config: Rc::new(config),
+            },
+            service_config: Rc::new(service_config),
+        })
+    }
+
+    /// Pull the given image from the registery and return both the snapshot name and config.
+    async fn fetch_image(
+        &self,
+        image_name: &str,
+    ) -> Result<(oci_client::config::ConfigFile, String), RuntimeError> {
+        let image = oci_client::Reference::try_from(image_name)?;
+        let auth = oci_client::secrets::RegistryAuth::Anonymous;
+
+        log::debug!("Pulling image {image} manifest");
+        let (manifest, _, config) = self.oci.pull_manifest_and_config(&image, &auth).await?;
+        let pull_guard = self.pull_lock.lock().await;
+        let lease = self.new_lease().await?;
+
+        log::debug!("Pulling image {image}");
+        futures_util::future::try_join_all(
+            manifest
+                .layers
+                .iter()
+                .map(|layer| self.pull_layer(&image, layer, &lease)),
+        )
+        .await?;
+        log::debug!("Uploaded all layers to containerd");
+
+        log::debug!("Creating snapshot from image");
+        let snapshot_name = self.create_snapshots(image_name, manifest, &lease).await?;
+        self.drop_lease(lease).await?;
+
+        drop(pull_guard);
+
+        let config: oci_client::config::ConfigFile =
+            serde_json::from_str(&config).map_err(|err| RuntimeError::internal(err.to_string()))?;
+
+        Ok((config, snapshot_name))
     }
 
     /// Create layer snapshots from the manifest, this assumes the layer content is in the content
@@ -1852,7 +2271,7 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let base = base.set_working_dir("/testing");
+        let base = base.update_config(|config| config.set_working_dir("/testing"));
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
@@ -1899,7 +2318,7 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let base = base.set_working_dir("/testing");
+        let base = base.update_config(|config| config.set_working_dir("/testing"));
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
@@ -1973,13 +2392,13 @@ mod tests {
             .exec(&image, "mkdir -p /foo/bar".to_owned())
             .await
             .expect("Exec failed");
-        let image = image.set_working_dir("/foo");
+        let image = image.update_config(|config| config.set_working_dir("/foo"));
         containerd_client
             .exec(&image, "ls bar".to_owned())
             .await
             .expect("Exec failed");
 
-        let image = image.set_working_dir("./bar");
+        let image = image.update_config(|config| config.set_working_dir("./bar"));
         let working_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
             .await
@@ -1990,7 +2409,7 @@ mod tests {
             "pwd reported wrong working directory"
         );
 
-        let image = image.set_working_dir("/app");
+        let image = image.update_config(|config| config.set_working_dir("/app"));
         let working_absolute_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
             .await
@@ -2011,12 +2430,16 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let image = image.set_env_var("HELLO".into(), "WORLD".into());
+        let image =
+            image.update_config(|config| config.set_env_var("HELLO".into(), "WORLD".into()));
         let exec = containerd_client
             .exec_get_output(&image, "echo -n $HELLO".to_owned())
             .await
             .expect("Exec failed");
-        let get_env = image.get_env_var("HELLO").expect("Env var not found");
+        let get_env = image
+            .get_config()
+            .get_env_var("HELLO")
+            .expect("Env var not found");
 
         assert_eq!(exec, "WORLD", "echo $HELLO");
         assert_eq!(get_env.as_ref(), "WORLD", "get_env");

@@ -69,9 +69,18 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM rustlang/rust:nightly-slim as builder
+FROM rustlang/rust:nightly-slim as chef
+RUN cargo install cargo-chef
 WORKDIR /app
+
+FROM chef as planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef as builder
 ENV RUSTFLAGS="-C target-feature=+crt-static"
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release -p sidecar --target x86_64-unknown-linux-gnu --recipe-path recipe.json
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 

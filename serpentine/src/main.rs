@@ -67,7 +67,7 @@ struct Run {
     /// Location of the cache file
     #[arg(short, long)]
     cache: Option<PathBuf>,
-    /// Also export docker images, and any other external data referenced by the cache to the cache
+    /// Also export docker layers, and any other external data referenced by the cache to the cache
     /// file.
     ///
     /// This is intended for use with CI, or generally when the cache needs to be transferred
@@ -327,7 +327,7 @@ fn render_graph(graph: snek::CompileResult, output: &Path) -> Result<(), engine:
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "Tests")]
+#[expect(clippy::panic, reason = "Tests")]
 #[cfg(feature = "_test_docker")]
 mod tests {
     use std::path::PathBuf;
@@ -337,17 +337,45 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn live_examples(#[files("../test_cases/live/**/*.snek")] path: PathBuf) {
-        let graph =
-            crate::snek::compile_graph(&path, "DEFAULT").expect("Failed to compile pipeline");
+        let graph = match crate::snek::compile_graph(&path, "DEFAULT") {
+            Ok(graph) => graph,
+            Err(err) => {
+                let err = miette::Report::new(err);
+                let err = format!("{err:?}");
+                panic!("Failed to compile {path:?}\n{err}")
+            }
+        };
+
+        let random_cache_file = std::env::temp_dir().join(format!(
+            "serpentine_test_cache_{}.serpentine_cache",
+            uuid::Uuid::new_v4()
+        ));
+
         let cli = crate::Run {
-            pipeline: path,
+            pipeline: path.clone(),
             ci: true,
-            cache: None,
+            cache: Some(random_cache_file),
             standalone_cache: false,
             clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 1,
         };
-        crate::engine::run(graph, crate::tui::TuiSender(None), &cli).expect("Failed to execute");
+        if let Err(err) = crate::engine::run(graph, crate::tui::TuiSender(None), &cli) {
+            let err = miette::Report::new(err);
+            let err = format!("{err:?}");
+            panic!("Failed to run {path:?}\n{err}")
+        }
+
+        // Extra test to ensure the produced cache file can be read back in without error.
+        // While we have property tests for cache round-tripping, this at least tests that we can
+        // read back in the cache file produced by a real example without error (which sometimes
+        // hits edge cases that the property tests don't hit).
+
+        let cache_file = cli.get_cache();
+        if let Err(err) = crate::engine::clear_cache(&cache_file) {
+            let err = miette::Report::new(err);
+            let err = format!("{err:?}");
+            panic!("Failed to load cache {cache_file:?}\n{err}")
+        }
     }
 }

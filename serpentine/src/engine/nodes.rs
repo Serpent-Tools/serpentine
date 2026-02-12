@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::str::FromStr;
 
 use crate::engine::cache::CacheKey;
 use crate::engine::data_model::{Data, DataType, NodeInstanceId, NodeKindId};
@@ -107,8 +108,18 @@ pub trait NodeImpl {
 /// Used for unwrapping inputs in the automatic function implementation for `NodeImpl`,
 /// And for converting back.
 trait RawData: Sized {
-    /// The `DataType` this would respond to
+    /// The canonical `DataType` for this type.
+    ///
+    /// For union types (like `ContainerLike`) this is arbitrary and should not be relied upon
+    /// for return type inference — use `Wrap::passthrough` for those instead.
     const KIND: DataType;
+
+    /// Check if a `DataType` can be converted to this type.
+    ///
+    /// Defaults to checking against `KIND`. Override for union types that accept multiple variants.
+    fn accepts(dt: DataType) -> bool {
+        dt == Self::KIND
+    }
 
     /// Unwrap the `Data` into this type, returning a internal error if mismatched
     /// (compiler should have ensured types match up)
@@ -178,23 +189,77 @@ impl RawData for FileSystem {
     }
 }
 
+impl RawData for containerd::ServiceState {
+    const KIND: DataType = DataType::Service;
+    fn from_data(data: &Data) -> Option<Self> {
+        if let Data::Service(value) = data {
+            Some(value.clone())
+        } else {
+            None
+        }
+    }
+    fn into_data(self) -> Data {
+        Data::Service(self)
+    }
+}
+
+impl RawData for containerd::ContainerLike {
+    // Arbitrary — not used for return type inference (use Wrap::passthrough)
+    const KIND: DataType = DataType::Container;
+
+    fn accepts(dt: DataType) -> bool {
+        matches!(dt, DataType::Container | DataType::Service)
+    }
+
+    fn from_data(data: &Data) -> Option<Self> {
+        match data {
+            Data::Container(container) => {
+                Some(containerd::ContainerLike::Container(container.clone()))
+            }
+            Data::Service(service) => Some(containerd::ContainerLike::Service(service.clone())),
+            _ => None,
+        }
+    }
+
+    fn into_data(self) -> Data {
+        match self {
+            containerd::ContainerLike::Container(container) => Data::Container(container),
+            containerd::ContainerLike::Service(service) => Data::Service(service),
+        }
+    }
+}
+
 /// Wrap a function with phantomdata to allow trait impls to work.
 struct Wrap<F, P> {
     /// The function thats wrapped
     function: F,
     /// Should this node be cached
     should_be_cached: bool,
+    /// If true, `return_type` returns the type of the first argument instead of `R::KIND`.
+    /// Used for nodes where the output type matches the input (e.g. Container -> Container).
+    passthrough_return: bool,
     /// The argument types needs to exist as a generic on this type for rust trait resolution to be
     /// happy.
     phantom: PhantomData<P>,
 }
 
 impl<F, P> Wrap<F, P> {
-    /// Create a new wrapped
+    /// Create a new wrapped node with a fixed return type.
     fn new(func: F, should_be_cached: bool) -> Self {
         Self {
             function: func,
             should_be_cached,
+            passthrough_return: false,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Create a new wrapped node whose return type passes through from the first argument.
+    fn passthrough(func: F, should_be_cached: bool) -> Self {
+        Self {
+            function: func,
+            should_be_cached,
+            passthrough_return: true,
             phantom: PhantomData,
         }
     }
@@ -233,10 +298,11 @@ macro_rules! impl_node_impl {
                     })
                 }
 
+                let mut first_type = None;
                 let mut arguments = arguments.iter();
                 $(
                     if let Some(argument) = arguments.next() {
-                        if **argument != $arg::KIND {
+                        if !$arg::accepts(**argument) {
                             return Err(CompileError::TypeMismatch {
                                 expected: $arg::KIND.describe().to_owned(),
                                 got: argument.describe().to_owned(),
@@ -244,10 +310,23 @@ macro_rules! impl_node_impl {
                                 node: node_span,
                             })
                         }
+                        if first_type.is_none() {
+                            first_type = Some(**argument);
+                        }
                     }
                 )*
 
-                Ok(R::KIND)
+                if self.passthrough_return {
+                    // The return type is the same as the first argument's type.
+                    // This is used for nodes that operate on a ContainerLike and return the same variant.
+                    first_type.ok_or_else(|| CompileError::ArgumentCountMismatch {
+                        expected: 1,
+                        got: 0,
+                        location: node_span,
+                    })
+                } else {
+                    Ok(R::KIND)
+                }
             }
 
             fn execute<'scheduler>(
@@ -361,7 +440,7 @@ impl NodeImpl for LiteralNode {
 /// This is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
 pub const NOOP_NAME: &str = "Noop";
 
-/// Create a docker image
+/// Create a container state from a remote image
 async fn image(
     context: Rc<RuntimeContext>,
     image: Rc<str>,
@@ -369,22 +448,32 @@ async fn image(
     context.containerd.pull_image(&image).await
 }
 
+/// Create a service state from a remote image
+async fn image_service(
+    context: Rc<RuntimeContext>,
+    image: Rc<str>,
+) -> Result<containerd::ServiceState, RuntimeError> {
+    context.containerd.pull_service(&image).await
+}
+
 /// Run a command in a container
 async fn exec(
     context: Rc<RuntimeContext>,
-    container: containerd::ContainerState,
+    mut container: containerd::ContainerLike,
     command: Rc<str>,
-) -> Result<containerd::ContainerState, RuntimeError> {
-    context
+) -> Result<containerd::ContainerLike, RuntimeError> {
+    *container = context
         .containerd
         .exec(&container, command.to_string())
-        .await
+        .await?;
+
+    Ok(container)
 }
 
 /// Run a command in a container, getting its output
 async fn exec_output(
     context: Rc<RuntimeContext>,
-    container: containerd::ContainerState,
+    container: containerd::ContainerLike,
     command: Rc<str>,
 ) -> Result<Rc<str>, RuntimeError> {
     context
@@ -395,7 +484,6 @@ async fn exec_output(
 }
 
 /// Read a file/folder into a tar from the host system.
-// PERF: Rewrite to use `tar_async`?
 async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSystem, RuntimeError> {
     Ok(filesystem::LocalFiles(src.as_ref().into()).into())
 }
@@ -404,7 +492,7 @@ async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSys
 async fn export(
     context: Rc<RuntimeContext>,
 
-    container: containerd::ContainerState,
+    container: containerd::ContainerLike,
     path: Rc<str>,
 ) -> Result<FileSystem, RuntimeError> {
     context.containerd.export_path(&container, &path).await
@@ -428,42 +516,45 @@ async fn to_host(
 async fn with(
     context: Rc<RuntimeContext>,
 
-    container: containerd::ContainerState,
+    mut container: containerd::ContainerLike,
     fs: FileSystem,
     path: Rc<str>,
-) -> Result<containerd::ContainerState, RuntimeError> {
-    context
+) -> Result<containerd::ContainerLike, RuntimeError> {
+    *container = context
         .containerd
         .copy_fs_into_container(&container, fs, &path)
-        .await
+        .await?;
+
+    Ok(container)
 }
 
 /// Modify the working directory of the container
 async fn with_working_dir(
     _context: Rc<RuntimeContext>,
-    container: containerd::ContainerState,
+    container: containerd::ContainerLike,
     dir: Rc<str>,
-) -> Result<containerd::ContainerState, RuntimeError> {
-    Ok(container.set_working_dir(&dir))
+) -> Result<containerd::ContainerLike, RuntimeError> {
+    Ok(container.update_config(|config| config.set_working_dir(&dir)))
 }
 
 /// Set a environment variable.
 async fn env(
     _context: Rc<RuntimeContext>,
-    container: containerd::ContainerState,
+    container: containerd::ContainerLike,
     env: Rc<str>,
     value: Rc<str>,
-) -> Result<containerd::ContainerState, RuntimeError> {
-    Ok(container.set_env_var(env, value))
+) -> Result<containerd::ContainerLike, RuntimeError> {
+    Ok(container.update_config(|config| config.set_env_var(env, value)))
 }
 
 /// get a environment variable.
 async fn get_env(
     _context: Rc<RuntimeContext>,
-    container: containerd::ContainerState,
+    container: containerd::ContainerLike,
     env: Rc<str>,
 ) -> Result<Rc<str>, RuntimeError> {
     Ok(container
+        .get_config()
         .get_env_var(&env)
         .map(Rc::clone)
         .unwrap_or_default())
@@ -472,10 +563,10 @@ async fn get_env(
 /// Set container user.
 async fn set_user(
     _context: Rc<RuntimeContext>,
-    container: containerd::ContainerState,
+    container: containerd::ContainerLike,
     user: Rc<str>,
-) -> Result<containerd::ContainerState, RuntimeError> {
-    Ok(container.set_user(user))
+) -> Result<containerd::ContainerLike, RuntimeError> {
+    Ok(container.update_config(|config| config.set_user(user)))
 }
 
 /// A node for joining strings
@@ -533,20 +624,56 @@ impl NodeImpl for Join {
     }
 }
 
+/// Convert a container layer to a service definition.
+async fn to_service(
+    _context: Rc<RuntimeContext>,
+    container: containerd::ContainerState,
+    entrypoint: Rc<str>,
+) -> Result<containerd::ServiceState, RuntimeError> {
+    Ok(container.into_service(entrypoint))
+}
+
+/// Attach a service to a container
+async fn with_service(
+    _content: Rc<RuntimeContext>,
+    container: containerd::ContainerLike,
+    service: containerd::ServiceState,
+    hostname: Rc<str>,
+) -> Result<containerd::ContainerLike, RuntimeError> {
+    Ok(container.update_config(|config| config.with_service(service, hostname)))
+}
+
+/// Expose a port from a service
+async fn port(
+    _content: Rc<RuntimeContext>,
+    service: containerd::ServiceState,
+    from: Rc<str>,
+    to: i128,
+) -> Result<containerd::ServiceState, RuntimeError> {
+    let from = containerd::PortMapping::from_str(&from)?;
+    let to = to
+        .try_into()
+        .map_err(|_| RuntimeError::internal("Port number out of range"))?;
+
+    Ok(service.update_service_config(|config| config.set_port(from, to)))
+}
+
 /// Return the list of prelude nodes
 pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
     vec![
         (NOOP_NAME, Box::new(Noop) as Box<dyn NodeImpl>),
         ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, true))),
         (
+            "ImageService",
+            Box::new(Wrap::<_, Rc<str>>::new(image_service, true)),
+        ),
+        (
             "Exec",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
-                exec, true,
-            )),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::passthrough(exec, true)),
         ),
         (
             "ExecOutput",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::new(
                 exec_output,
                 true,
             )),
@@ -557,7 +684,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ),
         (
             "Export",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::new(
                 export, false,
             )),
         ),
@@ -567,31 +694,56 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ),
         (
             "With",
-            Box::new(Wrap::<_, (containerd::ContainerState, FileSystem, Rc<str>)>::new(with, true)),
+            Box::new(
+                Wrap::<_, (containerd::ContainerLike, FileSystem, Rc<str>)>::passthrough(
+                    with, true,
+                ),
+            ),
         ),
         (
             "WorkingDir",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
-                with_working_dir,
-                false,
-            )),
+            Box::new(
+                Wrap::<_, (containerd::ContainerLike, Rc<str>)>::passthrough(
+                    with_working_dir,
+                    false,
+                ),
+            ),
         ),
         (
             "Env",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>, Rc<str>)>::new(env, false)),
+            Box::new(
+                Wrap::<_, (containerd::ContainerLike, Rc<str>, Rc<str>)>::passthrough(env, false),
+            ),
         ),
         (
             "GetEnv",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::new(
                 get_env, false,
             )),
         ),
         (
             "User",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
-                set_user, false,
-            )),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::passthrough(set_user, false)),
         ),
         ("Join", Box::new(Join)),
+        (
+            "ToService",
+            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
+                to_service, false,
+            )),
+        ),
+        (
+            "WithService",
+            Box::new(Wrap::<
+                _,
+                (containerd::ContainerLike, containerd::ServiceState, Rc<str>),
+            >::passthrough(with_service, false)),
+        ),
+        (
+            "Port",
+            Box::new(Wrap::<_, (containerd::ServiceState, Rc<str>, i128)>::new(
+                port, false,
+            )),
+        ),
     ]
 }

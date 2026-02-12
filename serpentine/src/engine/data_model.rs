@@ -15,14 +15,17 @@ use crate::engine::{RuntimeContext, RuntimeError, containerd};
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum Data {
     /// A numeric whole number value
-    #[cfg_attr(test, proptest(weight = 3))]
+    #[cfg_attr(test, proptest(weight = 6))]
     Int(i128),
     /// A string, usually a short literal
-    #[cfg_attr(test, proptest(weight = 3))]
+    #[cfg_attr(test, proptest(weight = 6))]
     String(Rc<str>),
     /// A docker container
-    #[cfg_attr(test, proptest(weight = 1))]
+    #[cfg_attr(test, proptest(weight = 2))]
     Container(containerd::ContainerState),
+    /// A service
+    #[cfg_attr(test, proptest(weight = 1))]
+    Service(containerd::ServiceState),
     /// A file/folder
     #[cfg_attr(test, proptest(skip))]
     FileSystem(FileSystem),
@@ -36,6 +39,7 @@ impl Data {
             Data::Int(_) => DataType::Int,
             Data::String(_) => DataType::String,
             Data::Container(_) => DataType::Container,
+            Data::Service(_) => DataType::Service,
             Data::FileSystem(_) => DataType::FileSystem,
         }
     }
@@ -44,10 +48,10 @@ impl Data {
     ///
     /// Used by caching system to know if a docker state is delete externally for example.
     pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
-        if let Self::Container(state) = self {
-            ctx.containerd.healthcheck(state).await
-        } else {
-            true
+        match self {
+            Self::Container(state) => ctx.containerd.healthcheck(state).await,
+            Self::Service(state) => ctx.containerd.healthcheck(state).await,
+            _ => true,
         }
     }
 }
@@ -68,6 +72,10 @@ impl CacheData for Data {
             }
             Self::Container(data) => {
                 writer.write_u8(2).await?;
+                data.write(writer).await?;
+            }
+            Self::Service(data) => {
+                writer.write_u8(4).await?;
                 data.write(writer).await?;
             }
             Self::FileSystem(data) => {
@@ -100,6 +108,10 @@ impl CacheData for Data {
                 let data = FileSystem::read(reader).await?;
                 Ok(Self::FileSystem(data))
             }
+            4 => {
+                let data = containerd::ServiceState::read(reader).await?;
+                Ok(Self::Service(data))
+            }
             _ => Err(RuntimeError::internal("Unknown kind byte for Data")),
         }
     }
@@ -116,6 +128,10 @@ impl CacheData for Data {
             }
             Self::Container(data) => {
                 hasher.update(&[2]);
+                data.content_hash(hasher).await?;
+            }
+            Self::Service(data) => {
+                hasher.update(&[4]);
                 data.content_hash(hasher).await?;
             }
             Self::FileSystem(data) => {
@@ -137,6 +153,8 @@ pub enum DataType {
     String,
     /// A docker container
     Container,
+    /// A service
+    Service,
     /// A file or folder
     FileSystem,
 }
@@ -149,6 +167,7 @@ impl DataType {
             Self::Int => "integer",
             Self::String => "string",
             Self::Container => "container",
+            Self::Service => "service",
             Self::FileSystem => "file/folder",
         }
     }

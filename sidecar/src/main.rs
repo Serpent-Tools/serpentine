@@ -418,8 +418,8 @@ fn parse_containerd_mount_options(options: &[String]) -> (MsFlags, String) {
     let mut flags = MsFlags::empty();
     let mut data = Vec::new();
 
-    for opt in options {
-        match opt.as_str() {
+    for option in options {
+        match option.as_str() {
             "ro" => flags |= MsFlags::MS_RDONLY,
             "rw" => {} // default
             "bind" => flags |= MsFlags::MS_BIND,
