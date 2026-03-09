@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use serpentine_internal::FileSystemEntryHeader;
+use serpentine_internal::{FileSystemEntryHeader, WireFormat};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::OnceCell;
 

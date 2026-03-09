@@ -8,6 +8,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use containerd_client::services::v1 as containerd_services;
+use serpentine_internal::WireFormat;
 use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
