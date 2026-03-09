@@ -5,7 +5,6 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::str::FromStr;
 
 use crate::engine::cache::CacheKey;
 use crate::engine::data_model::{Data, DataType, NodeInstanceId, NodeKindId};
@@ -643,19 +642,19 @@ async fn with_service(
     Ok(container.update_config(|config| config.with_service(service, hostname)))
 }
 
-/// Expose a port from a service
-async fn port(
+/// Set the healthcheck to run for a service
+async fn healthcheck(
     _content: Rc<RuntimeContext>,
     service: containerd::ServiceState,
-    from: Rc<str>,
-    to: i128,
+    command: Rc<str>,
+    timeout_seconds: i128,
 ) -> Result<containerd::ServiceState, RuntimeError> {
-    let from = containerd::PortMapping::from_str(&from)?;
-    let to = to
-        .try_into()
-        .map_err(|_| RuntimeError::internal("Port number out of range"))?;
-
-    Ok(service.update_service_config(|config| config.set_port(from, to)))
+    let timeout = std::time::Duration::from_secs(
+        timeout_seconds
+            .try_into()
+            .map_err(|_| RuntimeError::internal("Invalid timeout value"))?,
+    );
+    Ok(service.update_service_config(|config| config.set_healthcheck(command, timeout)))
 }
 
 /// Return the list of prelude nodes
@@ -740,9 +739,10 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             >::passthrough(with_service, false)),
         ),
         (
-            "Port",
+            "HealthCheck",
             Box::new(Wrap::<_, (containerd::ServiceState, Rc<str>, i128)>::new(
-                port, false,
+                healthcheck,
+                false,
             )),
         ),
     ]

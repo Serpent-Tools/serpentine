@@ -25,7 +25,10 @@ use tokio::net;
 const SOCKET_LOCATION: &str = "/run/containerd.sock";
 
 /// The size of container subnets
-const SUBNET_SIZE: u8 = 28;
+// 30 leaves 2 ips for hosts, which is all we need for each bridge.
+// Internet bridge is gateway,container.
+// Inter container bridges are just the two containers.
+const SUBNET_SIZE: u8 = 30;
 
 /// Prefix to use for container subnets
 const SUBNET_PREFIX: Ipv4Addr = Ipv4Addr::from_octets([198, 18, 0, 0]);
@@ -173,9 +176,88 @@ async fn setup_fifo(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Err
 /// Type that the cni config is stored as
 type CniConfig = Arc<Box<dyn cni::api::CNI + Send + Sync + 'static>>;
 
+/// A definition of a bridge connection between two namesspaces
+#[derive(Debug)]
+struct BridgeDefintion {
+    /// The name of the bridge, for example "cni-1234"
+    name: String,
+    /// The static ip address to assign to this side of the bridge
+    ip: Ipv4Addr,
+}
+
 /// Create a cni based network namespace
 async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
-    log::info!("Creating network");
+    let topology = serpentine_internal::network::AbstractTopology::read(&mut remote_socket).await?;
+    log::debug!("Creating toplogy: {topology:?}");
+    let topology = realize_topology(topology, None)?;
+    topology.write(&mut remote_socket).await?;
+
+    Ok(())
+}
+
+/// Create a concrete toplogy from the given abstract one, with a optional parent bridge.
+fn realize_topology(
+    topology: serpentine_internal::network::AbstractTopology,
+    parent_bridge: Option<BridgeDefintion>,
+) -> Result<serpentine_internal::network::ConcreteTopology, Box<dyn Error>> {
+    let ((), children) = topology.into_parts();
+
+    let my_ip = if let Some(parent_bridge) = &parent_bridge {
+        parent_bridge.ip
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+
+    let mut bridges = Vec::with_capacity(children.len());
+    if let Some(parent_bridge) = parent_bridge {
+        bridges.push(parent_bridge);
+    }
+
+    let mut new_children = Vec::with_capacity(children.len());
+
+    for child in &children {
+        let mut bridge_name = uuid::Uuid::new_v4().to_string();
+        bridge_name.truncate(15);
+        let (_subnet, my_side, child_side) = pick_random_subnet()?;
+
+        bridges.push(BridgeDefintion {
+            name: bridge_name.clone(),
+            ip: my_side,
+        });
+
+        let child = realize_topology(
+            child.clone(),
+            Some(BridgeDefintion {
+                name: bridge_name,
+                ip: child_side,
+            }),
+        )?;
+        new_children.push(child);
+    }
+
+    let namespace_path = create_network_namespace(&bridges)?;
+    let namespace = serpentine_internal::network::Namespace {
+        path: namespace_path.into_boxed_str(),
+        ip: my_ip,
+    };
+
+    let mut result = serpentine_internal::network::ConcreteTopology::new(namespace);
+    for child in new_children {
+        result.add_child(child);
+    }
+
+    Ok(result)
+}
+
+/// Create a cni network namespace with a random subnet.
+///
+/// Also creates the inter namespace bridges as defined by the `bridges` parameters
+///
+/// Returns the name of the namespace.
+fn create_network_namespace(
+    bridges: &[BridgeDefintion],
+) -> Result<String, Box<dyn Error + 'static>> {
+    log::info!("Creating namespace");
     let ns_name = uuid::Uuid::new_v4().to_string();
     let raw_namespace = netns_rs::NetNs::new(ns_name.clone())?;
     let namespace_path = raw_namespace.path().to_string_lossy();
@@ -188,7 +270,6 @@ async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn
         ..Default::default()
     };
     let cni_config: CniConfig = Arc::new(Box::new(cni_config));
-
     let loopback = cni::conf::ConfigFile::config_from_bytes(
         r#"{
             "cniVersion": "1.1.0",
@@ -199,9 +280,15 @@ async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn
         }"#
         .as_bytes(),
     )?;
+    apply_network(
+        Arc::clone(&cni_config),
+        &namespace,
+        "lo".to_owned(),
+        loopback,
+    )?;
 
-    let (subnet, gateway) = pick_random_subnet()?;
-    let bridge = cni::conf::ConfigFile::config_from_bytes(
+    let (subnet, gateway, _ip2) = pick_random_subnet()?;
+    let internet_bridge = cni::conf::ConfigFile::config_from_bytes(
         format!(
             r#"{{
             "cniVersion": "1.1.0",
@@ -221,23 +308,50 @@ async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn
               }}
             }}]
         }}"#,
+            // CNI spec requires bridge names to be 15 characters or less.
             ns_name.get(0..8).ok_or("Uuid wasnt pure ascii")?
         )
         .as_bytes(),
     )?;
-
     apply_network(
         Arc::clone(&cni_config),
         &namespace,
-        "lo".to_owned(),
-        loopback,
+        "eth0".to_owned(),
+        internet_bridge,
     )?;
-    apply_network(cni_config, &namespace, "eth0".to_owned(), bridge)?;
 
-    serpentine_internal::write_length_prefixed(&mut remote_socket, namespace_path.as_bytes())
-        .await?;
+    for bridge in bridges {
+        let bridge_config = cni::conf::ConfigFile::config_from_bytes(
+            format!(
+                r#"{{
+                "cniVersion": "1.1.0",
+                "name": "bridge",
+                "plugins": [{{
+                  "type": "bridge",
+                  "bridge": "{}",
+                  "ipam": {{
+                    "type": "static",
+                    "addresses": [
+                        {{
+                            "address": "{}/{}"
+                        }}
+                    ]
+                  }}
+                }}]
+            }}"#,
+                bridge.name, bridge.ip, SUBNET_SIZE
+            )
+            .as_bytes(),
+        )?;
+        apply_network(
+            Arc::clone(&cni_config),
+            &namespace,
+            bridge.name.clone(),
+            bridge_config,
+        )?;
+    }
 
-    Ok(())
+    Ok(namespace_path.into_owned())
 }
 
 /// Apply the given network config to the given namespace.
@@ -259,7 +373,9 @@ fn apply_network(
 }
 
 /// Pick a random non-internet subnet thats unlikely to be used already on the LAN/Host
-fn pick_random_subnet() -> Result<(String, Ipv4Addr), Box<dyn Error>> {
+///
+/// Returns the subnet definition, as well as two usable ips in it.
+fn pick_random_subnet() -> Result<(String, Ipv4Addr, Ipv4Addr), Box<dyn Error>> {
     let random_ip: u32 = rand::rngs::OsRng.try_next_u32()?;
 
     const {
@@ -267,6 +383,7 @@ fn pick_random_subnet() -> Result<(String, Ipv4Addr), Box<dyn Error>> {
             SUBNET_SIZE > SUBNET_PREFIX_LENGTH,
             "subnet must be sub-set of prefix."
         );
+        assert!(SUBNET_SIZE <= 30, "Subnet is too small to be usable");
     }
 
     let prefix_mask = subnet_mask(SUBNET_PREFIX_LENGTH);
@@ -274,11 +391,14 @@ fn pick_random_subnet() -> Result<(String, Ipv4Addr), Box<dyn Error>> {
     let random_mask = target_mask ^ prefix_mask;
 
     let subnet = SUBNET_PREFIX.to_bits() | (random_ip & random_mask);
-    let gateway = subnet | 0b1;
-    let subnet = Ipv4Addr::from_bits(subnet);
-    let gateway = Ipv4Addr::from_bits(gateway);
+    let ip1 = subnet | 0b01;
+    let ip2 = subnet | 0b10;
 
-    Ok((format!("{subnet}/{SUBNET_SIZE}"), gateway))
+    let subnet = Ipv4Addr::from_bits(subnet);
+    let ip1 = Ipv4Addr::from_bits(ip1);
+    let ip2 = Ipv4Addr::from_bits(ip2);
+
+    Ok((format!("{subnet}/{SUBNET_SIZE}"), ip1, ip2))
 }
 
 /// Generate a subnet mask from a subnet length, for example `18` -> `11111111 11111111 11000000 00000000`
@@ -296,6 +416,8 @@ async fn delete_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn
     let namespace = netns_rs::NetNs::get(namespace)?;
     log::info!("Removing network namespace: {namespace}");
     namespace.remove()?;
+
+    // TODO: Cleanup the adapters as well.
 
     Ok(())
 }

@@ -73,11 +73,21 @@ pub enum RuntimeError {
     #[diagnostic(code(command_execution_error))]
     CommandExecution {
         /// The exit code
-        code: i64,
+        code: u32,
         /// The command that was run
         command: String,
         /// The stdout/stderr of the command
         output: String,
+    },
+
+    /// A healthcheck didnt pass in time
+    #[error("Healthcheck {check:?} did not pass in {timeout:?}")]
+    #[diagnostic(code(healthcheck_timeout))]
+    HealthcheckTimeout {
+        /// Which healthcheck didnt pass
+        check: String,
+        /// How long we waited for it to pass
+        timeout: std::time::Duration,
     },
 
     /// Attempted to capture non-utf8 output
