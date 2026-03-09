@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 
+use serpentine_internal::WireFormat;
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net;

@@ -7,6 +7,7 @@ use std::io::{Error, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
+    WireFormat,
     read_length_prefixed_string,
     read_u64_length_encoded,
     write_length_prefixed,
@@ -66,12 +67,8 @@ pub struct Mount {
     pub options: Vec<String>,
 }
 
-impl Mount {
-    /// Write this mount to the given writer.
-    ///
-    /// # Errors
-    /// If the underlying writer errors
-    pub async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+impl WireFormat for Mount {
+    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
         write_length_prefixed(writer, self.type_.as_bytes()).await?;
         write_length_prefixed(writer, self.source.as_bytes()).await?;
         write_length_prefixed(writer, self.target.as_bytes()).await?;
@@ -84,11 +81,7 @@ impl Mount {
         Ok(())
     }
 
-    /// Read a mount from a reader
-    ///
-    /// # Errors
-    /// If underlying reader errors or data is corrupted
-    pub async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
         let type_ = read_length_prefixed_string(reader).await?;
         let source = read_length_prefixed_string(reader).await?;
         let target = read_length_prefixed_string(reader).await?;

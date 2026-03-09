@@ -16,6 +16,7 @@ use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
 use rand::TryRngCore;
 use rust_cni::libcni as cni;
+use serpentine_internal::WireFormat;
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, PORT, RequestKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net;

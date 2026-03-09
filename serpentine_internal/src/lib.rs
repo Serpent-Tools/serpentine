@@ -7,6 +7,35 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub mod sidecar;
 
+/// Trait for types that can be serialized to/from an async byte stream.
+#[expect(
+    async_fn_in_trait,
+    reason = "internal crate, auto trait bounds not needed"
+)]
+pub trait WireFormat: Sized {
+    /// Write this value to the writer.
+    ///
+    /// # Errors
+    /// If the underlying writer errors.
+    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()>;
+
+    /// Read a value from the reader.
+    ///
+    /// # Errors
+    /// If the underlying reader errors or data is corrupted.
+    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self>;
+}
+
+impl WireFormat for () {
+    async fn write(self, _writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        Ok(())
+    }
+
+    async fn read(_reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        Ok(())
+    }
+}
+
 /// Write a `u64` using variable-length encoding
 ///
 /// # Errors
@@ -122,12 +151,8 @@ pub enum FileSystemEntryHeader {
     },
 }
 
-impl FileSystemEntryHeader {
-    /// Write this header to the writer.
-    ///
-    /// # Errors
-    /// If an io error occurs.
-    pub async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+impl WireFormat for FileSystemEntryHeader {
+    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
         match self {
             Self::File { name, length } => {
                 writer.write_u8(0).await?;
@@ -144,11 +169,7 @@ impl FileSystemEntryHeader {
         Ok(())
     }
 
-    /// Read a header from the given reader.
-    ///
-    /// # Errors
-    /// If the reader returns a error.
-    pub async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
         let kind = reader.read_u8().await?;
         let name = read_length_prefixed_string(reader).await?.into();
         let length = read_u64_length_encoded(reader).await?;
