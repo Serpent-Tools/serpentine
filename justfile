@@ -3,14 +3,8 @@ check: test (run "FULL")
 run entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}}
 
-run_ci entry_point="DEFAULT": build_container
-    cargo run -p serpentine -- run --entry-point {{entry_point}} --standalone-cache --ci
-
 test filter="": build_container
     RUST_LOG="serpentine=trace" cargo nextest run --no-fail-fast --jobs num-cpus --features _test_docker {{filter}} 
-
-graph:
-    cargo run -- graph
 
 clean: build_container
     cargo run -p serpentine -- clean || exit 0
