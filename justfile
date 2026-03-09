@@ -6,6 +6,10 @@ run entry_point="DEFAULT": build_container
 test filter="": build_container
     RUST_LOG="serpentine=trace" cargo nextest run --no-fail-fast --jobs num-cpus --features _test_docker {{filter}} 
 
+build_container:
+    docker container rm -f serpent-tools.containerd
+    docker build -t serpent-tools/containerd:dev . --pull=false
+
 clean: build_container
     cargo run -p serpentine -- clean || exit 0
     cargo clean
@@ -16,10 +20,6 @@ sidecar_logs:
 
 run_sidecar: build_container
     docker run --rm -it serpent-tools/containerd:dev
-
-build_container:
-    docker container rm -f serpent-tools.containerd
-    docker build -t serpent-tools/containerd:dev . --pull=false
 
 pull_images:
     grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | xargs -n1 docker pull || exit 0

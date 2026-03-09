@@ -4,13 +4,13 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use containerd_client::services::v1 as containerd_services;
-use serpentine_internal::WireFormat;
 use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::{StreamExt, TryStreamExt};
+use serpentine_internal::{WireFormat, network};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
@@ -204,126 +204,16 @@ impl CacheData for ContainerConfig {
     }
 }
 
-/// The protocol to open the port on.
-#[derive(Clone, Hash, Eq, PartialEq, Debug, PartialOrd, Ord)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
-pub enum PortProtocol {
-    /// TCP
-    Tcp,
-    /// UDP
-    Udp,
-}
-
-impl CacheData for PortProtocol {
-    async fn read(
-        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
-    ) -> Result<Self, RuntimeError> {
-        match reader.read_u8().await? {
-            0 => Ok(Self::Tcp),
-            1 => Ok(Self::Udp),
-            other => Err(RuntimeError::internal(format!(
-                "Invalid protocol value {other}"
-            ))),
-        }
-    }
-
-    async fn write(
-        &self,
-        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
-    ) -> Result<(), RuntimeError> {
-        let value = match self {
-            Self::Tcp => 0,
-            Self::Udp => 1,
-        };
-        writer.write_u8(value).await?;
-        Ok(())
-    }
-
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
-        let value = match self {
-            Self::Tcp => 0,
-            Self::Udp => 1,
-        };
-        hasher.update(&[value]);
-        Ok(())
-    }
-}
-
-/// A port and protoco pair for descriping a port mapping
-#[derive(Clone, Hash, Eq, PartialEq, Debug, PartialOrd, Ord)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
-pub struct PortMapping {
-    /// The outside port to open
-    port: u16,
-    /// The protocol to open the port on
-    protocol: PortProtocol,
-}
-
-impl CacheData for PortMapping {
-    async fn read(
-        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
-    ) -> Result<Self, RuntimeError> {
-        let port = reader.read_u16().await?;
-        let protocol = PortProtocol::read(reader).await?;
-        Ok(Self { port, protocol })
-    }
-
-    async fn write(
-        &self,
-        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
-    ) -> Result<(), RuntimeError> {
-        writer.write_u16(self.port).await?;
-        self.protocol.write(writer).await?;
-        Ok(())
-    }
-
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
-        hasher.update(&self.port.to_le_bytes());
-        self.protocol.content_hash(hasher).await?;
-        Ok(())
-    }
-}
-
-impl FromStr for PortMapping {
-    type Err = RuntimeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some((port, protocol)) = s.split_once('/') {
-            let port = port.parse().map_err(|err| {
-                RuntimeError::internal(format!("Invalid port value {port}: {err}"))
-            })?;
-            let protocol = match protocol.to_lowercase().as_str() {
-                "tcp" => PortProtocol::Tcp,
-                "udp" => PortProtocol::Udp,
-                other => {
-                    return Err(RuntimeError::internal(format!(
-                        "Invalid protocol value {other}"
-                    )));
-                }
-            };
-            Ok(Self { port, protocol })
-        } else {
-            let port = s
-                .parse()
-                .map_err(|err| RuntimeError::internal(format!("Invalid port value {s}: {err}")))?;
-            Ok(Self {
-                port,
-                protocol: PortProtocol::Tcp,
-            })
-        }
-    }
-}
-
 /// Extra config values for services
 #[derive(Clone, Eq, PartialEq, Debug)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ServiceConfig {
     /// The service entry point
     entrypoint: Rc<str>,
-    /// The ports to expose on the servie and what port they map to.
-    ///
-    /// The key is the outside port and the vlaue is the destination (many to one)
-    ports: HashMap<PortMapping, u16>,
+    /// Command to run in the same container as the service and which should return a 0 exit code
+    /// before spawning parents.
+    #[cfg_attr(test, proptest(value = "(\"exit 0\".into(), Duration::from_secs(1))"))]
+    healthcheck: (Rc<str>, Duration),
 }
 
 impl CacheData for ServiceConfig {
@@ -332,15 +222,13 @@ impl CacheData for ServiceConfig {
     ) -> Result<Self, RuntimeError> {
         let entrypoint = Rc::<str>::read(reader).await?;
 
-        let mut ports = HashMap::new();
-        let port_count = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
-        for _ in 0..port_count {
-            let port = PortMapping::read(reader).await?;
-            let dest = reader.read_u16().await?;
-            ports.insert(port, dest);
-        }
+        let healthcheck = Rc::<str>::read(reader).await?;
+        let timeout = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
 
-        Ok(Self { entrypoint, ports })
+        Ok(Self {
+            entrypoint,
+            healthcheck: (healthcheck, Duration::from_secs(timeout)),
+        })
     }
 
     async fn write(
@@ -348,24 +236,17 @@ impl CacheData for ServiceConfig {
         writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
     ) -> Result<(), RuntimeError> {
         self.entrypoint.write(writer).await?;
-
-        serpentine_internal::write_u64_variable_length(&mut **writer, self.ports.len() as u64)
+        self.healthcheck.0.write(writer).await?;
+        serpentine_internal::write_u64_variable_length(&mut **writer, self.healthcheck.1.as_secs())
             .await?;
-        for (port, dest) in &self.ports {
-            port.write(writer).await?;
-            writer.write_u16(*dest).await?;
-        }
 
         Ok(())
     }
 
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
         self.entrypoint.content_hash(hasher).await?;
-        hasher.update(&self.ports.len().to_le_bytes());
-        for (port, dest) in &self.ports {
-            Box::pin(port.content_hash(hasher)).await?;
-            hasher.update(&dest.to_le_bytes());
-        }
+        self.healthcheck.0.content_hash(hasher).await?;
+        hasher.update(&self.healthcheck.1.as_secs().to_le_bytes());
 
         Ok(())
     }
@@ -373,30 +254,17 @@ impl CacheData for ServiceConfig {
 
 impl From<oci_client::config::Config> for ServiceConfig {
     fn from(config: oci_client::config::Config) -> Self {
-        let entrypoint = config.entrypoint.unwrap_or_default();
+        let entrypoint = config
+            .entrypoint
+            .unwrap_or_default()
+            .into_iter()
+            .chain(config.cmd.unwrap_or_default())
+            .collect::<Vec<_>>();
         let entrypoint = shell_words::join(entrypoint);
 
-        let ports = if let Some(exposed) = config.exposed_ports {
-            exposed
-                .into_iter()
-                .filter_map(|port_str| match port_str.parse::<PortMapping>() {
-                    Ok(mapping) => {
-                        let port = mapping.port;
-                        Some((mapping, port))
-                    }
-                    Err(err) => {
-                        log::warn!("Invalid port mapping {port_str} in image config: {err}");
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
-
         Self {
-            entrypoint: entrypoint.into(),
-            ports,
+            entrypoint: format!("exec {entrypoint}").into(),
+            healthcheck: ("exit 0".into(), Duration::from_secs(1)),
         }
     }
 }
@@ -405,7 +273,7 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             entrypoint: "while true; do sleep 1; done".into(),
-            ports: HashMap::new(),
+            healthcheck: ("exit 0".into(), Duration::from_secs(1)),
         }
     }
 }
@@ -413,20 +281,13 @@ impl Default for ServiceConfig {
 impl Hash for ServiceConfig {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.entrypoint.hash(state);
-
-        let mut ports: Vec<_> = self.ports.iter().collect();
-        ports.sort();
-        for (mapping, dest) in ports {
-            mapping.hash(state);
-            dest.hash(state);
-        }
     }
 }
 
 impl ServiceConfig {
-    /// Set a new exposed port on this service, mapping the given outside port to the given destination port.
-    pub fn set_port(&mut self, outside: PortMapping, dest: u16) {
-        self.ports.insert(outside, dest);
+    /// Set the healthcheck command and timeout for this service.
+    pub fn set_healthcheck(&mut self, command: Rc<str>, timeout: Duration) {
+        self.healthcheck = (command, timeout);
     }
 }
 
@@ -487,6 +348,25 @@ impl ServiceState {
     pub fn get_service_config(&self) -> &ServiceConfig {
         &self.service_config
     }
+
+    /// Convert this service into a container topology
+    fn into_toplogy(mut self, hostname: Rc<str>) -> network::Topology<ContainerTopologyNode> {
+        let mut services = Vec::with_capacity(self.container.config.services.len());
+
+        self.container = self.container.update_config(|config| {
+            for (service_hostname, service) in config.services.drain() {
+                services.push(service.into_toplogy(service_hostname));
+            }
+        });
+
+        let this = ContainerTopologyNode {
+            state: ContainerLike::Service(self),
+            hostname: Some(hostname),
+            cmd: None,
+        };
+
+        network::Topology::with_children(this, services)
+    }
 }
 
 impl std::ops::Deref for ServiceState {
@@ -499,6 +379,42 @@ impl std::ops::Deref for ServiceState {
 impl std::ops::DerefMut for ServiceState {
     fn deref_mut(&mut self) -> &mut ContainerState {
         &mut self.container
+    }
+}
+
+/// A node in a container toplogy.
+///
+/// The root node will be a `ContainerState` and the children will be `ServiceState`s.
+/// This is used to represent the full state of a container with all its attached services.
+struct ContainerTopologyNode {
+    /// The service state
+    state: ContainerLike,
+    /// The hostname of this service.
+    hostname: Option<Rc<str>>,
+    /// The command provided to the root node.
+    cmd: Option<Box<str>>,
+}
+
+impl ContainerTopologyNode {
+    /// Get the hostname to use for this container.
+    fn get_hostname(&self) -> Rc<str> {
+        self.hostname.clone().unwrap_or_else(|| "step".into())
+    }
+
+    /// Get the command to execute
+    fn get_cmd(&self) -> &str {
+        match (&self.state, &self.cmd) {
+            (ContainerLike::Container(_), Some(cmd)) => cmd.as_ref(),
+            (ContainerLike::Service(service), None) => &service.service_config.entrypoint,
+            _ => {
+                debug_assert!(
+                    false,
+                    "Only the root node should have a cmd, and it should be set"
+                );
+                log::error!("Invalid container topology: root node has no cmd");
+                "/bin/sh"
+            }
+        }
     }
 }
 
@@ -539,6 +455,25 @@ impl ContainerState {
                 ..ServiceConfig::default()
             }),
         }
+    }
+
+    /// Copnvert this into a container toplogy
+    fn into_toplogy(mut self, cmd: Box<str>) -> network::Topology<ContainerTopologyNode> {
+        let mut services = Vec::with_capacity(self.config.services.len());
+
+        self = self.update_config(|config| {
+            for (service_hostname, service) in config.services.drain() {
+                services.push(service.into_toplogy(service_hostname));
+            }
+        });
+
+        let this = ContainerTopologyNode {
+            state: ContainerLike::Container(self),
+            hostname: None,
+            cmd: Some(cmd),
+        };
+
+        network::Topology::with_children(this, services)
     }
 }
 
@@ -710,7 +645,7 @@ where
 }
 
 /// A resource that might be left hanging on operation abort, should be cleared out at shutdown
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq)]
 enum DanglingResource {
     /// A lease, this dangling would lead to gc holding onto unneeded data
     Lease(Box<str>),
@@ -718,7 +653,19 @@ enum DanglingResource {
     /// This holds the container id
     Task(Box<str>),
     /// A container network
-    Network(Box<str>),
+    Network(network::ConcreteTopology),
+}
+
+/// A handle to a running container
+struct ContainerHandle {
+    /// The id of the container in containerd
+    id: String,
+    /// The stdout handle of the container process
+    stdout: tokio_util::task::AbortOnDropHandle<Result<String, String>>,
+    /// The mutable snapshot the container is being run with.
+    snapshot: String,
+    /// The original node that spawned this container
+    node: ContainerTopologyNode,
 }
 
 /// A docker client wrapper
@@ -736,9 +683,9 @@ pub struct Client {
     /// Lock to serialize image pulls (avoids race conditions with content/snapshot stores)
     pull_lock: Mutex<()>,
     /// Dangling resources
-    dangling: Mutex<HashSet<DanglingResource>>,
+    dangling: Mutex<Vec<DanglingResource>>,
     /// Networks that arent currently in use.
-    free_networks: Mutex<Vec<Box<str>>>,
+    free_networks: Mutex<HashMap<network::AbstractTopology, Vec<network::ConcreteTopology>>>,
 }
 
 impl Client {
@@ -770,8 +717,8 @@ impl Client {
             tui,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
             pull_lock: Mutex::new(()),
-            dangling: Mutex::new(HashSet::new()),
-            free_networks: Mutex::new(Vec::new()),
+            dangling: Mutex::new(Vec::new()),
+            free_networks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -793,7 +740,7 @@ impl Client {
         self.dangling
             .lock()
             .await
-            .insert(DanglingResource::Lease(lease.clone().into()));
+            .push(DanglingResource::Lease(lease.clone().into()));
 
         self.containerd
             .leases()
@@ -814,10 +761,6 @@ impl Client {
                 sync: false,
             })
             .await?;
-        self.dangling
-            .lock()
-            .await
-            .remove(&DanglingResource::Lease(lease.into()));
         Ok(())
     }
 
@@ -873,17 +816,9 @@ impl Client {
         let lease = self.new_lease().await?;
 
         log::debug!("Pulling image {image}");
-        futures_util::future::try_join_all(
-            manifest
-                .layers
-                .iter()
-                .map(|layer| self.pull_layer(&image, layer, &lease)),
-        )
-        .await?;
-        log::debug!("Uploaded all layers to containerd");
-
-        log::debug!("Creating snapshot from image");
-        let snapshot_name = self.create_snapshots(image_name, manifest, &lease).await?;
+        let snapshot_name = self
+            .create_snapshots(&image, image_name, manifest, &lease)
+            .await?;
         self.drop_lease(lease).await?;
 
         drop(pull_guard);
@@ -898,7 +833,8 @@ impl Client {
     /// store
     async fn create_snapshots(
         &self,
-        image: &str,
+        image: &oci_client::Reference,
+        image_name: &str,
         manifest: oci_client::manifest::OciImageManifest,
         lease: &str,
     ) -> Result<String, RuntimeError> {
@@ -925,6 +861,8 @@ impl Client {
             if layer_exists {
                 log::debug!("Snapshot {snapshot_name} already exists.");
             } else {
+                self.pull_layer(image, &layer, lease).await?;
+
                 let key = uuid::Uuid::new_v4().to_string();
                 log::debug!("Applying layer {} to {key}", layer.digest);
                 let mounts = self
@@ -962,10 +900,10 @@ impl Client {
                 let labels = if index == layer_count.saturating_sub(1) {
                     HashMap::from([
                         ("containerd.io/gc.root".to_owned(), "1".to_owned()),
-                        ("serpentine/image".to_owned(), image.to_owned()),
+                        ("serpentine/image".to_owned(), image_name.to_owned()),
                     ])
                 } else {
-                    HashMap::from([("serpentine/image".to_owned(), image.to_owned())])
+                    HashMap::from([("serpentine/image".to_owned(), image_name.to_owned())])
                 };
                 self.containerd
                     .snapshot()
@@ -1100,49 +1038,11 @@ impl Client {
         state: &ContainerState,
         cmd: String,
     ) -> Result<ContainerState, RuntimeError> {
-        let snapshot = uuid::Uuid::new_v4().to_string();
         let lease = self.new_lease().await?;
-
-        self.containerd
-            .snapshot()
-            .prepare(
-                containerd_services::snapshots::PrepareSnapshotRequest {
-                    snapshotter: SNAPSHOTTER.to_owned(),
-                    key: snapshot.clone(),
-                    parent: (*state.snapshot).to_owned(),
-                    labels: HashMap::new(),
-                }
-                .with_lease(&lease),
-            )
-            .await?;
-
-        let _ = self
-            .exec_internal(
-                &ContainerState {
-                    snapshot: Rc::from(snapshot.clone()),
-                    config: Rc::clone(&state.config),
-                },
-                cmd,
-                &lease,
-            )
-            .await?;
-
-        let new_snapshot = uuid::Uuid::new_v4().to_string();
-        self.containerd
-            .snapshot()
-            .commit(containerd_services::snapshots::CommitSnapshotRequest {
-                snapshotter: SNAPSHOTTER.to_owned(),
-                name: new_snapshot.clone(),
-                key: snapshot.clone(),
-                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
-            })
-            .await?;
+        let (container, _) = self.exec_internal(state.clone(), cmd, &lease).await?;
         self.drop_lease(lease).await?;
 
-        Ok(ContainerState {
-            snapshot: new_snapshot.into(),
-            config: Rc::clone(&state.config),
-        })
+        Ok(container)
     }
 
     /// Execute a command return its stdout and stderr.
@@ -1151,78 +1051,129 @@ impl Client {
         state: &ContainerState,
         cmd: String,
     ) -> Result<String, RuntimeError> {
-        let snapshot = uuid::Uuid::new_v4().to_string();
         let lease = self.new_lease().await?;
-
-        self.containerd
-            .snapshot()
-            .prepare(
-                containerd_services::snapshots::PrepareSnapshotRequest {
-                    snapshotter: SNAPSHOTTER.to_owned(),
-                    key: snapshot.clone(),
-                    parent: (*state.snapshot).to_owned(),
-                    labels: HashMap::new(),
-                }
-                .with_lease(&lease),
-            )
-            .await?;
-
-        let output = self
-            .exec_internal(
-                &ContainerState {
-                    snapshot: Rc::from(snapshot.clone()),
-                    config: Rc::clone(&state.config),
-                },
-                cmd,
-                &lease,
-            )
+        let stdout = self
+            .exec_internal(state.clone(), cmd, &lease)
             .await?
+            .1
             .map_err(|output| RuntimeError::NonUtf8Capture { output })?;
         self.drop_lease(lease).await?;
 
-        Ok(output)
+        Ok(stdout)
+    }
+
+    /// Retrive a `ConcreteTopology` matching the given `AbstractTopology` from the free network pool, or create a new one if none are available.
+    async fn get_network(
+        &self,
+        topology: network::AbstractTopology,
+    ) -> Result<network::ConcreteTopology, RuntimeError> {
+        if let Some(concrete_topology) = self
+            .free_networks
+            .lock()
+            .await
+            .get_mut(&topology)
+            .and_then(Vec::pop)
+        {
+            log::debug!("Reusing network {concrete_topology:?} for topology {topology:?}");
+            Ok(concrete_topology)
+        } else {
+            log::debug!("Creating new network for topology {topology:?}");
+            let concrete_topology = self.sidecar.create_network(topology.clone()).await?;
+            self.dangling
+                .lock()
+                .await
+                .push(DanglingResource::Network(concrete_topology.clone()));
+            Ok(concrete_topology)
+        }
     }
 
     /// Execute a command on the given mutable snapshot, returning its stdout and stderr
     /// The stdout will be wrapeed in `Ok` is all the data was utf-8, `Err` if not.
-    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
     async fn exec_internal(
         &self,
-        state: &ContainerState,
+        state: ContainerState,
         cmd: String,
         lease: &str,
-    ) -> Result<Result<String, String>, RuntimeError> {
+    ) -> Result<(ContainerState, Result<String, String>), RuntimeError> {
+        let exec_lock = self.exec_lock.acquire().await;
         log::debug!("Prepearing to execute {cmd:?} in {state:?}");
-        let network_namespace = if let Some(namespace) = self.free_networks.lock().await.pop() {
-            log::debug!("Re using namespace {namespace}");
-            namespace
-        } else {
-            let namespace = self.sidecar.create_network_namespace().await?;
-            self.dangling
-                .lock()
-                .await
-                .insert(DanglingResource::Network(namespace.clone()));
-            namespace
+        let container_topology = state.into_toplogy(cmd.into());
+        let network_toplogy = self
+            .get_network(container_topology.map_data_ref(|_| ()))
+            .await?;
+        let complete_topology = container_topology.zip(network_toplogy);
+
+        let running_topology = self.spinup_topology(complete_topology, lease).await?;
+        let handle = running_topology.get_data();
+        self.wait_for_exit(handle.id.clone(), String::new()).await?;
+
+        let (container, stdout) = self.spindown_topology(running_topology).await?;
+        let container = match container {
+            ContainerLike::Container(container) => container,
+            ContainerLike::Service(_) => {
+                log::error!("Root of topology was a service, this should never happen");
+                return Err(RuntimeError::internal(
+                    "Invalid container topology: root node was a service".to_owned(),
+                ));
+            }
         };
 
-        log::debug!("Loading mounts for {:?}", state.snapshot);
+        drop(exec_lock);
+        Ok((container, stdout))
+    }
+
+    /// Spinup a topology tree
+    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
+    async fn spinup_topology(
+        &self,
+        topology: network::Topology<(ContainerTopologyNode, network::Namespace)>,
+        lease: &str,
+    ) -> Result<network::Topology<ContainerHandle>, RuntimeError> {
+        let ((node, network_namespace), children) = topology.into_parts();
+
+        let mut hosts = Vec::new();
+        for child in &children {
+            let hostname = child.get_data().0.get_hostname();
+            let ip = child.get_data().1.ip;
+
+            hosts.push((Rc::clone(&hostname), ip));
+        }
+
+        let service_handles = futures_util::future::try_join_all(
+            children
+                .into_iter()
+                .map(|child| self.spinup_topology(child, lease)),
+        )
+        .await?;
+
+        let mutable_snapshot = uuid::Uuid::new_v4().to_string();
+        log::debug!(
+            "Creating mutable snapshot {mutable_snapshot:?} from {:?}",
+            node.state.snapshot
+        );
         let mounts = self
             .containerd
             .snapshot()
-            .mounts(containerd_services::snapshots::MountsRequest {
-                snapshotter: SNAPSHOTTER.to_owned(),
-                key: (*state.snapshot).to_owned(),
-            })
+            .prepare(
+                containerd_services::snapshots::PrepareSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.to_owned(),
+                    key: mutable_snapshot.clone(),
+                    parent: (*node.state.snapshot).to_owned(),
+                    labels: HashMap::new(),
+                }
+                .with_lease(lease),
+            )
             .await?
             .into_inner()
             .mounts;
         log::trace!("Mounts: {mounts:?}");
 
-        let container = self
+        let (container, process_spec) = self
             .create_container(
-                state,
-                cmd.clone(),
-                network_namespace.to_string().into(),
+                &node.state,
+                node.get_cmd().to_owned(),
+                network_namespace.path.to_string().into(),
+                hosts,
                 &mounts,
                 lease,
             )
@@ -1230,7 +1181,7 @@ impl Client {
 
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
 
-        let log_id = cmd.clone();
+        let log_id = node.get_cmd().to_owned();
         let task_id = format!("exec-{container}").into();
         let task_title = log_id.clone().into();
 
@@ -1262,9 +1213,7 @@ impl Client {
             .await?
             .into_inner();
 
-        let exec_lock = self.exec_lock.acquire().await;
-
-        log::debug!("Starting {cmd:?} in {container}");
+        log::debug!("Starting {:?} in {container}", node.get_cmd());
         // A empty `exec_id` signifies the main process of a container
         self.containerd
             .tasks()
@@ -1274,40 +1223,113 @@ impl Client {
             })
             .await?;
 
-        let exit_code = self
-            .containerd
-            .tasks()
-            .wait(containerd_services::WaitRequest {
-                container_id: container.clone(),
-                exec_id: String::new(),
-            })
-            .await?
-            .into_inner()
-            .exit_status;
+        if let ContainerLike::Service(service) = &node.state {
+            let (healthcheck, timeout) = &service.get_service_config().healthcheck;
+            self.wait_for_command_success(
+                container.clone(),
+                process_spec,
+                Rc::clone(healthcheck),
+                *timeout,
+                lease,
+            )
+            .await?;
+        }
 
-        self.free_networks.lock().await.push(network_namespace);
+        Ok(network::Topology::with_children(
+            ContainerHandle {
+                id: container,
+                stdout,
+                node,
+                snapshot: mutable_snapshot,
+            },
+            service_handles,
+        ))
+    }
 
-        drop(exec_lock);
-        self.dangling
-            .lock()
-            .await
-            .remove(&DanglingResource::Task(container.into()));
+    /// Run the given healthcheck command until either timeout time has passed or it returns exit
+    /// code 0;
+    async fn wait_for_command_success(
+        &self,
+        container_id: String,
+        mut base_process: oci_spec::runtime::Process,
+        command: Rc<str>,
+        timeout: std::time::Duration,
+        lease: &str,
+    ) -> Result<(), RuntimeError> {
+        base_process.set_args(Some(vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            command.to_string(),
+        ]));
 
-        let stdout = stdout
-            .await
-            .map_err(|_| RuntimeError::internal("Failed to join task"))?;
+        let task_id = format!("healthcheck-{container_id}").into();
 
-        log::debug!("Got exit code {exit_code}");
-        self.tui.send(TuiMessage::FinishTask(task_id));
+        let start_time = std::time::Instant::now();
+        loop {
+            if start_time.elapsed() > timeout {
+                return Err(RuntimeError::HealthcheckTimeout {
+                    check: command.to_string(),
+                    timeout,
+                });
+            }
 
-        if exit_code == 0 {
-            Ok(stdout)
-        } else {
-            Err(RuntimeError::CommandExecution {
-                code: exit_code.into(),
-                command: cmd,
-                output: stdout.unwrap_or_else(|data| data),
-            })
+            let exec_id = uuid::Uuid::new_v4().to_string();
+
+            let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
+            tokio::spawn(Self::read_stdout(
+                stdout,
+                format!("[healthcheck] {command}"),
+                Arc::clone(&task_id),
+                format!("[healthcheck] {command}").into(),
+                self.tui.clone(),
+            ));
+
+            log::debug!("Running healthcheck command {command} in {container_id}");
+            self.containerd
+                .tasks()
+                .exec(
+                    containerd_services::ExecProcessRequest {
+                        container_id: container_id.clone(),
+                        exec_id: exec_id.clone(),
+                        terminal: false,
+                        stdin: String::new(),
+                        stdout: stdout_path.clone().into(),
+                        stderr: stdout_path.into(),
+                        spec: Some(prost_types::Any {
+                            type_url: "types.containerd.io/opencontainers/runtime-spec/1/Process"
+                                .to_owned(),
+                            value: serde_json::to_vec(&base_process)
+                                .map_err(|err| RuntimeError::internal(format!("{err}")))?,
+                        }),
+                    }
+                    .with_lease(lease),
+                )
+                .await?;
+            self.containerd
+                .tasks()
+                .start(containerd_services::StartRequest {
+                    container_id: container_id.clone(),
+                    exec_id: exec_id.clone(),
+                })
+                .await?;
+
+            // let exit_code = self.wait_for_exit(container_id.clone(), exec_id).await?;
+            let exit_code = tokio::select! {
+                exit = self.wait_for_exit(container_id.clone(), exec_id.clone()) => {
+                    exit?
+                }
+                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    log::warn!("Healthcheck command {command} is taking a while.");
+                    255
+                }
+            };
+
+            log::debug!("Healthcheck command exited with code {exit_code}");
+            if exit_code == 0 {
+                self.tui.send(TuiMessage::FinishTask(task_id));
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
 
@@ -1319,14 +1341,15 @@ impl Client {
         state: &ContainerState,
         cmd: String,
         network_namespace: PathBuf,
+        hosts: Vec<(Rc<str>, std::net::Ipv4Addr)>,
         mounts: &[containerd_client::types::Mount],
         lease: &str,
-    ) -> Result<String, RuntimeError> {
+    ) -> Result<(String, oci_spec::runtime::Process), RuntimeError> {
         let container = uuid::Uuid::new_v4().to_string();
         self.dangling
             .lock()
             .await
-            .insert(DanglingResource::Task(container.clone().into()));
+            .push(DanglingResource::Task(container.clone().into()));
 
         let mut root = oci_spec::runtime::Root::default();
         root.set_path(PathBuf::from("rootfs"));
@@ -1403,8 +1426,11 @@ impl Client {
             .set_options(Some(vec!["ro".to_owned(), "bind".to_owned()]));
         spec.mounts_mut().get_or_insert_default().push(dns_mount);
 
+        let hosts_mount = self.write_hosts_file(hosts).await?;
+        spec.mounts_mut().get_or_insert_default().push(hosts_mount);
+
         spec.set_root(Some(root))
-            .set_process(Some(process))
+            .set_process(Some(process.clone()))
             .set_linux(Some(linux));
 
         if let Ok(json) = serde_json::to_string(&spec) {
@@ -1442,7 +1468,7 @@ impl Client {
             )
             .await?;
 
-        Ok(container)
+        Ok((container, process))
     }
 
     /// Read the stdout to a String, returns `Err` if encountered non-utf (containing the output
@@ -1519,6 +1545,200 @@ impl Client {
         let mut passwd = String::new();
         file_system_stream.read_to_string(&mut passwd).await?;
         Ok(passwd)
+    }
+
+    /// Write the given file into the given mounts
+    async fn write_file(
+        &self,
+        mounts: Vec<containerd_client::types::Mount>,
+        file: &str,
+        content: Box<[u8]>,
+    ) -> Result<(), RuntimeError> {
+        let mut bytes = Vec::new();
+
+        serpentine_internal::FileSystemEntryHeader::File {
+            name: Box::default(),
+            length: content.len() as u64,
+        }
+        .write(&mut bytes)
+        .await?;
+
+        bytes.extend(content);
+
+        let mut bytes = std::io::Cursor::new(bytes);
+        self.sidecar.import_files(mounts, file, &mut bytes).await?;
+
+        Ok(())
+    }
+
+    /// Write the hosts file to the sidecar and return a appropriate bind mount for it.
+    async fn write_hosts_file(
+        &self,
+        hosts: Vec<(Rc<str>, std::net::Ipv4Addr)>,
+    ) -> Result<oci_spec::runtime::Mount, RuntimeError> {
+        let hosts_content = hosts
+            .into_iter()
+            .map(|(hostname, ip)| format!("{ip}\t{hostname}"))
+            .chain(["127.0.0.1 localhost".to_owned(), "::1 localhost".to_owned()])
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let file_name = format!("hosts-{}", uuid::Uuid::new_v4());
+
+        // We re-use the sidecars "write into mount" functionality to write a file into the sidecar
+        // itself.
+        let temp_dir_mount = containerd_client::types::Mount {
+            r#type: "bind".to_owned(),
+            source: "/run/serpentine".to_owned(),
+            target: String::new(),
+            options: vec!["rw".to_owned(), "bind".to_owned()],
+        };
+        self.write_file(
+            vec![temp_dir_mount],
+            &file_name,
+            hosts_content.into_bytes().into(),
+        )
+        .await?;
+
+        let mut mount = oci_spec::runtime::Mount::default();
+        mount
+            .set_typ(Some("bind".to_owned()))
+            .set_source(Some(format!("/run/serpentine/{file_name}").into()))
+            .set_destination("/etc/hosts".into())
+            .set_options(Some(vec!["ro".to_owned(), "bind".to_owned()]));
+        Ok(mount)
+    }
+
+    /// Wait for the given container handle to exit.
+    ///
+    /// Returns the processes exit code.
+    async fn wait_for_exit(
+        &self,
+        container_id: String,
+        exec_id: String,
+    ) -> Result<u32, RuntimeError> {
+        log::debug!("Waiting for {container_id}/{exec_id} to exit.");
+
+        let exit_code = self
+            .containerd
+            .tasks()
+            .wait(containerd_services::WaitRequest {
+                container_id,
+                exec_id,
+            })
+            .await?
+            .into_inner()
+            .exit_status;
+
+        Ok(exit_code)
+    }
+
+    /// Spin down a given topology of running containers.
+    async fn spindown_topology(
+        &self,
+        containers: network::Topology<ContainerHandle>,
+    ) -> Result<(ContainerLike, Result<String, String>), RuntimeError> {
+        const SIGINT: u32 = 2;
+        const SIGKILL: u32 = 9;
+
+        let (handle, children) = containers.into_parts();
+
+        self.send_signal(handle.id.clone(), SIGINT).await;
+        let exit_code = tokio::select! {
+            result = self.wait_for_exit(handle.id.clone(), String::new()) => {
+                log::debug!("{} exited gracefully.", handle.id);
+                result?
+            }
+            () = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                log::debug!("{} did not exit after 10 seconds, sending SIGKILL.", handle.id);
+                self.send_signal(handle.id.clone(), SIGKILL).await;
+                self.wait_for_exit(handle.id.clone(), String::new()).await?
+            }
+        };
+
+        self.tui
+            .send(TuiMessage::FinishTask(format!("exec-{}", handle.id).into()));
+
+        let final_snapshot = uuid::Uuid::new_v4().to_string();
+        self.containerd
+            .snapshot()
+            .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                snapshotter: SNAPSHOTTER.to_owned(),
+                name: final_snapshot.clone(),
+                key: handle.snapshot.clone(),
+                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
+            })
+            .await?;
+
+        let stdout = handle
+            .stdout
+            .await
+            .map_err(|_| RuntimeError::internal("Failed to join task"))?;
+
+        if exit_code != 0 {
+            if matches!(handle.node.state, ContainerLike::Service(_)) {
+                log::warn!(
+                    "Service {} exited with code {exit_code}, this may be expected if the service didnt shutdown in time.",
+                    handle.id
+                );
+            } else {
+                let stdout = stdout.unwrap_or_else(|err| err);
+
+                return Err(RuntimeError::CommandExecution {
+                    code: exit_code,
+                    command: handle.node.get_cmd().to_owned(),
+                    output: stdout,
+                });
+            }
+        }
+
+        let mut services = HashMap::with_capacity(children.len());
+        for child in children {
+            let Some(hostname) = &child.get_data().node.hostname else {
+                return Err(RuntimeError::internal(
+                    "Child container missing hostname".to_owned(),
+                ));
+            };
+            let hostname = Rc::clone(hostname);
+
+            let (child_container, _) = Box::pin(self.spindown_topology(child)).await?;
+
+            if let ContainerLike::Service(service) = child_container {
+                services.insert(hostname, service);
+            } else {
+                return Err(RuntimeError::internal("Expected a service".to_owned()));
+            }
+        }
+
+        let mut container = handle.node.state;
+        container.snapshot = final_snapshot.into();
+        let container = container.update_config(move |config| {
+            config.services = services;
+        });
+
+        Ok((container, stdout))
+    }
+
+    /// Send the given signal to the specified task id.
+    ///
+    /// This ignores any errors with terminating the task
+    async fn send_signal(&self, container_id: String, signal: u32) {
+        log::debug!("Sending {signal} to {container_id}");
+
+        let res = self
+            .containerd
+            .tasks()
+            .kill(containerd_services::KillRequest {
+                container_id,
+                exec_id: String::new(),
+                signal,
+                all: false,
+            })
+            .await;
+
+        if let Err(err) = res {
+            log::error!("Failed to send signal: {err}");
+        }
     }
 
     /// Copy the given file/directory into the container
@@ -1617,7 +1837,7 @@ impl Client {
 
     /// Shutdown any dangling references
     pub async fn shutdown(self) {
-        for dangling in self.dangling.lock().await.drain() {
+        for dangling in self.dangling.lock().await.drain(..) {
             match dangling {
                 DanglingResource::Lease(lease) => {
                     log::debug!("Deleting dangling lease");
@@ -1645,7 +1865,7 @@ impl Client {
                 }
                 DanglingResource::Network(network) => {
                     log::debug!("Stopping dangling network namespace");
-                    let _ = self.sidecar.delete_network_namespace(&network).await;
+                    let _ = self.sidecar.delete_network(&network).await;
                 }
             }
         }

@@ -9,7 +9,7 @@ RUN curl -fsSL https://github.com/containernetworking/plugins/releases/download/
     mkdir -p /cni_all && \
     tar -xzf /cni.tgz -C /cni_all && \
     mkdir -p /cni && \
-    mv /cni_all/loopback /cni_all/bridge /cni_all/host-local /cni
+    mv /cni_all/loopback /cni_all/bridge /cni_all/host-local  /cni_all/static /cni
 
 FROM golang:1.24-bookworm AS runc
 ENV DEBIAN_FRONTEND=noninteractive

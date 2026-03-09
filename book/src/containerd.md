@@ -15,7 +15,7 @@ flowchart LR
 ```
 
 > [!NOTE]
-> The blow diagrams leave out the proxy where it isnt relevant.
+> The below diagrams leave out the proxy where it isnt relevant.
 
 ## Snapshots
 Snapshots are essentially a docker layer, they are modification to the file system.
@@ -143,7 +143,7 @@ sequenceDiagram
         sidecar ->>- serpentine : /run/serpentine/XYZ
     end
 
-    serpentine ->> containerd : CreateTask(namespace=/run/serpetine/XYZ)
+    serpentine ->> containerd : CreateTask(namespace=/run/serpentine/XYZ)
     serpentine ->> containerd : StartTask
     containerd ->> process : start process in namespace
     loop until done

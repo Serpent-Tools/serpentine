@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 
 use serpentine_internal::WireFormat;
+use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net;
@@ -45,20 +46,22 @@ impl Client {
     }
 
     /// Create a network namespace and return its (container) path
-    pub async fn create_network_namespace(&self) -> Result<Box<str>, RuntimeError> {
-        log::debug!("Creating network namespace");
+    pub async fn create_network(
+        &self,
+        toplogy: AbstractTopology,
+    ) -> Result<ConcreteTopology, RuntimeError> {
+        log::debug!("Creating network toplogy");
         let mut socket = self.connect(RequestKind::CreateNetwork).await?;
+        toplogy.write(&mut socket).await?;
 
-        let namespace = serpentine_internal::read_length_prefixed_string(&mut socket).await?;
-
-        Ok(namespace.into())
+        let concrete_topology = ConcreteTopology::read(&mut socket).await?;
+        Ok(concrete_topology)
     }
 
     /// Delete a network namespace
-    pub async fn delete_network_namespace(&self, namespace: &str) -> Result<(), RuntimeError> {
-        let mut socket = self.connect(RequestKind::DeleteNetwork).await?;
-
-        serpentine_internal::write_length_prefixed(&mut socket, namespace.as_bytes()).await?;
+    pub async fn delete_network(&self, network: &ConcreteTopology) -> Result<(), RuntimeError> {
+        // TODO: Delete networks
+        log::error!("Deleting network toplogy is not implemented yet");
 
         Ok(())
     }
@@ -99,7 +102,7 @@ impl Client {
         Ok(socket)
     }
 
-    /// Export a file/folder from the given mounts in the sidecar container
+    /// Import a file/folder from the given mounts in the sidecar container
     pub async fn import_files(
         &self,
         mounts: Vec<containerd_client::types::Mount>,

@@ -5,6 +5,7 @@ use std::path::Path;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+pub mod network;
 pub mod sidecar;
 
 /// Trait for types that can be serialized to/from an async byte stream.
