@@ -10,7 +10,7 @@ keywords = ["internal"]
 categories = ["rust-patterns"]
 
 [dependencies]
-tokio = { version = "1.49.0", default-features = false }
+tokio = { version = "1.49.0", features = ["io-util"], default-features = false }
 log = "0.4.29"
 
 [dev-dependencies]
