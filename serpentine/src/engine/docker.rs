@@ -106,21 +106,21 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketA
                         .name(CONTAINER_NAME)
                         .build(),
                 ),
-                bollard::secret::ContainerCreateBody {
+                bollard::plugin::ContainerCreateBody {
                     image: Some(image.into_string()),
                     tty: Some(false),
                     open_stdin: Some(false),
-                    host_config: Some(bollard::secret::HostConfig {
+                    host_config: Some(bollard::plugin::HostConfig {
                         auto_remove: Some(true),
                         privileged: Some(true),
                         binds: Some(vec![format!("{volume}:/var/lib/containerd")]),
-                        log_config: Some(bollard::secret::HostConfigLogConfig {
+                        log_config: Some(bollard::plugin::HostConfigLogConfig {
                             typ: Some("json-file".to_owned()),
                             config: None,
                         }),
                         port_bindings: Some(HashMap::from([(
                             format!("{}/tcp", serpentine_internal::sidecar::PORT),
-                            Some(vec![bollard::secret::PortBinding {
+                            Some(vec![bollard::plugin::PortBinding {
                                 host_ip: Some("127.0.0.1".to_owned()),
                                 host_port: None,
                             }]),
@@ -176,7 +176,7 @@ async fn create_containerd_volume(docker: &bollard::Docker) -> Result<&'static s
     if docker.inspect_volume(CONTAINER_VOLUME).await.is_err() {
         log::info!("Creating volume {CONTAINER_VOLUME}");
         docker
-            .create_volume(bollard::secret::VolumeCreateRequest {
+            .create_volume(bollard::plugin::VolumeCreateRequest {
                 name: Some(CONTAINER_VOLUME.into()),
                 driver: Some("local".into()),
                 driver_opts: None,

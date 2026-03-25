@@ -29,9 +29,9 @@ pub enum RequestKind {
     Proxy,
     /// Create a fifo pipe
     CreateFifo,
-    /// Create a network toplogy
+    /// Create a network topology
     CreateNetwork,
-    /// Delete a network toplogy
+    /// Delete a network topology
     DeleteNetwork,
     /// Export files from a mount.
     ExportFiles,

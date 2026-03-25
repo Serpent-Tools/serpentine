@@ -126,7 +126,7 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
     let mut magic_number = vec![0; MAGIC_NUMBER.len()];
     remote_socket.read_exact(&mut magic_number).await?;
     if magic_number != MAGIC_NUMBER.as_bytes() {
-        return Err(format!("magic number {magic_number:?} != {MAGIC_NUMBER:?}",).into());
+        return Err(format!("magic number {magic_number:?} != {MAGIC_NUMBER:?}").into());
     }
 
     let event = remote_socket.read_u8().await?;
@@ -176,9 +176,9 @@ async fn setup_fifo(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Err
 /// Type that the cni config is stored as
 type CniConfig = Arc<Box<dyn cni::api::CNI + Send + Sync + 'static>>;
 
-/// A definition of a bridge connection between two namesspaces
+/// A definition of a bridge connection between two namespaces
 #[derive(Debug)]
-struct BridgeDefintion {
+struct BridgeDefinition {
     /// The name of the bridge, for example "cni-1234"
     name: String,
     /// The static ip address to assign to this side of the bridge
@@ -188,17 +188,17 @@ struct BridgeDefintion {
 /// Create a cni based network namespace
 async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
     let topology = serpentine_internal::network::AbstractTopology::read(&mut remote_socket).await?;
-    log::debug!("Creating toplogy: {topology:?}");
+    log::debug!("Creating topology: {topology:?}");
     let topology = realize_topology(topology, None)?;
     topology.write(&mut remote_socket).await?;
 
     Ok(())
 }
 
-/// Create a concrete toplogy from the given abstract one, with a optional parent bridge.
+/// Create a concrete topology from the given abstract one, with a optional parent bridge.
 fn realize_topology(
     topology: serpentine_internal::network::AbstractTopology,
-    parent_bridge: Option<BridgeDefintion>,
+    parent_bridge: Option<BridgeDefinition>,
 ) -> Result<serpentine_internal::network::ConcreteTopology, Box<dyn Error>> {
     let ((), children) = topology.into_parts();
 
@@ -220,14 +220,14 @@ fn realize_topology(
         bridge_name.truncate(15);
         let (_subnet, my_side, child_side) = pick_random_subnet()?;
 
-        bridges.push(BridgeDefintion {
+        bridges.push(BridgeDefinition {
             name: bridge_name.clone(),
             ip: my_side,
         });
 
         let child = realize_topology(
             child.clone(),
-            Some(BridgeDefintion {
+            Some(BridgeDefinition {
                 name: bridge_name,
                 ip: child_side,
             }),
@@ -256,14 +256,8 @@ fn realize_topology(
 ///
 /// Returns the namespace path and the list of adapters created.
 fn create_network_namespace(
-    bridges: &[BridgeDefintion],
-) -> Result<
-    (
-        String,
-        Vec<serpentine_internal::network::Adapter>,
-    ),
-    Box<dyn Error + 'static>,
-> {
+    bridges: &[BridgeDefinition],
+) -> Result<(String, Vec<serpentine_internal::network::Adapter>), Box<dyn Error + 'static>> {
     log::info!("Creating namespace");
     let ns_name = uuid::Uuid::new_v4().to_string();
     let raw_namespace = netns_rs::NetNs::new(ns_name.clone())?;
