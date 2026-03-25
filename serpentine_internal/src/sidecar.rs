@@ -1,5 +1,5 @@
 //! Code implementing parts of the sidecar protocol, see `sidecar/src/main.rs` and
-//! `serpentine/src/engine/sidecar_clinet.rs` for the server and client sides, this module exists to
+//! `serpentine/src/engine/sidecar_client.rs` for the server and client sides, this module exists to
 //! share certain values.
 
 use std::io::{Error, Result};
@@ -58,13 +58,13 @@ impl TryFrom<u8> for RequestKind {
 /// Mounts options for mounting a snapshot in the sidecar manually.
 pub struct Mount {
     /// The kind of mount
-    pub type_: String,
+    pub type_: Box<str>,
     /// The source to mount from
-    pub source: String,
+    pub source: Box<str>,
     /// The target to mount to
-    pub target: String,
+    pub target: Box<str>,
     /// The options for the mount
-    pub options: Vec<String>,
+    pub options: Box<[Box<str>]>,
 }
 
 impl WireFormat for Mount {
@@ -82,9 +82,9 @@ impl WireFormat for Mount {
     }
 
     async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let type_ = read_length_prefixed_string(reader).await?;
-        let source = read_length_prefixed_string(reader).await?;
-        let target = read_length_prefixed_string(reader).await?;
+        let type_ = read_length_prefixed_string(reader).await?.into_boxed_str();
+        let source = read_length_prefixed_string(reader).await?.into_boxed_str();
+        let target = read_length_prefixed_string(reader).await?.into_boxed_str();
 
         let length = read_u64_length_encoded(reader)
             .await?
@@ -92,7 +92,7 @@ impl WireFormat for Mount {
             .map_err(Error::other)?;
         let mut options = Vec::with_capacity(length);
         for _ in 0..length {
-            let option = read_length_prefixed_string(reader).await?;
+            let option: Box<str> = read_length_prefixed_string(reader).await?.into();
             options.push(option);
         }
 
@@ -100,7 +100,7 @@ impl WireFormat for Mount {
             type_,
             source,
             target,
-            options,
+            options: options.into_boxed_slice(),
         })
     }
 }

@@ -445,7 +445,7 @@ pub trait ExternalCache {
 /// A hashmap storing the cache data
 type CacheHashMap = nohash::IntMap<CacheHash, Data>;
 
-/// A content addressable cache using sha256
+/// A content addressable cache using blake3
 /// And allows serializing to disk
 pub struct Cache {
     /// The cache that was loaded from disk, might not be serialized.
@@ -500,15 +500,16 @@ impl Cache {
                 .write_map(cache, external, export_standalone)
                 .await?;
         } else {
-            CacheWriter::new(file)
-                .write_map(cache.clone(), external, export_standalone)
-                .await?;
-
             #[expect(
                 clippy::mutable_key_type,
                 reason = "Value of the interior mutable data will not change in the course of this loop"
             )]
-            let in_use: HashSet<_> = cache.values().collect();
+            let in_use: HashSet<Data> = cache.values().cloned().collect();
+
+            CacheWriter::new(file)
+                .write_map(cache, external, export_standalone)
+                .await?;
+
             for value in old_cache
                 .into_values()
                 .filter(|value| !in_use.contains(value))

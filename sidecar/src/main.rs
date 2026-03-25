@@ -18,7 +18,7 @@ use rand::TryRngCore;
 use rust_cni::libcni as cni;
 use serpentine_internal::WireFormat;
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, PORT, RequestKind};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net;
 
 /// The location serpentine connects to the containerd over
@@ -122,7 +122,8 @@ disabled_plugins = [
 }
 
 /// Handle a incoming connection
-async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+async fn handle_connection(remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+    let mut remote_socket = BufWriter::new(remote_socket);
     let mut magic_number = vec![0; MAGIC_NUMBER.len()];
     remote_socket.read_exact(&mut magic_number).await?;
     if magic_number != MAGIC_NUMBER.as_bytes() {
@@ -133,7 +134,7 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
     let event = RequestKind::try_from(event).map_err(|()| "Invalid event")?;
 
     match event {
-        RequestKind::Proxy => proxy_containerd(remote_socket).await,
+        RequestKind::Proxy => proxy_containerd(remote_socket.into_inner()).await,
         RequestKind::CreateFifo => setup_fifo(remote_socket).await,
         RequestKind::CreateNetwork => create_network(remote_socket).await,
         RequestKind::DeleteNetwork => delete_network(remote_socket).await,
@@ -153,7 +154,7 @@ async fn proxy_containerd(mut remote_socket: net::TcpStream) -> Result<(), Box<d
 }
 
 /// Setup a fifo pipe and return its path to the client, then start reading its data to the client.
-async fn setup_fifo(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+async fn setup_fifo(mut remote_socket: BufWriter<net::TcpStream>) -> Result<(), Box<dyn Error>> {
     let parent = PathBuf::from("/run/serpentine");
     tokio::fs::create_dir_all(&parent).await?;
     let file = parent.join(uuid::Uuid::new_v4().to_string());
@@ -164,9 +165,11 @@ async fn setup_fifo(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Err
     let file_bytes = file_bytes.as_bytes();
 
     serpentine_internal::write_length_prefixed(&mut remote_socket, file_bytes).await?;
+    remote_socket.flush().await?;
 
     let mut file_reader = tokio::fs::File::open(&file).await?;
     tokio::io::copy(&mut file_reader, &mut remote_socket).await?;
+    remote_socket.flush().await?;
 
     tokio::fs::remove_file(file).await?;
 
@@ -186,11 +189,14 @@ struct BridgeDefinition {
 }
 
 /// Create a cni based network namespace
-async fn create_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+async fn create_network(
+    mut remote_socket: BufWriter<net::TcpStream>,
+) -> Result<(), Box<dyn Error>> {
     let topology = serpentine_internal::network::AbstractTopology::read(&mut remote_socket).await?;
     log::debug!("Creating topology: {topology:?}");
     let topology = realize_topology(topology, None)?;
     topology.write(&mut remote_socket).await?;
+    remote_socket.flush().await?;
 
     Ok(())
 }
@@ -215,7 +221,7 @@ fn realize_topology(
 
     let mut new_children = Vec::with_capacity(children.len());
 
-    for child in &children {
+    for child in children {
         let mut bridge_name = uuid::Uuid::new_v4().to_string();
         bridge_name.truncate(15);
         let (_subnet, my_side, child_side) = pick_random_subnet()?;
@@ -226,7 +232,7 @@ fn realize_topology(
         });
 
         let child = realize_topology(
-            child.clone(),
+            child,
             Some(BridgeDefinition {
                 name: bridge_name,
                 ip: child_side,
@@ -418,7 +424,9 @@ fn subnet_mask(mask_length: u8) -> u32 {
 }
 
 /// Delete the given network interface.
-async fn delete_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+async fn delete_network(
+    mut remote_socket: BufWriter<net::TcpStream>,
+) -> Result<(), Box<dyn Error>> {
     let network = serpentine_internal::network::ConcreteTopology::read(&mut remote_socket).await?;
 
     for namespace in network {
@@ -465,7 +473,7 @@ fn delete_namespace(
 }
 
 /// Export files from a given mount to the path
-async fn export_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+async fn export_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<(), Box<dyn Error>> {
     log::debug!("Exporting files");
     let mount_folder =
         PathBuf::from("/run/serpentine/mounts/").join(uuid::Uuid::new_v4().to_string());
@@ -494,6 +502,7 @@ async fn export_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn E
             .await?;
         serpentine_internal::write_length_prefixed(&mut remote_socket, err.to_string().as_bytes())
             .await?;
+        remote_socket.flush().await?;
         return Ok(());
     }
 
@@ -505,12 +514,13 @@ async fn export_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn E
         |_path, _is_dir| true,
     )
     .await?;
+    remote_socket.flush().await?;
 
     Ok(())
 }
 
 /// Write files from the socket into a mount given on the socket.
-async fn import_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
+async fn import_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<(), Box<dyn Error>> {
     log::debug!("Importing files");
 
     let mount_folder =
@@ -544,7 +554,7 @@ async fn import_files(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn E
 struct DemountOnDrop(PathBuf);
 
 impl Deref for DemountOnDrop {
-    type Target = PathBuf;
+    type Target = Path;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -563,7 +573,7 @@ impl Drop for DemountOnDrop {
 /// Mount the provided containerd mount at the given location
 async fn mount_containerd(mount: &Mount, target: &Path) -> Result<(), Box<dyn Error>> {
     let (flags, data) = parse_containerd_mount_options(&mount.options);
-    let fstype = if mount.type_ == "bind" {
+    let fstype = if &*mount.type_ == "bind" {
         None
     } else {
         Some(&*mount.type_)
@@ -579,12 +589,12 @@ async fn mount_containerd(mount: &Mount, target: &Path) -> Result<(), Box<dyn Er
 
 /// Parse the `options` array given in containerd mounts into low level linux mount flags and mount
 /// data strings
-fn parse_containerd_mount_options(options: &[String]) -> (MsFlags, String) {
+fn parse_containerd_mount_options(options: &[Box<str>]) -> (MsFlags, String) {
     let mut flags = MsFlags::empty();
     let mut data = Vec::new();
 
     for option in options {
-        match option.as_str() {
+        match &**option {
             "ro" => flags |= MsFlags::MS_RDONLY,
             "rw" => {} // default
             "bind" => flags |= MsFlags::MS_BIND,

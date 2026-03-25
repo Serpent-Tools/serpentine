@@ -22,6 +22,7 @@ pub struct FileId(pub usize);
 
 impl<'arena> VirtualFile<'arena> {
     /// Create a new empty virtual file
+    #[must_use]
     pub fn new() -> Self {
         Self {
             files: Vec::new(),
@@ -112,6 +113,7 @@ pub struct Span {
 
 impl Span {
     /// Create a new span
+    #[must_use]
     pub fn new(file_id: FileId, start: usize, end: usize) -> Self {
         debug_assert!(start <= end, "start ({start}) bigger than end ({end})");
         Self {
@@ -123,6 +125,7 @@ impl Span {
 
     /// Return a dummy span for calling apis in the compiler with compiler generated values.
     /// That also take a span for error reporting.
+    #[must_use]
     pub fn dummy() -> Self {
         Self {
             file_id: FileId(0),
@@ -132,6 +135,7 @@ impl Span {
     }
 
     /// Join two spans
+    #[must_use]
     pub fn join(self, other: Self) -> Self {
         debug_assert!(
             self.file_id == other.file_id,
@@ -146,6 +150,7 @@ impl Span {
     }
 
     /// Return a `Spanned` of the value and this span
+    #[must_use]
     pub fn with<T>(self, value: T) -> Spanned<T> {
         Spanned(value, self)
     }
@@ -197,11 +202,13 @@ impl<T> DerefMut for Spanned<T> {
 
 impl<T> Spanned<T> {
     /// Return the span of the data
+    #[must_use]
     pub fn span(&self) -> Span {
         self.1
     }
 
     /// Return the owned data
+    #[must_use]
     pub fn take(self) -> T {
         self.0
     }

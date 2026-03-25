@@ -1,6 +1,6 @@
 //! A network container topology.
 //!
-//! Serpentines network topologies are always directioanl trees, containing no loops or multi-parent
+//! Serpentines network topologies are always directional trees, containing no loops or multi-parent
 //! nodes.
 //!
 //! Most topologies are either of the `A` or `A --> B` variant.
@@ -23,7 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::WireFormat;
 
-/// A generic network topology struct, for holding the various kinds of network toplogiy forms.
+/// A generic network topology struct, for holding the various kinds of network topology forms.
 ///
 /// `Eq` and `Ord` only consider the abstract topology structure, not the data.
 #[derive(Debug, Clone)]
@@ -44,7 +44,7 @@ impl<T> Topology<T> {
         }
     }
 
-    /// create a new netork topology with one root and children.
+    /// Create a new network topology with one root and children.
     pub fn with_children(data: T, children: Vec<Topology<T>>) -> Self {
         let mut topology = Self { data, children };
         topology.children.sort();
@@ -58,11 +58,13 @@ impl<T> Topology<T> {
     }
 
     /// Get the data of this topology node.
+    #[must_use]
     pub fn get_data(&self) -> &T {
         &self.data
     }
 
     /// Split this topology into its data and children.
+    #[must_use]
     pub fn into_parts(self) -> (T, Vec<Topology<T>>) {
         (self.data, self.children)
     }
@@ -108,6 +110,7 @@ impl<T> Topology<T> {
     /// Compare topologies for equality, including data.
     ///
     /// WARN: This is non-deterministic when sibling topologies have the same shape.
+    #[must_use]
     pub fn eq_with_data(&self, other: &Self) -> bool
     where
         T: PartialEq,
@@ -127,6 +130,7 @@ impl<T> Topology<T> {
     }
 
     /// Return a flattened iterator of all the data in this topology, in no specific order.
+    #[must_use]
     pub fn flat_data(self) -> TopologyIter<T> {
         TopologyIter { stack: vec![self] }
     }

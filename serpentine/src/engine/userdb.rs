@@ -75,14 +75,14 @@ impl FromStr for OciUser {
 }
 
 /// A entry in the `/etc/passwd`
-/// (This struct only contains filed relevant to our task.)
+/// (This struct only contains fields relevant to our task.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PasswdEntry {
     /// The username of the account
     username: Box<str>,
     /// The user id
     user_id: u32,
-    /// the group id
+    /// The group id
     group_id: u32,
     /// The users home directory
     home_directory: Box<str>,

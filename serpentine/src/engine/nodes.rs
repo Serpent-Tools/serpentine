@@ -77,14 +77,12 @@ pub trait NodeImpl {
                 log::debug!("Executing {}", self.describe());
                 let result = self.execute(scheduler.context(), inputs).await?;
 
-                if self.should_be_cached() {
-                    scheduler
-                        .context()
-                        .cache
-                        .lock()
-                        .await
-                        .insert(key, result.clone());
-                }
+                scheduler
+                    .context()
+                    .cache
+                    .lock()
+                    .await
+                    .insert(key, result.clone());
 
                 Ok(result)
             } else {
@@ -546,7 +544,7 @@ async fn env(
     Ok(container.update_config(|config| config.set_env_var(env, value)))
 }
 
-/// get a environment variable.
+/// Get an environment variable.
 async fn get_env(
     _context: Rc<RuntimeContext>,
     container: containerd::ContainerLike,

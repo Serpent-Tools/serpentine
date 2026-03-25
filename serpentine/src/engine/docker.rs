@@ -24,7 +24,7 @@ const CONTAINERD_IMAGE_TAG: &str = if cfg!(debug_assertions) {
 /// The container image to use for containerd
 const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
 
-/// Create a new containerd client, by either connecting to a esisting container or spinning up a
+/// Create a new containerd client, by either connecting to an existing container or spinning up a
 /// new one.
 pub async fn connect() -> Result<sidecar_client::Client, RuntimeError> {
     let docker = connect_docker()
@@ -64,7 +64,7 @@ async fn connect_docker() -> Result<bollard::Docker, RuntimeError> {
     }
 }
 
-/// utility function to find podman socket and connect to it
+/// Utility function to find podman socket and connect to it
 fn try_podman_connection() -> Result<bollard::Docker, RuntimeError> {
     let podman_socket_output = Command::new("podman")
         .args(["info", "--format", "{{.Host.RemoteSocket.Path}}"])
@@ -72,7 +72,7 @@ fn try_podman_connection() -> Result<bollard::Docker, RuntimeError> {
 
     let podman_socket_path = String::from_utf8(podman_socket_output.stdout)
         .map_err(|err| {
-            RuntimeError::internal(format!("Failed to parse podman socket path: {err}").as_str())
+            RuntimeError::internal(format!("Failed to parse podman socket path: {err}"))
         })?
         .trim()
         .to_owned();

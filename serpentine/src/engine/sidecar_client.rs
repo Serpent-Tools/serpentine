@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use serpentine_internal::WireFormat;
 use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net;
 
 use crate::engine::RuntimeError;
@@ -21,16 +21,19 @@ impl Client {
     }
 
     /// Connect to serpentine and send the needed magic bytes
-    async fn connect(&self, kind: RequestKind) -> Result<net::TcpStream, RuntimeError> {
-        let mut socket = net::TcpStream::connect(self.0).await?;
+    async fn connect(&self, kind: RequestKind) -> Result<BufWriter<net::TcpStream>, RuntimeError> {
+        let socket = net::TcpStream::connect(self.0).await?;
+        let mut socket = BufWriter::new(socket);
         socket.write_all(MAGIC_NUMBER.as_bytes()).await?;
         socket.write_u8(kind as u8).await?;
+        socket.flush().await?;
         Ok(socket)
     }
 
     /// Connect to the sidecar and setup a containerd proxy.
     pub async fn containerd(&self) -> Result<net::TcpStream, RuntimeError> {
-        self.connect(RequestKind::Proxy).await
+        let socket = self.connect(RequestKind::Proxy).await?;
+        Ok(socket.into_inner())
     }
 
     /// Connected to the sidecar and request it create a fifo pipe, returns its (in container) path and a reader of the contents.
@@ -53,6 +56,7 @@ impl Client {
         log::debug!("Creating network topology");
         let mut socket = self.connect(RequestKind::CreateNetwork).await?;
         topology.write(&mut socket).await?;
+        socket.flush().await?;
 
         let concrete_topology = ConcreteTopology::read(&mut socket).await?;
         Ok(concrete_topology)
@@ -62,6 +66,7 @@ impl Client {
     pub async fn delete_network(&self, network: ConcreteTopology) -> Result<(), RuntimeError> {
         let mut socket = self.connect(RequestKind::DeleteNetwork).await?;
         network.write(&mut socket).await?;
+        socket.flush().await?;
 
         Ok(())
     }
@@ -77,15 +82,16 @@ impl Client {
         serpentine_internal::write_u64_variable_length(&mut socket, mounts.len() as u64).await?;
         for mount in mounts {
             let mount = Mount {
-                type_: mount.r#type,
-                source: mount.source,
-                target: mount.target,
-                options: mount.options,
+                type_: mount.r#type.into(),
+                source: mount.source.into(),
+                target: mount.target.into(),
+                options: mount.options.into_iter().map(Into::into).collect(),
             };
             mount.write(&mut socket).await?;
         }
 
         serpentine_internal::write_length_prefixed(&mut socket, path.as_bytes()).await?;
+        socket.flush().await?;
 
         let status = socket.read_u8().await?;
         if status != 0 {
@@ -114,10 +120,10 @@ impl Client {
         serpentine_internal::write_u64_variable_length(&mut socket, mounts.len() as u64).await?;
         for mount in mounts {
             let mount = Mount {
-                type_: mount.r#type,
-                source: mount.source,
-                target: mount.target,
-                options: mount.options,
+                type_: mount.r#type.into(),
+                source: mount.source.into(),
+                target: mount.target.into(),
+                options: mount.options.into_iter().map(Into::into).collect(),
             };
             mount.write(&mut socket).await?;
         }
@@ -125,6 +131,7 @@ impl Client {
         serpentine_internal::write_length_prefixed(&mut socket, path.as_bytes()).await?;
 
         crate::engine::filesystem::copy_filesystem_stream(fs_reader, &mut socket).await?;
+        socket.flush().await?;
 
         Ok(())
     }

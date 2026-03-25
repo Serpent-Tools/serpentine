@@ -18,7 +18,7 @@ pub struct CompileResult {
 }
 
 /// Value pointed to by a symbol
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct SymbolValue {
     /// The node of the symbol
     node: NodeInstanceId,
@@ -108,7 +108,7 @@ impl Compiler {
 
         let arguments = arguments
             .iter()
-            .map(|symbol| self.get_symbol(*symbol).clone())
+            .map(|symbol| *self.get_symbol(*symbol))
             .collect::<Box<_>>();
         let phantom_inputs = phantom_inputs
             .iter()
@@ -129,7 +129,7 @@ impl Compiler {
                 for function_node in &body.0 {
                     self.compile_node(context, function_node)?;
                 }
-                let return_value = self.get_symbol(*return_value).clone();
+                let return_value = *self.get_symbol(*return_value);
                 let node_id = if phantom_inputs.is_empty() {
                     return_value.node
                 } else {
