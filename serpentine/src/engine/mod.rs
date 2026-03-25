@@ -22,6 +22,20 @@ use crate::tui::{TuiMessage, TuiSender};
 /// An error encountered while running the source code
 #[derive(Debug, Error, Diagnostic)]
 pub enum RuntimeError {
+    /// An error from a node, i.e. a runtime error with an associated span.
+    #[error("Error in node {node_id:?}")]
+    #[diagnostic(code(node_error))]
+    NodeError {
+        /// Which node the error occurred in
+        node_id: crate::engine::data_model::NodeInstanceId,
+        /// The location of the node
+        #[label("Error occurred in this node")]
+        span: crate::snek::span::Span,
+        /// The inner error
+        #[diagnostic_source]
+        inner: Box<dyn Diagnostic + Send + Sync>,
+    },
+
     /// A Docker API error
     #[error("Docker API error: {0}")]
     #[diagnostic(code(docker_error))]
@@ -129,7 +143,7 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
-    /// Create a `ParsingError::InternalError`, but panic in debug mode instead
+    /// Create a `RuntimeError::InternalError`, but panic in debug mode instead
     pub fn internal(msg: impl Into<String>) -> Self {
         let msg = msg.into();
         debug_assert!(false, "{msg}");
@@ -234,10 +248,17 @@ pub fn run(
     log::debug!("Nodes: {}", compile_result.graph.len());
     log::debug!("Starting execution at node {start_node:?}");
 
-    tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .map_err(|_| RuntimeError::internal("Failed to start tokio"))?
+        .build();
+    let Ok(runtime) = runtime else {
+        return Err(crate::SerpentineError::Runtime {
+            source_code: compile_result.source_code,
+            error: vec![RuntimeError::internal("Failed to start tokio")],
+        });
+    };
+
+    runtime
         .block_on(async {
             let context = Rc::new(RuntimeContext::new(tui, cli).await?);
             let scheduler = scheduler::Scheduler::new(
@@ -265,7 +286,10 @@ pub fn run(
 
             result
         })
-        .map_err(crate::SerpentineError::Runtime)?;
+        .map_err(|err| crate::SerpentineError::Runtime {
+            source_code: compile_result.source_code,
+            error: vec![err],
+        })?;
 
     Ok(())
 }

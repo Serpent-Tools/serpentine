@@ -9,6 +9,7 @@ use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
 use crate::engine::filesystem::FileSystem;
 use crate::engine::nodes::NodeImpl;
 use crate::engine::{RuntimeContext, RuntimeError, containerd};
+use crate::snek::span::Spanned;
 
 /// Holds the various forms of data that the node engine uses
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -188,8 +189,10 @@ pub struct Store<T> {
 pub struct StoreId<T> {
     /// The index into the store
     index: usize,
-    /// Phantom data to tie this id to the type T
-    _marker: std::marker::PhantomData<T>,
+    /// Phantom data to tie this id to the type T.
+    /// Uses `fn() -> T` so that `StoreId` is unconditionally `Send + Sync`
+    /// (it is just an index and never actually owns a `T`).
+    _marker: std::marker::PhantomData<fn() -> T>,
 }
 
 #[cfg(test)]
@@ -308,7 +311,7 @@ pub struct Node {
 }
 
 /// Id for referencing a node in the graph
-pub type NodeInstanceId = StoreId<Node>;
+pub type NodeInstanceId = StoreId<Spanned<Node>>;
 
 /// Contains the graph
-pub type Graph = Store<Node>;
+pub type Graph = Store<Spanned<Node>>;
