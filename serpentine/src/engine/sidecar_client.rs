@@ -59,9 +59,9 @@ impl Client {
     }
 
     /// Delete a network namespace
-    pub async fn delete_network(&self, network: &ConcreteTopology) -> Result<(), RuntimeError> {
-        // TODO: Delete networks
-        log::error!("Deleting network toplogy is not implemented yet");
+    pub async fn delete_network(&self, network: ConcreteTopology) -> Result<(), RuntimeError> {
+        let mut socket = self.connect(RequestKind::DeleteNetwork).await?;
+        network.write(&mut socket).await?;
 
         Ok(())
     }

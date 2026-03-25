@@ -1865,7 +1865,7 @@ impl Client {
                 }
                 DanglingResource::Network(network) => {
                     log::debug!("Stopping dangling network namespace");
-                    let _ = self.sidecar.delete_network(&network).await;
+                    let _ = self.sidecar.delete_network(network).await;
                 }
             }
         }
