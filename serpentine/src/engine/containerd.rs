@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,6 +12,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use serpentine_internal::{WireFormat, network};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
+use typed_path::Utf8UnixPathBuf;
 
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
@@ -52,9 +52,9 @@ impl ContainerConfig {
 
     /// Set the working directory of the container
     pub fn set_working_dir(&mut self, dir: &str) {
-        self.working_dir = Path::new(self.working_dir.as_ref())
+        self.working_dir = Utf8UnixPathBuf::from(self.working_dir.as_ref())
             .join(dir)
-            .to_string_lossy()
+            .into_string()
             .into();
     }
 
@@ -1172,7 +1172,7 @@ impl Client {
             .create_container(
                 &node.state,
                 node.get_cmd().to_owned(),
-                network_namespace.path.to_string().into(),
+                Utf8UnixPathBuf::from(network_namespace.path.to_string()),
                 hosts,
                 &mounts,
                 lease,
@@ -1339,7 +1339,7 @@ impl Client {
         &self,
         state: &ContainerState,
         cmd: String,
-        network_namespace: PathBuf,
+        network_namespace: Utf8UnixPathBuf,
         hosts: Vec<(Rc<str>, std::net::Ipv4Addr)>,
         mounts: &[containerd_client::types::Mount],
         lease: &str,
@@ -1351,7 +1351,7 @@ impl Client {
             .push(DanglingResource::Task(container.clone().into()));
 
         let mut root = oci_spec::runtime::Root::default();
-        root.set_path(PathBuf::from("rootfs"));
+        root.set_path("rootfs".into());
         root.set_readonly(Some(false));
 
         let (user, home_dir) = if let Some(user_string) = &state.config.user {
@@ -1412,7 +1412,7 @@ impl Client {
                 .iter_mut()
                 .find(|namespace| namespace.typ() == oci_spec::runtime::LinuxNamespaceType::Network)
         {
-            namespace.set_path(Some(network_namespace));
+            namespace.set_path(Some(network_namespace.into_string().into()));
         }
 
         let mut spec = oci_spec::runtime::Spec::default();
@@ -1775,14 +1775,12 @@ impl Client {
             .mounts;
 
         log::debug!("Copying filesystem into container at {dest}");
-        let dest = PathBuf::from(state.config.working_dir.to_string()).join(dest);
+        let dest = Utf8UnixPathBuf::from(state.config.working_dir.as_ref())
+            .join(dest)
+            .into_string();
 
         self.sidecar
-            .import_files(
-                mounts,
-                &dest.to_string_lossy(),
-                &mut src.get_reader().await?,
-            )
+            .import_files(mounts, &dest, &mut src.get_reader().await?)
             .await?;
 
         let new_snapshot = uuid::Uuid::new_v4().to_string();
@@ -1830,12 +1828,14 @@ impl Client {
             .into_inner()
             .mounts;
 
-        let docker_path = PathBuf::from(state.config.working_dir.to_string()).join(docker_path);
+        let docker_path = Utf8UnixPathBuf::from(state.config.working_dir.as_ref())
+            .join(docker_path)
+            .into_string();
 
         Ok(ContainerFileExport {
             sidecar: self.sidecar,
             mounts: mounts.into(),
-            path: docker_path.to_string_lossy().into(),
+            path: docker_path.into(),
         }
         .into())
     }
