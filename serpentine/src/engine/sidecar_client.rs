@@ -48,11 +48,11 @@ impl Client {
     /// Create a network namespace and return its (container) path
     pub async fn create_network(
         &self,
-        toplogy: AbstractTopology,
+        topology: AbstractTopology,
     ) -> Result<ConcreteTopology, RuntimeError> {
-        log::debug!("Creating network toplogy");
+        log::debug!("Creating network topology");
         let mut socket = self.connect(RequestKind::CreateNetwork).await?;
-        toplogy.write(&mut socket).await?;
+        topology.write(&mut socket).await?;
 
         let concrete_topology = ConcreteTopology::read(&mut socket).await?;
         Ok(concrete_topology)

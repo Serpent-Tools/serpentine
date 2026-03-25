@@ -2,15 +2,15 @@ import "./lib.snek" as lib;
 
 def EnsureBuilds(package) {
     return lib::rust
-        > lib::Cooked(Join("--check --package", package))
-        > Exec("cargo check --locked --package", package);
+        > lib::Cooked(Join("--check --package ", package))
+        > Exec(Join("cargo check --locked --package ", package));
 }
 
 // These tests ensure the crates build in isolation.
 // i.e `serpentine_internals` doesnt magically work because of features enabled by `serpentine` and `sidecar`.
 sidecar_builds = EnsureBuilds("sidecar");
 serpentine_builds = EnsureBuilds("serpentine");
-internals_builds = EnsureBuilds("internals");
+internals_builds = EnsureBuilds("serpentine_internal");
 crates_build_in_isolation = !(sidecar_builds, serpentine_builds, internals_builds) Noop(0);
 
 clippy = lib::rust 

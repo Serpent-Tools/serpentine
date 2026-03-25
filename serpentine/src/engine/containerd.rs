@@ -194,7 +194,7 @@ impl CacheData for ContainerConfig {
 
         hasher.update(&(self.services.len() as u64).to_le_bytes());
         for (hostname, service) in &self.services {
-            // ServiceState contains ContainerConfig recursively, which means this is techically a
+            // ServiceState contains ContainerConfig recursively, which means this is technically a
             // recursive call, and hence needs boxing.
             hostname.content_hash(hasher).await?;
             Box::pin(service.content_hash(hasher)).await?;
@@ -350,12 +350,12 @@ impl ServiceState {
     }
 
     /// Convert this service into a container topology
-    fn into_toplogy(mut self, hostname: Rc<str>) -> network::Topology<ContainerTopologyNode> {
+    fn into_topology(mut self, hostname: Rc<str>) -> network::Topology<ContainerTopologyNode> {
         let mut services = Vec::with_capacity(self.container.config.services.len());
 
         self.container = self.container.update_config(|config| {
             for (service_hostname, service) in config.services.drain() {
-                services.push(service.into_toplogy(service_hostname));
+                services.push(service.into_topology(service_hostname));
             }
         });
 
@@ -382,7 +382,7 @@ impl std::ops::DerefMut for ServiceState {
     }
 }
 
-/// A node in a container toplogy.
+/// A node in a container topology.
 ///
 /// The root node will be a `ContainerState` and the children will be `ServiceState`s.
 /// This is used to represent the full state of a container with all its attached services.
@@ -457,13 +457,13 @@ impl ContainerState {
         }
     }
 
-    /// Copnvert this into a container toplogy
-    fn into_toplogy(mut self, cmd: Box<str>) -> network::Topology<ContainerTopologyNode> {
+    /// Copnvert this into a container topology
+    fn into_topology(mut self, cmd: Box<str>) -> network::Topology<ContainerTopologyNode> {
         let mut services = Vec::with_capacity(self.config.services.len());
 
         self = self.update_config(|config| {
             for (service_hostname, service) in config.services.drain() {
-                services.push(service.into_toplogy(service_hostname));
+                services.push(service.into_topology(service_hostname));
             }
         });
 
@@ -802,7 +802,7 @@ impl Client {
         })
     }
 
-    /// Pull the given image from the registery and return both the snapshot name and config.
+    /// Pull the given image from the registry and return both the snapshot name and config.
     async fn fetch_image(
         &self,
         image_name: &str,
@@ -1062,7 +1062,7 @@ impl Client {
         Ok(stdout)
     }
 
-    /// Retrive a `ConcreteTopology` matching the given `AbstractTopology` from the free network pool, or create a new one if none are available.
+    /// Retrieve a `ConcreteTopology` matching the given `AbstractTopology` from the free network pool, or create a new one if none are available.
     async fn get_network(
         &self,
         topology: network::AbstractTopology,
@@ -1097,11 +1097,11 @@ impl Client {
     ) -> Result<(ContainerState, Result<String, String>), RuntimeError> {
         let exec_lock = self.exec_lock.acquire().await;
         log::debug!("Prepearing to execute {cmd:?} in {state:?}");
-        let container_topology = state.into_toplogy(cmd.into());
-        let network_toplogy = self
+        let container_topology = state.into_topology(cmd.into());
+        let network_topology = self
             .get_network(container_topology.map_data_ref(|_| ()))
             .await?;
-        let complete_topology = container_topology.zip(network_toplogy);
+        let complete_topology = container_topology.zip(network_topology);
 
         let running_topology = self.spinup_topology(complete_topology, lease).await?;
         let handle = running_topology.get_data();
@@ -1483,6 +1483,12 @@ impl Client {
         let mut stdout = tokio::io::BufReader::new(stdout).lines();
         let mut result = String::new();
         let mut success = true;
+        tui.send(TuiMessage::UpdateTask(crate::tui::Task {
+            identifier: Arc::clone(&task_id),
+            title: Arc::clone(&task_title),
+            progress: crate::tui::TaskProgress::Log(Box::default()),
+        }));
+
         loop {
             match stdout.next_line().await {
                 Ok(None) => break,

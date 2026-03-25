@@ -1,10 +1,10 @@
 //! A network container topology.
 //!
-//! Serpentines network toplogies are always directioanl trees, containing no loops or multi-parent
+//! Serpentines network topologies are always directioanl trees, containing no loops or multi-parent
 //! nodes.
 //!
-//! Most toplogies are either of the `A` or `A --> B` variant.
-//! But serpentine does support arbitrary toplogies, for example `A --> B --> C` or
+//! Most topologies are either of the `A` or `A --> B` variant.
+//! But serpentine does support arbitrary topologies, for example `A --> B --> C` or
 //! ```mermaid
 //! flowchart
 //!    A --> B --> C
@@ -13,7 +13,7 @@
 //! ```
 //!
 //! NOTE: Even if a service state is attached at multiple places in the tree, each attach is a
-//! seperate instance of the service, and they do not share state. Hence for example in the above
+//! separate instance of the service, and they do not share state. Hence for example in the above
 //! `D` and `E` might be the "same" service template, but it will spawn two different processes.
 
 use std::hash::Hash;
@@ -68,7 +68,7 @@ impl<T> Topology<T> {
     }
 
     /// map a function over the data of this topology, without changing the topology structure.
-    /// Useful for converting between different kinds of toplogies, for example from `ConcreteToplogy` to `AbstractToplogy`.
+    /// Useful for converting between different kinds of topologies, for example from `ConcreteTopology` to `AbstractTopology`.
     pub fn map_data<U>(self, func: impl Fn(T) -> U) -> Topology<U> {
         let data = func(self.data);
         let children = self
@@ -92,7 +92,7 @@ impl<T> Topology<T> {
 
     /// Zip this topology with another one, combining their data.
     ///
-    /// This is intended to be used for combining equal topoligies, but for unequal topoligies the
+    /// This is intended to be used for combining equal topologies, but for unequal topologies the
     /// behaviour is not defined, but does not panic.
     pub fn zip<U>(self, other: Topology<U>) -> Topology<(T, U)> {
         let data = (self.data, other.data);
@@ -105,9 +105,9 @@ impl<T> Topology<T> {
         Topology { data, children }
     }
 
-    /// Compare topoligies for equality, including data.
+    /// Compare topologies for equality, including data.
     ///
-    /// WARN: This is non-deterministic when sibiling topoligies have the same shape.
+    /// WARN: This is non-deterministic when sibling topologies have the same shape.
     pub fn eq_with_data(&self, other: &Self) -> bool
     where
         T: PartialEq,
@@ -126,7 +126,7 @@ impl<T> Topology<T> {
         true
     }
 
-    /// Return a flattend iterator of all the data in this topology, in no specific order.
+    /// Return a flattened iterator of all the data in this topology, in no specific order.
     pub fn flat_data(self) -> TopologyIter<T> {
         TopologyIter { stack: vec![self] }
     }
@@ -152,9 +152,9 @@ impl<T> Ord for Topology<T> {
     }
 }
 
-/// A iterator over the data in a toplogy in no specific order.
+/// A iterator over the data in a topology in no specific order.
 pub struct TopologyIter<T> {
-    /// The stack of topoligies to visit, the top of the stack is the next one to visit.
+    /// The stack of topologies to visit, the top of the stack is the next one to visit.
     stack: Vec<Topology<T>>,
 }
 
@@ -247,7 +247,10 @@ impl WireFormat for Adapter {
     async fn read(reader: &mut (impl tokio::io::AsyncRead + Unpin + Send)) -> crate::Result<Self> {
         let ifname = super::read_length_prefixed_string(reader).await?.into();
         let config_json = super::read_length_prefixed_string(reader).await?.into();
-        Ok(Self { ifname, config_json })
+        Ok(Self {
+            ifname,
+            config_json,
+        })
     }
 }
 
