@@ -12,3 +12,6 @@ test-group = "docker"
 [[profile.default.overrides]]
 filter = "test(tests::live_fails::)"
 test-group = "docker"
+
+[profile.integration_tests]
+default-filter = "test(engine::containerd::) | test(tests::live_examples::) | test(tests::live_fails::)"
