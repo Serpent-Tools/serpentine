@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use super::resolver::ResolveResult;
 use super::{CompileError, ir};
 use crate::engine::data_model::{DataType, Graph, Node, NodeInstanceId, NodeKindId, NodeStorage};
-use crate::snek::span::Span;
+use crate::snek::span::{OwnedVirtualFile, Span, Spanned};
 
 /// The result of compiling
 pub struct CompileResult {
@@ -15,6 +15,8 @@ pub struct CompileResult {
     pub graph: Graph,
     /// The id of the starting node
     pub start_node: NodeInstanceId,
+    /// The source code of the compiled files
+    pub source_code: OwnedVirtualFile,
 }
 
 /// Value pointed to by a symbol
@@ -88,6 +90,7 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::Se
         nodes: context.nodes,
         graph: compiler.graph,
         start_node,
+        source_code: files.into_owned(),
     })
 }
 
@@ -176,7 +179,7 @@ impl Compiler {
             phantom_inputs: phantom_inputs.into_vec().into(),
         };
 
-        let instance_id = self.push_node_with_cache(node);
+        let instance_id = self.push_node_with_cache(span.with(node));
 
         Ok((instance_id, return_type))
     }
@@ -210,21 +213,21 @@ impl Compiler {
         function_output: NodeInstanceId,
         phantom_inputs: Box<[NodeInstanceId]>,
     ) -> NodeInstanceId {
-        self.push_node_with_cache(Node {
+        self.push_node_with_cache(Span::dummy().with(Node {
             kind: context.noop,
             inputs: Box::new([function_output]),
             phantom_inputs: phantom_inputs.into_vec().into(),
-        })
+        }))
     }
 
     /// Push a node onto the graph or return a cached value.
     /// Returns the node id of the result.
-    fn push_node_with_cache(&mut self, node: Node) -> NodeInstanceId {
+    fn push_node_with_cache(&mut self, node: Spanned<Node>) -> NodeInstanceId {
         if let Some(cached_value) = self.node_cache.get(&node) {
             *cached_value
         } else {
             let instance_id = self.graph.push(node.clone());
-            self.node_cache.insert(node, instance_id);
+            self.node_cache.insert(node.take(), instance_id);
             instance_id
         }
     }

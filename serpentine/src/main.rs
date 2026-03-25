@@ -117,9 +117,15 @@ enum SerpentineError {
     },
 
     /// Something failed at runtime.
-    #[error(transparent)]
-    #[diagnostic(transparent)]
-    Runtime(#[from] engine::RuntimeError),
+    #[error("Runtime Error")]
+    Runtime {
+        /// The source code that produced the runtime error
+        #[source_code]
+        source_code: snek::span::OwnedVirtualFile,
+        /// The error that occurred at runtime
+        #[related]
+        error: Vec<engine::RuntimeError>,
+    },
 }
 
 /// Setup logging using `fern`.
@@ -278,6 +284,8 @@ fn render_graph(graph: snek::CompileResult, output: &Path) -> Result<(), engine:
     look.font_size = 16;
 
     for node in graph.graph {
+        let node = node.take();
+
         let node_impl = graph.nodes.get(node.kind);
 
         let label = node_impl.describe();
@@ -372,6 +380,61 @@ mod tests {
             let err = miette::Report::new(err);
             let err = format!("{err:?}");
             panic!("Failed to load cache {cache_file:?}\n{err}")
+        }
+    }
+
+    #[rstest]
+    #[test_log::test]
+    fn live_fails(#[files("../test_cases/live_negative/**/*.snek")] path: PathBuf) {
+        let graph = match crate::snek::compile_graph(&path, "DEFAULT") {
+            Ok(graph) => graph,
+            Err(err) => {
+                let err = miette::Report::new(err);
+                let err = format!("{err:?}");
+                panic!("Failed to compile {path:?}\n{err}")
+            }
+        };
+
+        let random_cache_file = std::env::temp_dir().join(format!(
+            "serpentine_test_cache_{}.serpentine_cache",
+            uuid::Uuid::new_v4()
+        ));
+
+        let cli = crate::Run {
+            pipeline: path.clone(),
+            ci: true,
+            cache: Some(random_cache_file),
+            standalone_cache: false,
+            clean_old: false,
+            entry_point: "DEFAULT".into(),
+            jobs: 1,
+        };
+        if let Err(err) = crate::engine::run(graph, crate::tui::TuiSender(None), &cli) {
+            let _ = miette::set_hook(Box::new(|_| {
+                let config = miette::GraphicalReportHandler::default();
+                let config = config
+                    .with_width(usize::MAX)
+                    .with_theme(miette::GraphicalTheme::none());
+                Box::new(config)
+            }));
+
+            let err = miette::Report::new(err);
+            let err = format!("{err:?}");
+
+            insta::with_settings! { {
+                filters => vec![
+                    // Redact file paths
+                    (r#"(/[^/\s:"'\]]+)+"#, "<redacted-path>"),
+                    // Redact OS error messages, they can be different on different systems
+                    (r"(?i)os error \d+: [^\n]+", "OS error <redacted>"),
+                ],
+            }, {
+            insta::assert_snapshot!(
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                err
+            );} };
+        } else {
+            panic!("Expected failure when running {path:?}, but it succeeded");
         }
     }
 }

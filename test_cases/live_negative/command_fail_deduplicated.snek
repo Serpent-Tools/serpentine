@@ -1,0 +1,6 @@
+// export DEFAULT = Image("quay.io/toolbx-images/alpine-toolbox:latest") > Exec("exit 1");
+
+foo = Image("quay.io/toolbx-images/alpine-toolbox:latest") > Exec("exit 1");
+bar = Image("quay.io/toolbx-images/alpine-toolbox:latest") > Exec("exit 1");
+
+export DEFAULT = !(foo, bar) Noop(0);

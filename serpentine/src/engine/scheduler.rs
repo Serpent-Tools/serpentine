@@ -59,7 +59,18 @@ impl Scheduler {
                 log::debug!("Executing node {node_id:?}");
                 let res = node_impl.execute_raw(node.kind, self, &node.inputs).await;
                 self.context.tui.send(crate::tui::TuiMessage::NodeFinished);
-                res
+
+                res.map_err(|err| {
+                    if matches!(err, RuntimeError::NodeError { .. }) {
+                        err
+                    } else {
+                        RuntimeError::NodeError {
+                            node_id,
+                            span: node.span(),
+                            inner: Box::new(err),
+                        }
+                    }
+                })
             })
             .await;
         log::debug!("Got output of node {node_id:?}: {res:?}");

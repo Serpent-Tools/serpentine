@@ -1,0 +1,21 @@
+---
+source: serpentine/src/main.rs
+expression: err
+---
+  x Runtime Error
+
+Error: node_error
+
+  x Error in node StoreId(3)
+  `-> command_execution_error
+      
+        x Failed to execute command (exit code 1): "exit 1"
+        |
+      
+   ,-[<redacted-path>:2:67]
+ 1 | def Foo() {
+ 2 |     return Image("quay.io<redacted-path>:latest") > Exec("exit 1");
+   :                                                                   ^^^^^^^|^^^^^^^
+   :                                                                          `-- Error occurred in this node
+ 3 | }
+   `----

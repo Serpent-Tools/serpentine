@@ -1,0 +1,5 @@
+def Foo() {
+    return Image("quay.io/toolbx-images/alpine-toolbox:latest") > Exec("exit 1");
+}
+
+export DEFAULT = Foo();
