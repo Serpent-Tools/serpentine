@@ -26,6 +26,7 @@ prost-types = "0.13"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 tower = { version = "0.5.3", default-features = false }
 blake3 = "1.8.3"
+typed-path = "0.12.3"
 
 # Compiler
 bumpalo = { version = "3.20.2", default-features = false, features = ["collections"] }
