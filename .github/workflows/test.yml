@@ -1,40 +1,160 @@
 name: Serpentine Tests
 on: [push]
 jobs:
-  run-tests:
+  build-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build container
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          load: true
+          tags: serpent-tools/containerd:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Export Docker image
+        run: docker save serpent-tools/containerd:dev | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: containerd-image
+          path: /tmp/containerd-dev.tar.zst
+          retention-days: 1
+
+  test:
+    needs: [build-docker]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-13
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          cache-on-failure: true
+      - uses: taiki-e/install-action@7627fb428e65e78e2ec9a24ae5c5bd5f8553f182
+        with:
+          tool: cargo-nextest
+
+      # --- Protobuf (platform-specific) ---
+      - name: Install protobuf (Linux)
+        if: matrix.platform == 'linux'
+        run: sudo apt-get install -y protobuf-compiler
+      - name: Install protobuf (macOS)
+        if: matrix.platform == 'macos'
+        run: brew install protobuf
+      - name: Install protobuf (Windows)
+        if: matrix.platform == 'windows'
+        run: choco install protoc -y
+
+      # --- Docker setup (platform-specific) ---
+      - name: Setup Docker (macOS)
+        if: matrix.platform == 'macos'
+        uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4
+
+      - name: Setup WSL (Windows)
+        if: matrix.platform == 'windows'
+        uses: Vampire/setup-wsl@6a8db447be7ed35f2f499c02c6e60ff77ef11278
+        with:
+          distribution: Ubuntu-22.04
+          additional-packages: zstd
+
+      - name: Install Docker in WSL (Windows)
+        if: matrix.platform == 'windows'
+        shell: wsl-bash {0}
+        run: |
+          curl -fsSL https://get.docker.com | sudo sh
+          sudo usermod -aG docker $USER
+
+      - name: Start Docker daemon in WSL (Windows)
+        if: matrix.platform == 'windows'
+        shell: wsl-bash {0}
+        run: |
+          sudo dockerd -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock &
+          for i in $(seq 1 15); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker is ready"
+              break
+            fi
+            echo "Waiting for Docker... ($i)"
+            sleep 2
+          done
+          docker info
+
+      # --- Load Docker image ---
+      - name: Download Docker image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: containerd-image
+          path: ${{ runner.temp }}
+
+      - name: Load Docker image (Linux/macOS)
+        if: matrix.platform != 'windows'
+        run: zstd -d ${{ runner.temp }}/containerd-dev.tar.zst --stdout | docker load
+
+      - name: Load Docker image in WSL (Windows)
+        if: matrix.platform == 'windows'
+        shell: wsl-bash {0}
+        run: |
+          wslpath '${{ runner.temp }}/containerd-dev.tar.zst' | xargs zstd -d --stdout | docker load
+
+      - name: Set DOCKER_HOST (Windows)
+        if: matrix.platform == 'windows'
+        run: echo "DOCKER_HOST=tcp://localhost:2375" >> $env:GITHUB_ENV
+
+      # --- Run tests ---
+      - name: Run tests (Linux)
+        if: matrix.platform == 'linux'
+        run: cargo nextest run --all-features --fail-fast
+        env:
+          RUST_LOG: serpentine=trace
+
+      - name: Run integration tests (macOS/Windows)
+        if: matrix.platform != 'linux'
+        run: cargo nextest run -p serpentine --features _test_docker --profile integration_tests --fail-fast
+        env:
+          RUST_LOG: serpentine=trace
+
+  pipeline:
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
       - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
         with:
-            toolchain: stable
+          toolchain: stable
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
-            cache-on-failure: true
+          cache-on-failure: true
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: cache-restore
         with:
           path: /tmp/serpentine_cache
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
-
-      - name: Install deps
+      - name: Install protobuf
         run: sudo apt-get install -y protobuf-compiler
-
-      - name: Install nextets
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
-
-      - name: Build container 
-        run: docker build -t serpent-tools/containerd:dev . 
-
-      - name: Run tests
-        run: cargo nextest run --all-features --fail-fast --test-threads 1
-
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: containerd-image
+          path: /tmp
+      - name: Load Docker image
+        run: zstd -d /tmp/containerd-dev.tar.zst --stdout | docker load
       - name: Run serpentine pipeline
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point FULL --jobs 1 
-
+        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point FULL --jobs 1
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         if: always()
         with:
           path: /tmp/serpentine_cache
-          key: ${{ steps.cache-restore.outputs.cache-primary-key }} 
+          key: ${{ steps.cache-restore.outputs.cache-primary-key }}
