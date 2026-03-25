@@ -125,6 +125,11 @@ impl<T> Topology<T> {
         }
         true
     }
+
+    /// Return a flattend iterator of all the data in this topology, in no specific order.
+    pub fn flat_data(self) -> TopologyIter<T> {
+        TopologyIter { stack: vec![self] }
+    }
 }
 
 impl<T> PartialEq for Topology<T> {
@@ -144,6 +149,37 @@ impl<T> PartialOrd for Topology<T> {
 impl<T> Ord for Topology<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.children.cmp(&other.children)
+    }
+}
+
+/// A iterator over the data in a toplogy in no specific order.
+pub struct TopologyIter<T> {
+    /// The stack of topoligies to visit, the top of the stack is the next one to visit.
+    stack: Vec<Topology<T>>,
+}
+
+impl<T> IntoIterator for Topology<T> {
+    type Item = T;
+    type IntoIter = TopologyIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.flat_data()
+    }
+}
+
+impl<T> Iterator for TopologyIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let topology = self.stack.pop()?;
+        for child in topology.children {
+            self.stack.push(child);
+        }
+        Some(topology.data)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.stack.len(), None)
     }
 }
 
@@ -189,6 +225,32 @@ impl Hash for AbstractTopology {
     }
 }
 
+/// A CNI adapter attached to a namespace.
+#[derive(Debug, Clone)]
+pub struct Adapter {
+    /// The interface name, for example "lo", "eth0", or a bridge UUID.
+    pub ifname: Box<str>,
+    /// The CNI config JSON used to create this adapter, needed for teardown.
+    pub config_json: Box<str>,
+}
+
+impl WireFormat for Adapter {
+    async fn write(
+        self,
+        writer: &mut (impl tokio::io::AsyncWrite + Unpin + Send),
+    ) -> crate::Result<()> {
+        super::write_length_prefixed(writer, self.ifname.as_bytes()).await?;
+        super::write_length_prefixed(writer, self.config_json.as_bytes()).await?;
+        Ok(())
+    }
+
+    async fn read(reader: &mut (impl tokio::io::AsyncRead + Unpin + Send)) -> crate::Result<Self> {
+        let ifname = super::read_length_prefixed_string(reader).await?.into();
+        let config_json = super::read_length_prefixed_string(reader).await?.into();
+        Ok(Self { ifname, config_json })
+    }
+}
+
 /// A description of a network namespace created by the sidecar.
 #[derive(Debug, Clone)]
 pub struct Namespace {
@@ -196,6 +258,8 @@ pub struct Namespace {
     pub path: Box<str>,
     /// The ip address the process in this namespace will have.
     pub ip: Ipv4Addr,
+    /// The CNI network adapters attached to this namespace, needed for teardown.
+    pub adapters: Vec<Adapter>,
 }
 
 impl WireFormat for Namespace {
@@ -210,6 +274,11 @@ impl WireFormat for Namespace {
             writer.write_u8(byte).await?;
         }
 
+        super::write_u64_variable_length(writer, self.adapters.len() as u64).await?;
+        for adapter in self.adapters {
+            adapter.write(writer).await?;
+        }
+
         Ok(())
     }
 
@@ -221,9 +290,16 @@ impl WireFormat for Namespace {
         }
         let ip = Ipv4Addr::from(ip_bytes);
 
+        let adapter_count = super::read_u64_length_encoded(reader).await?;
+        let mut adapters = Vec::new();
+        for _ in 0..adapter_count {
+            adapters.push(Adapter::read(reader).await?);
+        }
+
         Ok(Self {
             path: path.into(),
             ip,
+            adapters,
         })
     }
 }

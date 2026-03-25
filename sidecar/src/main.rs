@@ -235,10 +235,11 @@ fn realize_topology(
         new_children.push(child);
     }
 
-    let namespace_path = create_network_namespace(&bridges)?;
+    let (namespace_path, adapters) = create_network_namespace(&bridges)?;
     let namespace = serpentine_internal::network::Namespace {
         path: namespace_path.into_boxed_str(),
         ip: my_ip,
+        adapters,
     };
 
     let mut result = serpentine_internal::network::ConcreteTopology::new(namespace);
@@ -253,10 +254,16 @@ fn realize_topology(
 ///
 /// Also creates the inter namespace bridges as defined by the `bridges` parameters
 ///
-/// Returns the name of the namespace.
+/// Returns the namespace path and the list of adapters created.
 fn create_network_namespace(
     bridges: &[BridgeDefintion],
-) -> Result<String, Box<dyn Error + 'static>> {
+) -> Result<
+    (
+        String,
+        Vec<serpentine_internal::network::Adapter>,
+    ),
+    Box<dyn Error + 'static>,
+> {
     log::info!("Creating namespace");
     let ns_name = uuid::Uuid::new_v4().to_string();
     let raw_namespace = netns_rs::NetNs::new(ns_name.clone())?;
@@ -270,27 +277,31 @@ fn create_network_namespace(
         ..Default::default()
     };
     let cni_config: CniConfig = Arc::new(Box::new(cni_config));
-    let loopback = cni::conf::ConfigFile::config_from_bytes(
-        r#"{
+
+    let mut adapters = Vec::new();
+
+    let loopback_json = r#"{
             "cniVersion": "1.1.0",
             "name": "loopback",
             "plugins": [{
               "type": "loopback"
             }]
-        }"#
-        .as_bytes(),
-    )?;
+        }"#;
+    let loopback = cni::conf::ConfigFile::config_from_bytes(loopback_json.as_bytes())?;
     apply_network(
         Arc::clone(&cni_config),
         &namespace,
         "lo".to_owned(),
         loopback,
     )?;
+    adapters.push(serpentine_internal::network::Adapter {
+        ifname: "lo".into(),
+        config_json: loopback_json.into(),
+    });
 
     let (subnet, gateway, _ip2) = pick_random_subnet()?;
-    let internet_bridge = cni::conf::ConfigFile::config_from_bytes(
-        format!(
-            r#"{{
+    let internet_bridge_json = format!(
+        r#"{{
             "cniVersion": "1.1.0",
             "name": "bridge",
             "plugins": [{{
@@ -308,22 +319,25 @@ fn create_network_namespace(
               }}
             }}]
         }}"#,
-            // CNI spec requires bridge names to be 15 characters or less.
-            ns_name.get(0..8).ok_or("Uuid wasnt pure ascii")?
-        )
-        .as_bytes(),
-    )?;
+        // CNI spec requires bridge names to be 15 characters or less.
+        ns_name.get(0..8).ok_or("Uuid wasnt pure ascii")?
+    );
+    let internet_bridge =
+        cni::conf::ConfigFile::config_from_bytes(internet_bridge_json.as_bytes())?;
     apply_network(
         Arc::clone(&cni_config),
         &namespace,
         "eth0".to_owned(),
         internet_bridge,
     )?;
+    adapters.push(serpentine_internal::network::Adapter {
+        ifname: "eth0".into(),
+        config_json: internet_bridge_json.into(),
+    });
 
     for bridge in bridges {
-        let bridge_config = cni::conf::ConfigFile::config_from_bytes(
-            format!(
-                r#"{{
+        let bridge_json = format!(
+            r#"{{
                 "cniVersion": "1.1.0",
                 "name": "bridge",
                 "plugins": [{{
@@ -339,19 +353,22 @@ fn create_network_namespace(
                   }}
                 }}]
             }}"#,
-                bridge.name, bridge.ip, SUBNET_SIZE
-            )
-            .as_bytes(),
-        )?;
+            bridge.name, bridge.ip, SUBNET_SIZE
+        );
+        let bridge_config = cni::conf::ConfigFile::config_from_bytes(bridge_json.as_bytes())?;
         apply_network(
             Arc::clone(&cni_config),
             &namespace,
             bridge.name.clone(),
             bridge_config,
         )?;
+        adapters.push(serpentine_internal::network::Adapter {
+            ifname: bridge.name.clone().into(),
+            config_json: bridge_json.into(),
+        });
     }
 
-    Ok(namespace_path.into_owned())
+    Ok((namespace_path.into_owned(), adapters))
 }
 
 /// Apply the given network config to the given namespace.
@@ -408,16 +425,47 @@ fn subnet_mask(mask_length: u8) -> u32 {
 
 /// Delete the given network interface.
 async fn delete_network(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
-    let path = serpentine_internal::read_length_prefixed_string(&mut remote_socket).await?;
-    let path = PathBuf::from(path);
+    let network = serpentine_internal::network::ConcreteTopology::read(&mut remote_socket).await?;
 
-    let namespace = path.file_name().ok_or("No filename in path")?;
-    let namespace = namespace.to_string_lossy();
-    let namespace = netns_rs::NetNs::get(namespace)?;
-    log::info!("Removing network namespace: {namespace}");
-    namespace.remove()?;
+    for namespace in network {
+        delete_namespace(&namespace)
+            .map_err(|err| format!("Failed to delete namespace {}: {err}", namespace.path))?;
+    }
 
-    // TODO: Cleanup the adapters as well.
+    Ok(())
+}
+
+/// Tear down a single namespace, removing all CNI adapters before deleting the namespace itself.
+fn delete_namespace(
+    ns: &serpentine_internal::network::Namespace,
+) -> Result<(), Box<dyn Error + 'static>> {
+    let path = Path::new(&*ns.path);
+    let ns_name = path.file_name().ok_or("No filename in path")?;
+    let ns_name = ns_name.to_string_lossy();
+    let raw_namespace = netns_rs::NetNs::get(&*ns_name)?;
+    let namespace_path = raw_namespace.path().to_string_lossy();
+    let cni_namespace =
+        rust_cni::namespace::Namespace::new(ns_name.to_string(), namespace_path.to_string());
+
+    let cni_config: CniConfig = Arc::new(Box::new(cni::api::CNIConfig {
+        path: vec!["/cni".to_owned()],
+        ..Default::default()
+    }));
+
+    for adapter in ns.adapters.iter().rev() {
+        let config = cni::conf::ConfigFile::config_from_bytes(adapter.config_json.as_bytes())?;
+        let network = rust_cni::namespace::Network {
+            cni: Arc::clone(&cni_config),
+            config,
+            ifname: adapter.ifname.to_string(),
+        };
+        if let Err(err) = network.remove(&cni_namespace) {
+            log::error!("Failed to remove adapter {}: {err}", adapter.ifname);
+        }
+    }
+
+    log::info!("Removing network namespace: {raw_namespace}");
+    raw_namespace.remove()?;
 
     Ok(())
 }
