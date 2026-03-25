@@ -113,7 +113,7 @@ pub enum RuntimeError {
     CtrlC,
 
     /// Could not parse / could not find user info in /etc/passwd
-    #[error("Could not resolver user {user:?}: {msg}")]
+    #[error("Could not resolve user {user:?}: {msg}")]
     #[diagnostic(code(execution_interrupted))]
     UserNotFound {
         /// Which user couldnt be found

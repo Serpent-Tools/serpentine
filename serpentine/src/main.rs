@@ -90,11 +90,7 @@ impl Run {
     ///
     /// This checks the `--ci` flag and whether we are in an interactive terminal
     fn use_tui(&self) -> bool {
-        if self.ci {
-            false
-        } else {
-            std::io::stdout().is_terminal()
-        }
+        !self.ci && std::io::stdout().is_terminal()
     }
 
     /// Get the cache to use

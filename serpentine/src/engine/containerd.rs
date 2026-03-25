@@ -26,7 +26,7 @@ use crate::tui::{TuiMessage, TuiSender};
 // service).
 const SNAPSHOTTER: &str = "overlayfs";
 
-/// Connfiguration for the container
+/// Configuration for the container
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerConfig {
@@ -45,6 +45,11 @@ pub struct ContainerConfig {
 }
 
 impl ContainerConfig {
+    /// Get an environment variable in the container
+    pub fn get_env_var(&self, env: &str) -> Option<&Rc<str>> {
+        self.env.get(env)
+    }
+
     /// Set the working directory of the container
     pub fn set_working_dir(&mut self, dir: &str) {
         self.working_dir = Path::new(self.working_dir.as_ref())
@@ -53,14 +58,9 @@ impl ContainerConfig {
             .into();
     }
 
-    /// Set a environment variable in the container
+    /// Set an environment variable in the container
     pub fn set_env_var(&mut self, env: Rc<str>, value: Rc<str>) {
         self.env.insert(env, value);
-    }
-
-    /// Get a environment variable in the container
-    pub fn get_env_var(&self, env: &str) -> Option<&Rc<str>> {
-        self.env.get(env)
     }
 
     /// Update the user config for the container
@@ -297,7 +297,7 @@ impl ServiceConfig {
 pub struct ServiceState {
     /// The underlying container
     container: ContainerState,
-    /// the service specific config.
+    /// The service-specific config.
     service_config: Rc<ServiceConfig>,
 }
 
@@ -332,6 +332,11 @@ impl CacheData for ServiceState {
 }
 
 impl ServiceState {
+    /// Get a reference to the service config.
+    pub fn get_service_config(&self) -> &ServiceConfig {
+        &self.service_config
+    }
+
     /// Update this states service config using a closure.
     ///
     /// This does not change the input state but instead returns a new one.
@@ -342,11 +347,6 @@ impl ServiceState {
             container: self.container.clone(),
             service_config: Rc::new(service_config),
         }
-    }
-
-    /// Get a reference to the service config.
-    pub fn get_service_config(&self) -> &ServiceConfig {
-        &self.service_config
     }
 
     /// Convert this service into a container topology
@@ -429,6 +429,11 @@ pub struct ContainerState {
 }
 
 impl ContainerState {
+    /// Get a reference to the config.
+    pub fn get_config(&self) -> &ContainerConfig {
+        &self.config
+    }
+
     /// Update this states config using a closure.
     ///
     /// This does not change the input state but instead returns a new one.
@@ -439,11 +444,6 @@ impl ContainerState {
             snapshot: Rc::clone(&self.snapshot),
             config: Rc::new(config),
         }
-    }
-
-    /// Get a reference to the config.
-    pub fn get_config(&self) -> &ContainerConfig {
-        &self.config
     }
 
     /// Convert this container into a service
@@ -457,7 +457,7 @@ impl ContainerState {
         }
     }
 
-    /// Copnvert this into a container topology
+    /// Convert this into a container topology
     fn into_topology(mut self, cmd: Box<str>) -> network::Topology<ContainerTopologyNode> {
         let mut services = Vec::with_capacity(self.config.services.len());
 
@@ -623,7 +623,7 @@ impl ContainerdRootClient {
     sub_client_wrapper!(leases, leases_client::LeasesClient);
 }
 
-/// Extension trait for easially attaching a lease to requests
+/// Extension trait for easily attaching a lease to requests
 trait WithLease<T>: IntoRequest<T> {
     /// Attach a lease to this request
     fn with_lease(self, lease: &str) -> Request<T>;
@@ -649,7 +649,7 @@ where
 enum DanglingResource {
     /// A lease, this dangling would lead to gc holding onto unneeded data
     Lease(Box<str>),
-    /// A task, this danlging would leave processes running that arent useful anymore.
+    /// A task, this dangling would leave processes running that arent useful anymore.
     /// This holds the container id
     Task(Box<str>),
     /// A container network
@@ -670,7 +670,7 @@ struct ContainerHandle {
 
 /// A docker client wrapper
 pub struct Client {
-    /// containerd client
+    /// Containerd client
     containerd: ContainerdRootClient,
     /// Client to the sidecar
     sidecar: sidecar_client::Client,
@@ -764,7 +764,7 @@ impl Client {
         Ok(())
     }
 
-    /// download the given image and return a normal `ContainerState` representing it.
+    /// Download the given image and return a normal `ContainerState` representing it.
     pub async fn pull_image(&self, image_name: &str) -> Result<ContainerState, RuntimeError> {
         let (config, snapshot_name) = self.fetch_image(image_name).await?;
 
@@ -780,7 +780,7 @@ impl Client {
         })
     }
 
-    /// download the given image and return a `ServiceState` representing it.
+    /// Download the given image and return a `ServiceState` representing it.
     pub async fn pull_service(&self, image_name: &str) -> Result<ServiceState, RuntimeError> {
         let (config, snapshot_name) = self.fetch_image(image_name).await?;
 
@@ -1088,7 +1088,7 @@ impl Client {
     }
 
     /// Execute a command on the given mutable snapshot, returning its stdout and stderr
-    /// The stdout will be wrapeed in `Ok` is all the data was utf-8, `Err` if not.
+    /// The stdout will be wrapped in `Ok` is all the data was utf-8, `Err` if not.
     async fn exec_internal(
         &self,
         state: ContainerState,
@@ -1096,7 +1096,7 @@ impl Client {
         lease: &str,
     ) -> Result<(ContainerState, Result<String, String>), RuntimeError> {
         let exec_lock = self.exec_lock.acquire().await;
-        log::debug!("Prepearing to execute {cmd:?} in {state:?}");
+        log::debug!("Preparing to execute {cmd:?} in {state:?}");
         let container_topology = state.into_topology(cmd.into());
         let network_topology = self
             .get_network(container_topology.map_data_ref(|_| ()))
@@ -1123,7 +1123,7 @@ impl Client {
     }
 
     /// Spinup a topology tree
-    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
+    #[expect(clippy::too_many_lines, reason = "Tightly coupled linear task")]
     async fn spinup_topology(
         &self,
         topology: network::Topology<(ContainerTopologyNode, network::Namespace)>,
@@ -1313,7 +1313,6 @@ impl Client {
                 })
                 .await?;
 
-            // let exit_code = self.wait_for_exit(container_id.clone(), exec_id).await?;
             let exit_code = tokio::select! {
                 exit = self.wait_for_exit(container_id.clone(), exec_id.clone()) => {
                     exit?
@@ -1335,7 +1334,7 @@ impl Client {
 
     /// Create a container according to the given container state and the given command and returns
     /// its id
-    #[expect(clippy::too_many_lines, reason = "Thightly coupled linear task")]
+    #[expect(clippy::too_many_lines, reason = "Tightly coupled linear task")]
     async fn create_container(
         &self,
         state: &ContainerState,

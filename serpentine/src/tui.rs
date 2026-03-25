@@ -67,7 +67,7 @@ pub enum TaskProgress {
 /// Represents a task being executed in the pipeline
 #[derive(Debug)]
 pub struct Task {
-    /// The identiifer for the task
+    /// The identifier for the task
     pub identifier: Arc<str>,
     /// The name to show in the UI
     pub title: Arc<str>,
@@ -145,7 +145,7 @@ impl UiState {
                 if self.logs.is_full() {
                     self.logs.pop_front();
                 }
-                let _ = self.logs.push_back(msg.clone());
+                let _ = self.logs.push_back(msg);
             }
         }
     }

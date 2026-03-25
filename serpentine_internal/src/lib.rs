@@ -100,7 +100,7 @@ pub async fn write_length_prefixed(
 /// Read a length-prefixed `Vec<u8>`.
 ///
 /// # Errors
-/// If writing the value causes IO error.
+/// If reading the value causes IO error.
 pub async fn read_length_prefixed(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> {
     let length = read_u64_length_encoded(reader)
         .await?
@@ -115,7 +115,7 @@ pub async fn read_length_prefixed(reader: &mut (impl AsyncRead + Unpin)) -> Resu
 /// Read a length-prefixed `String`.
 ///
 /// # Errors
-/// If writing the value causes IO error.
+/// If reading the value causes IO error.
 /// Or if the data read isnt utf8.
 pub async fn read_length_prefixed_string(reader: &mut (impl AsyncRead + Unpin)) -> Result<String> {
     let bytes = read_length_prefixed(reader).await?;
@@ -187,7 +187,7 @@ impl WireFormat for FileSystemEntryHeader {
 
 /// Read the given path into the given reader according to the filesystem format.
 ///
-/// The absolute path species the file location of the structure being written.
+/// The absolute path specifies the file location of the structure being written.
 /// the relative path specifies the specific sub item being written right now (in most cases this
 /// should be `.`)
 ///
