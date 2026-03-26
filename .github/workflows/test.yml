@@ -61,7 +61,7 @@ jobs:
       # --- Docker setup (platform-specific) ---
       - name: Setup Docker (macOS)
         if: matrix.platform == 'macos'
-        uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4
+        uses: douglascamata/setup-docker-macos-action@d5ccc6aae0ce23e7700154f5e63cc53e6433ac48
 
       - name: Setup WSL (Windows)
         if: matrix.platform == 'windows'
