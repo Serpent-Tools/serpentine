@@ -30,10 +30,16 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
+            runtime: docker
+          - os: ubuntu-latest
+            platform: linux
+            runtime: podman
           - os: macos-15-intel
             platform: macos
+            runtime: docker
           - os: windows-latest
             platform: windows
+            runtime: docker
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
@@ -58,7 +64,14 @@ jobs:
         if: matrix.platform == 'windows'
         run: choco install protoc -y
 
-      # --- Docker setup (platform-specific) ---
+      # --- Container runtime setup (platform-specific) ---
+      - name: Setup Podman (Linux/Podman)
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo systemctl stop docker docker.socket
+          podman system service --time=0 &
+          podman info
+
       - name: Setup Docker (macOS)
         if: matrix.platform == 'macos'
         uses: douglascamata/setup-docker-macos-action@d5ccc6aae0ce23e7700154f5e63cc53e6433ac48
@@ -100,8 +113,12 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Load Docker image (Linux/macOS)
-        if: matrix.platform != 'windows'
+        if: matrix.platform != 'windows' && matrix.runtime != 'podman'
         run: zstd -d ${{ runner.temp }}/containerd-dev.tar.zst --stdout | docker load
+
+      - name: Load Podman image (Linux/Podman)
+        if: matrix.runtime == 'podman'
+        run: zstd -d ${{ runner.temp }}/containerd-dev.tar.zst --stdout | podman load
 
       - name: Load Docker image in WSL (Windows)
         if: matrix.platform == 'windows'
@@ -114,14 +131,14 @@ jobs:
         run: echo "DOCKER_HOST=tcp://localhost:2375" >> $env:GITHUB_ENV
 
       # --- Run tests ---
-      - name: Run tests (Linux)
-        if: matrix.platform == 'linux'
+      - name: Run tests (Linux/Docker)
+        if: matrix.platform == 'linux' && matrix.runtime != 'podman'
         run: cargo nextest run --all-features --fail-fast
         env:
           RUST_LOG: serpentine=trace
 
-      - name: Run integration tests (macOS/Windows)
-        if: matrix.platform != 'linux'
+      - name: Run integration tests (macOS/Windows/Podman)
+        if: matrix.platform != 'linux' || matrix.runtime == 'podman'
         run: cargo nextest run -p serpentine --features _test_docker --profile integration_tests --fail-fast
         env:
           RUST_LOG: serpentine=trace
