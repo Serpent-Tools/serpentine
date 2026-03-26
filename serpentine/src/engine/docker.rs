@@ -27,59 +27,89 @@ const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
 /// Create a new containerd client, by either connecting to an existing container or spinning up a
 /// new one.
 pub async fn connect() -> Result<sidecar_client::Client, RuntimeError> {
-    let docker = connect_docker()
-        .await
-        .map_err(|err| RuntimeError::DockerNotFound {
-            inner: Box::new(err),
-        })?;
-
+    let docker = connect_docker().await?;
     let containerd_addr = spin_up_containerd(docker).await?;
     Ok(sidecar_client::Client::new(containerd_addr))
 }
 
-/// Attempt to connect to docker
+/// A named function that attempts to connect to a Docker-compatible daemon.
+type ConnectionStrategy = (&'static str, fn() -> Option<bollard::Docker>);
+
+/// Connection strategies, tried in order.
+const STRATEGIES: &[ConnectionStrategy] = &[
+    ("defaults", try_defaults),
+    ("docker CLI context", try_docker_cli),
+    ("podman", try_podman),
+];
+
+/// Attempt to connect to docker or podman, trying each strategy in order.
 async fn connect_docker() -> Result<bollard::Docker, RuntimeError> {
     log::info!("Connecting to Docker daemon");
     log::debug!("DOCKER_HOST={:?}", std::env::var("DOCKER_HOST"));
-    let client = match bollard::Docker::connect_with_defaults() {
-        Ok(client) => client,
-        Err(bollard::errors::Error::SocketNotFoundError(err)) => {
-            // Fallback to podman
-            log::info!("Docker socket {err} not found, trying podman");
-            return try_podman_connection();
-        }
-        Err(err) => return Err(err.into()),
-    };
 
-    match client.ping().await {
-        Ok(_) => {
-            log::info!("Docker connection successful");
-            Ok(client)
-        }
-        Err(err) => {
-            // Connection worked but ping failed (permission denied, daemon down, etc.)
-            log::warn!("Docker ping failed: {err}, trying podman");
-            try_podman_connection()
+    for (name, strategy) in STRATEGIES {
+        let Some(client) = strategy() else {
+            log::info!("{name}: not available");
+            continue;
+        };
+
+        match client.ping().await {
+            Ok(_) => {
+                log::info!("{name}: connected");
+                return Ok(client);
+            }
+            Err(err) => {
+                log::warn!("{name}: ping failed: {err}");
+            }
         }
     }
+
+    Err(RuntimeError::DockerNotFound {
+        inner: Box::new(miette::MietteDiagnostic::new(
+            "no working Docker or Podman connection found",
+        )),
+    })
 }
 
-/// Utility function to find podman socket and connect to it
-fn try_podman_connection() -> Result<bollard::Docker, RuntimeError> {
-    let podman_socket_output = Command::new("podman")
+/// Try connecting via bollard's defaults (respects `DOCKER_HOST` env var).
+fn try_defaults() -> Option<bollard::Docker> {
+    bollard::Docker::connect_with_defaults().ok()
+}
+
+/// Try discovering the Docker socket via the Docker CLI's active context.
+fn try_docker_cli() -> Option<bollard::Docker> {
+    let output = Command::new("docker")
+        .args([
+            "context",
+            "inspect",
+            "--format",
+            "{{.Endpoints.docker.Host}}",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let docker_host = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    if docker_host.is_empty() {
+        return None;
+    }
+
+    log::debug!("Docker CLI reports host: {docker_host}");
+    bollard::Docker::connect_with_host(&docker_host).ok()
+}
+
+/// Try discovering the Podman socket via the Podman CLI.
+fn try_podman() -> Option<bollard::Docker> {
+    let output = Command::new("podman")
         .args(["info", "--format", "{{.Host.RemoteSocket.Path}}"])
-        .output()?;
+        .output()
+        .ok()?;
 
-    let podman_socket_path = String::from_utf8(podman_socket_output.stdout)
-        .map_err(|err| {
-            RuntimeError::internal(format!("Failed to parse podman socket path: {err}"))
-        })?
-        .trim()
-        .to_owned();
-
-    let client =
-        bollard::Docker::connect_with_socket(&podman_socket_path, 120, API_DEFAULT_VERSION)?;
-    Ok(client)
+    let socket_path = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    bollard::Docker::connect_with_socket(&socket_path, 120, API_DEFAULT_VERSION).ok()
 }
 
 /// Spin up a containerd instance using the given docker client.
