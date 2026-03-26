@@ -1101,13 +1101,20 @@ impl Client {
         let network_topology = self
             .get_network(container_topology.map_data_ref(|_| ()))
             .await?;
-        let complete_topology = container_topology.zip(network_topology);
+        let complete_topology = container_topology.zip(network_topology.clone());
 
         let running_topology = self.spinup_topology(complete_topology, lease).await?;
         let handle = running_topology.get_data();
-        self.wait_for_exit(handle.id.clone(), String::new()).await?;
 
+        self.wait_for_exit(handle.id.clone(), String::new()).await?;
         let (container, stdout) = self.spindown_topology(running_topology).await?;
+        self.free_networks
+            .lock()
+            .await
+            .entry(network_topology.map_data_ref(|_| ()))
+            .or_default()
+            .push(network_topology);
+
         let container = match container {
             ContainerLike::Container(container) => container,
             ContainerLike::Service(_) => {
