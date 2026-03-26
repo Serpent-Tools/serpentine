@@ -858,8 +858,15 @@ impl Client {
                 .await
                 .is_ok();
 
+            let is_final_layer = index == layer_count.saturating_sub(1);
+
             if layer_exists {
                 log::debug!("Snapshot {snapshot_name} already exists.");
+
+                if is_final_layer {
+                    self.label_as_image(&snapshot_name, image_name, lease)
+                        .await?;
+                }
             } else {
                 self.pull_layer(image, &layer, lease).await?;
 
@@ -897,13 +904,13 @@ impl Client {
                     .await?;
 
                 log::debug!("Committing {key} to {snapshot_name}");
-                let labels = if index == layer_count.saturating_sub(1) {
+                let labels = if is_final_layer {
                     HashMap::from([
                         ("containerd.io/gc.root".to_owned(), "1".to_owned()),
                         ("serpentine/image".to_owned(), image_name.to_owned()),
                     ])
                 } else {
-                    HashMap::from([("serpentine/image".to_owned(), image_name.to_owned())])
+                    HashMap::new()
                 };
                 self.containerd
                     .snapshot()
@@ -923,6 +930,38 @@ impl Client {
         }
 
         Ok(snapshot_name)
+    }
+
+    /// Update the labels on a snapshot to mark it as the final layer of an image.
+    async fn label_as_image(
+        &self,
+        snapshot_name: &str,
+        image_name: &str,
+        lease: &str,
+    ) -> Result<(), RuntimeError> {
+        log::debug!("Updating final layer {snapshot_name} labels for {image_name}");
+        let labels = HashMap::from([
+            ("containerd.io/gc.root".to_owned(), "1".to_owned()),
+            ("serpentine/image".to_owned(), image_name.to_owned()),
+        ]);
+        self.containerd
+            .snapshot()
+            .update(
+                containerd_services::snapshots::UpdateSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.into(),
+                    update_mask: Some(prost_types::FieldMask {
+                        paths: vec!["labels".to_owned()],
+                    }),
+                    info: Some(containerd_services::snapshots::Info {
+                        labels,
+                        name: snapshot_name.to_owned(),
+                        ..Default::default()
+                    }),
+                }
+                .with_lease(lease),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Pull the given layer into containerd.
