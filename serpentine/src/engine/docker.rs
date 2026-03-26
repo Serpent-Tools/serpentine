@@ -32,7 +32,7 @@ pub async fn connect() -> Result<sidecar_client::Client, RuntimeError> {
     Ok(sidecar_client::Client::new(containerd_addr))
 }
 
-/// A named function that attempts to connect to a Docker-compatible daemon.
+/// A named strategy for connecting to a Docker-compatible daemon.
 type ConnectionStrategy = (&'static str, fn() -> Option<bollard::Docker>);
 
 /// Connection strategies, tried in order.
@@ -193,7 +193,7 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketA
         .as_ref()
         .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
         .parse()
-        .map_err(|_| RuntimeError::internal("Port wasnt a number"))?;
+        .map_err(|_| RuntimeError::internal("Port wasn't a number"))?;
 
     Ok(std::net::SocketAddr::new(
         std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),

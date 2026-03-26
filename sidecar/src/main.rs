@@ -404,7 +404,7 @@ thread_local! {
     static USED_SUBNETS: std::cell::RefCell<std::collections::HashSet<u32>> = std::cell::RefCell::default();
 }
 
-/// Pick a random non-internet subnet thats unlikely to be used already on the LAN/Host
+/// Pick a random non-internet subnet that's unlikely to be used already on the LAN/Host
 ///
 /// Returns the subnet definition, as well as two usable ips in it.
 fn pick_random_subnet() -> Result<(String, Ipv4Addr, Ipv4Addr), Box<dyn Error>> {
@@ -416,18 +416,19 @@ fn pick_random_subnet() -> Result<(String, Ipv4Addr, Ipv4Addr), Box<dyn Error>> 
         assert!(SUBNET_SIZE <= 30, "Subnet is too small to be usable");
     }
 
-    let random_ip: u32 = rand::rngs::OsRng.try_next_u32()?;
-
     let prefix_mask = subnet_mask(SUBNET_PREFIX_LENGTH);
     let target_mask = subnet_mask(SUBNET_SIZE);
     let random_mask = target_mask ^ prefix_mask;
 
-    let subnet = SUBNET_PREFIX.to_bits() | (random_ip & random_mask);
-    let was_new = USED_SUBNETS.with_borrow_mut(|used_subnets| used_subnets.insert(subnet));
-    if !was_new {
-        log::warn!("Subnet collision detected for {subnet}, retrying");
-        return pick_random_subnet();
-    }
+    let subnet = loop {
+        let random_ip: u32 = rand::rngs::OsRng.try_next_u32()?;
+        let candidate = SUBNET_PREFIX.to_bits() | (random_ip & random_mask);
+        let was_new = USED_SUBNETS.with_borrow_mut(|used_subnets| used_subnets.insert(candidate));
+        if was_new {
+            break candidate;
+        }
+        log::warn!("Subnet collision detected for {candidate}, retrying");
+    };
 
     let ip1 = subnet | 0b01;
     let ip2 = subnet | 0b10;
