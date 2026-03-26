@@ -161,13 +161,19 @@ async fn setup_fifo(mut remote_socket: BufWriter<net::TcpStream>) -> Result<(), 
 
     nix::unistd::mkfifo(&file, Mode::S_IRWXU | Mode::S_IRWXO)?;
 
+    // Start opening the FIFO for reading in a blocking thread BEFORE sending the path.
+    // File::open on a FIFO blocks until a writer appears, but starting it early ensures the
+    // reader is registered by the time containerd-shim tries to open the write end.
+    let file_for_open = file.clone();
+    let open_handle = tokio::task::spawn_blocking(move || std::fs::File::open(file_for_open));
+
     let file_bytes = file.to_string_lossy();
     let file_bytes = file_bytes.as_bytes();
 
     serpentine_internal::write_length_prefixed(&mut remote_socket, file_bytes).await?;
     remote_socket.flush().await?;
 
-    let mut file_reader = tokio::fs::File::open(&file).await?;
+    let mut file_reader = tokio::fs::File::from_std(open_handle.await??);
     tokio::io::copy(&mut file_reader, &mut remote_socket).await?;
     remote_socket.flush().await?;
 
