@@ -2,6 +2,7 @@
 > Serpentine is a work in progress and not suitable for production yet.
 
 # Serpentine 
+[![CI](https://github.com/Serpent-Tools/serpentine/actions/workflows/test.yml/badge.svg)](https://github.com/Serpent-Tools/serpentine/actions/workflows/test.yml)
 
 <img src="https://raw.githubusercontent.com/Serpent-Tools/branding/refs/heads/main/serpentine.svg" alt="Logo" width="300" height="300">
 
