@@ -126,7 +126,7 @@ jobs:
         env:
           RUST_LOG: serpentine=trace
 
-  pipeline:
+  lint:
     needs: [test]
     runs-on: ubuntu-latest
     steps:
