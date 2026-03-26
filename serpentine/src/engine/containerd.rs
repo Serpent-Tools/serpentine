@@ -1088,7 +1088,7 @@ impl Client {
     }
 
     /// Execute a command on the given mutable snapshot, returning its stdout and stderr
-    /// The stdout will be wrapped in `Ok` is all the data was utf-8, `Err` if not.
+    /// The stdout will be wrapped in `Ok` if all the data was UTF-8, `Err` if not.
     async fn exec_internal(
         &self,
         state: ContainerState,
@@ -1098,9 +1098,8 @@ impl Client {
         let exec_lock = self.exec_lock.acquire().await;
         log::debug!("Preparing to execute {cmd:?} in {state:?}");
         let container_topology = state.into_topology(cmd.into());
-        let network_topology = self
-            .get_network(container_topology.map_data_ref(|_| ()))
-            .await?;
+        let abstract_topology = container_topology.map_data_ref(|_| ());
+        let network_topology = self.get_network(abstract_topology.clone()).await?;
         let complete_topology = container_topology.zip(network_topology.clone());
 
         let running_topology = self.spinup_topology(complete_topology, lease).await?;
@@ -1111,7 +1110,7 @@ impl Client {
         self.free_networks
             .lock()
             .await
-            .entry(network_topology.map_data_ref(|_| ()))
+            .entry(abstract_topology)
             .or_default()
             .push(network_topology);
 
@@ -2224,7 +2223,6 @@ mod tests {
     use rstest::{fixture, rstest};
 
     use super::*;
-    use crate::engine::data_model::Data;
 
     const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:latest";
 
@@ -2360,7 +2358,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_output_has_writale_filesystem(#[future] containerd_client: Client) {
+    async fn exec_output_has_writable_filesystem(#[future] containerd_client: Client) {
         let containerd_client = containerd_client.await;
         let image = containerd_client
             .pull_image(TEST_IMAGE)
@@ -2706,130 +2704,5 @@ mod tests {
             .exec(&image, "curl https://google.com".to_owned())
             .await
             .expect("Exec failed");
-    }
-
-    #[rstest]
-    #[tokio::test]
-    #[test_log::test]
-    #[ignore = "too flaky - depends on containerd gc"]
-    async fn external_cache(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
-
-        let image1 = containerd_client
-            .exec(&image, "mkdir foo".to_owned())
-            .await
-            .expect("Exec failed");
-        let image2 = containerd_client
-            .exec(&image1, "mkdir bar".to_owned())
-            .await
-            .expect("Exec failed");
-
-        let mut export = std::io::Cursor::new(Vec::new());
-        containerd_client
-            .export([&Data::Container(image2.clone())], &mut export)
-            .await
-            .expect("Failed to export");
-
-        containerd_client
-            .cleanup(Data::Container(image2.clone()))
-            .await;
-        containerd_client
-            .cleanup(Data::Container(image1.clone()))
-            .await;
-
-        // force_gc_cleanup(&containerd_client).await;
-        // wait_for_snapshot_gone(&containerd_client, &image2).await;
-        // wait_for_snapshot_gone(&containerd_client, &image1).await;
-
-        export.set_position(0);
-        containerd_client
-            .import(&mut export)
-            .await
-            .expect("Failed to import");
-
-        containerd_client
-            .exec(&image2, "ls foo && ls bar".to_owned())
-            .await
-            .expect("Exec failed");
-    }
-
-    #[rstest]
-    #[tokio::test]
-    #[test_log::test]
-    #[ignore = "too flaky - depends on containerd gc"]
-    async fn external_cache_cleanup_in_use_parent_doesnt_actually_delete(
-        #[future] containerd_client: Client,
-    ) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
-
-        let image1 = containerd_client
-            .exec(&image, "mkdir foo".to_owned())
-            .await
-            .expect("Exec failed");
-        let image2 = containerd_client
-            .exec(&image1, "mkdir bar".to_owned())
-            .await
-            .expect("Exec failed");
-
-        containerd_client
-            .cleanup(Data::Container(image1.clone()))
-            .await;
-        // force_gc_cleanup(&containerd_client).await;
-
-        containerd_client
-            .exec(&image2, "ls foo && ls bar".to_owned())
-            .await
-            .expect("Exec failed");
-    }
-
-    #[rstest]
-    #[tokio::test]
-    #[test_log::test]
-    #[ignore = "too flaky - depends on containerd gc"]
-    async fn external_cache_cleanup_in_wrong_order_still_works(
-        #[future] containerd_client: Client,
-    ) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
-
-        let image1 = containerd_client
-            .exec(&image, "mkdir foo".to_owned())
-            .await
-            .expect("Exec failed");
-        let image2 = containerd_client
-            .exec(&image1, "mkdir bar".to_owned())
-            .await
-            .expect("Exec failed");
-
-        containerd_client
-            .cleanup(Data::Container(image1.clone()))
-            .await;
-        containerd_client
-            .cleanup(Data::Container(image2.clone()))
-            .await;
-
-        // force_gc_cleanup(&containerd_client).await;
-        // wait_for_snapshot_gone(&containerd_client, &image2).await;
-        // wait_for_snapshot_gone(&containerd_client, &image1).await;
-
-        containerd_client
-            .exec(&image2, "echo hello".to_owned())
-            .await
-            .expect_err("This should fail as image2 should be gone");
-        containerd_client
-            .exec(&image1, "echo hello".to_owned())
-            .await
-            .expect_err("This should fail as image1 should be gone");
     }
 }
