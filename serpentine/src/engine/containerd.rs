@@ -27,11 +27,17 @@ use crate::tui::{TuiMessage, TuiSender};
 const SNAPSHOTTER: &str = "overlayfs";
 
 /// Configuration for the container
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerConfig {
     /// Environment
-    env: HashMap<Rc<str>, Rc<str>>,
+    #[cfg_attr(
+        test,
+        proptest(
+            strategy = "im_rc::proptest::hash_map(proptest::arbitrary::any::<Rc<str>>(), proptest::arbitrary::any::<Rc<str>>(), 0..10)"
+        )
+    )]
+    env: im_rc::HashMap<Rc<str>, Rc<str>>,
     /// The working directory
     working_dir: Rc<str>,
     /// The user to spawn the process as.
@@ -40,8 +46,8 @@ pub struct ContainerConfig {
     /// > `user`, `uid`, `user:group`, `uid:gid`, `uid:group`, `user:gid`
     user: Option<Rc<str>>,
     /// The services to attach to this container.
-    #[cfg_attr(test, proptest(value = "HashMap::new()"))]
-    services: HashMap<Rc<str>, ServiceState>,
+    #[cfg_attr(test, proptest(value = "im_rc::HashMap::new()"))]
+    services: im_rc::HashMap<Rc<str>, ServiceState>,
 }
 
 impl ContainerConfig {
@@ -74,16 +80,6 @@ impl ContainerConfig {
     }
 }
 
-impl Hash for ContainerConfig {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        for (key, value) in &self.env {
-            key.hash(state);
-            value.hash(state);
-        }
-        self.working_dir.hash(state);
-    }
-}
-
 impl From<oci_client::config::Config> for ContainerConfig {
     fn from(config: oci_client::config::Config) -> Self {
         let env = config
@@ -100,7 +96,7 @@ impl From<oci_client::config::Config> for ContainerConfig {
             env,
             working_dir: config.working_dir.unwrap_or("/".to_owned()).into(),
             user: config.user.map(Rc::from),
-            services: HashMap::new(),
+            services: im_rc::HashMap::new(),
         }
     }
 }
@@ -130,7 +126,7 @@ impl CacheData for ContainerConfig {
             .await?;
         for (hostname, service) in &self.services {
             hostname.write(writer).await?;
-            service.write(writer).await?;
+            Box::pin(service.write(writer)).await?;
         }
 
         Ok(())
@@ -139,7 +135,7 @@ impl CacheData for ContainerConfig {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
-        let mut env = HashMap::new();
+        let mut env = im_rc::HashMap::new();
         let items = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
         for _ in 0..items {
             let key = Rc::<str>::read(reader).await?;
@@ -155,11 +151,11 @@ impl CacheData for ContainerConfig {
             None
         };
 
-        let mut services = HashMap::new();
+        let mut services = im_rc::HashMap::new();
         let service_count = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
         for _ in 0..service_count {
             let hostname = Rc::<str>::read(reader).await?;
-            let service = ServiceState::read(reader).await?;
+            let service = Box::pin(ServiceState::read(reader)).await?;
             services.insert(hostname, service);
         }
 
@@ -205,7 +201,7 @@ impl CacheData for ContainerConfig {
 }
 
 /// Extra config values for services
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug, Hash)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ServiceConfig {
     /// The service entry point
@@ -278,12 +274,6 @@ impl Default for ServiceConfig {
     }
 }
 
-impl Hash for ServiceConfig {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.entrypoint.hash(state);
-    }
-}
-
 impl ServiceConfig {
     /// Set the healthcheck command and timeout for this service.
     pub fn set_healthcheck(&mut self, command: Rc<str>, timeout: Duration) {
@@ -298,7 +288,7 @@ pub struct ServiceState {
     /// The underlying container
     container: ContainerState,
     /// The service-specific config.
-    service_config: Rc<ServiceConfig>,
+    service_config: ServiceConfig,
 }
 
 impl CacheData for ServiceState {
@@ -306,7 +296,7 @@ impl CacheData for ServiceState {
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
         let container = ContainerState::read(reader).await?;
-        let service_config = Rc::<ServiceConfig>::read(reader).await?;
+        let service_config = ServiceConfig::read(reader).await?;
 
         Ok(Self {
             container,
@@ -341,11 +331,11 @@ impl ServiceState {
     ///
     /// This does not change the input state but instead returns a new one.
     pub fn update_service_config(&self, update: impl FnOnce(&mut ServiceConfig)) -> Self {
-        let mut service_config = (*self.service_config).clone();
+        let mut service_config = self.service_config.clone();
         update(&mut service_config);
         ServiceState {
             container: self.container.clone(),
-            service_config: Rc::new(service_config),
+            service_config,
         }
     }
 
@@ -354,8 +344,8 @@ impl ServiceState {
         let mut services = Vec::with_capacity(self.container.config.services.len());
 
         self.container = self.container.update_config(|config| {
-            for (service_hostname, service) in config.services.drain() {
-                services.push(service.into_topology(service_hostname));
+            for (service_hostname, service) in config.services.iter() {
+                services.push(service.clone().into_topology(Rc::clone(service_hostname)));
             }
         });
 
@@ -419,13 +409,13 @@ impl ContainerTopologyNode {
 }
 
 /// A reference to a specific state of a container.
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug, Hash)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerState {
     /// The snapshot to use for the container
     snapshot: Rc<str>,
     /// The container config
-    config: Rc<ContainerConfig>,
+    config: ContainerConfig,
 }
 
 impl ContainerState {
@@ -438,11 +428,11 @@ impl ContainerState {
     ///
     /// This does not change the input state but instead returns a new one.
     pub fn update_config(&self, update: impl FnOnce(&mut ContainerConfig)) -> Self {
-        let mut config = (*self.config).clone();
+        let mut config = self.config.clone();
         update(&mut config);
         ContainerState {
             snapshot: Rc::clone(&self.snapshot),
-            config: Rc::new(config),
+            config,
         }
     }
 
@@ -450,10 +440,10 @@ impl ContainerState {
     pub fn into_service(self, entrypoint: Rc<str>) -> ServiceState {
         ServiceState {
             container: self,
-            service_config: Rc::new(ServiceConfig {
+            service_config: ServiceConfig {
                 entrypoint,
                 ..ServiceConfig::default()
-            }),
+            },
         }
     }
 
@@ -462,8 +452,8 @@ impl ContainerState {
         let mut services = Vec::with_capacity(self.config.services.len());
 
         self = self.update_config(|config| {
-            for (service_hostname, service) in config.services.drain() {
-                services.push(service.into_topology(service_hostname));
+            for (service_hostname, service) in config.services.iter() {
+                services.push(service.clone().into_topology(Rc::clone(service_hostname)));
             }
         });
 
@@ -491,7 +481,7 @@ impl CacheData for ContainerState {
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
         let snapshot = Rc::<str>::read(reader).await?;
-        let config = Rc::<ContainerConfig>::read(reader).await?;
+        let config = ContainerConfig::read(reader).await?;
         Ok(Self { snapshot, config })
     }
 
@@ -522,11 +512,10 @@ impl ContainerLike {
     pub fn update_config(&self, update: impl FnOnce(&mut ContainerConfig)) -> Self {
         match self {
             Self::Container(container) => Self::Container(container.update_config(update)),
-            Self::Service(service) => {
-                let mut service = service.clone();
-                service.container = service.container.update_config(update);
-                Self::Service(service)
-            }
+            Self::Service(service) => Self::Service(ServiceState {
+                container: service.container.update_config(update),
+                service_config: service.service_config.clone(),
+            }),
         }
     }
 }
@@ -776,7 +765,7 @@ impl Client {
 
         Ok(ContainerState {
             snapshot: snapshot_name.into(),
-            config: Rc::new(config),
+            config,
         })
     }
 
@@ -796,9 +785,9 @@ impl Client {
         Ok(ServiceState {
             container: ContainerState {
                 snapshot: snapshot_name.into(),
-                config: Rc::new(config),
+                config,
             },
-            service_config: Rc::new(service_config),
+            service_config,
         })
     }
 
@@ -1742,7 +1731,7 @@ impl Client {
             }
         }
 
-        let mut services = HashMap::with_capacity(children.len());
+        let mut services = im_rc::HashMap::new();
         for child in children {
             let Some(hostname) = &child.get_data().node.hostname else {
                 return Err(RuntimeError::internal(
@@ -1842,7 +1831,7 @@ impl Client {
 
         Ok(ContainerState {
             snapshot: new_snapshot.into(),
-            config: Rc::clone(&state.config),
+            config: state.config.clone(),
         })
     }
 

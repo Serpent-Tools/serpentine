@@ -12,7 +12,7 @@ use crate::engine::{RuntimeContext, RuntimeError, containerd};
 use crate::snek::span::Spanned;
 
 /// Holds the various forms of data that the node engine uses
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum Data {
     /// A numeric whole number value
