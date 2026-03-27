@@ -58,13 +58,26 @@ pub trait FileSystemProvider {
     fn dyn_clone(&self) -> Box<dyn FileSystemProvider>;
 }
 
-/// New type wrapper around a `dyn FileSystemProvider` which implements stubs for `PartialEq` and
-/// `Hash`, as well as a implementation of `CacheData`
+/// New type wrapper around a `dyn FileSystemProvider` with identity-based `PartialEq` and `Hash`,
+/// as well as an implementation of `CacheData`
 pub struct FileSystem {
     /// The inner filesystem provider
     provider: Box<dyn FileSystemProvider>,
     /// The cached hash of the data.
     hash: Rc<OnceCell<blake3::Hash>>,
+}
+
+impl PartialEq for FileSystem {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.hash, &other.hash)
+    }
+}
+impl Eq for FileSystem {}
+
+impl std::hash::Hash for FileSystem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.hash).hash(state);
+    }
 }
 
 impl Deref for FileSystem {
@@ -99,26 +112,7 @@ impl std::fmt::Debug for FileSystem {
     }
 }
 
-impl PartialEq for FileSystem {
-    fn eq(&self, _other: &Self) -> bool {
-        log::warn!("Comparing filesystem instances does not fully comply with `Eq` spec");
-
-        false
-    }
-}
-impl Eq for FileSystem {}
-
-impl std::hash::Hash for FileSystem {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        log::warn!("Can not always hash FileSystem");
-
-        if let Some(hash) = self.hash.get() {
-            state.write(hash.as_bytes());
-        }
-    }
-}
-
-/// A in memory file system stream.
+/// An in-memory file system stream.
 ///
 /// Should be avoided when possible, used when a filesystem is restored from cache.
 #[derive(Clone)]

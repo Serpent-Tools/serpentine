@@ -28,7 +28,7 @@ use crate::engine::data_model::{Data, NodeKindId};
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-const CACHE_COMPATIBILITY_VERSION: u8 = 3;
+const CACHE_COMPATIBILITY_VERSION: u8 = 4;
 
 /// Wrapper around the raw blake3 hash output as its trait implementations (`Hash` and `Eq`) use
 /// constant time functions, which we do not require
@@ -402,7 +402,7 @@ impl<T: CacheData + Clone + 'static> CacheData for Rc<T> {
 }
 
 /// A key into the cache
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct CacheKey<'caller> {
     /// The kind of node
     pub node: NodeKindId,
