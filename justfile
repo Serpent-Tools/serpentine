@@ -29,3 +29,7 @@ size_benchmark: build_container
     docker images --filter reference=containerd
     docker history localhost/serpent-tools/containerd:dev
     ls ./target/release/serpentine --size --human-readable
+
+count_deps:
+    cargo tree --depth 999 --prefix none -p serpentine --edges normal | sort -u | wc -l
+    cargo tree --depth 999 --prefix none -p sidecar --edges normal | sort -u | wc -l
