@@ -47,8 +47,11 @@ heapless = { version = "0.9.2", default-features = false }
 hyper-util = { version = "0.1.20", default-features = false }
 nohash = { version = "0.2.0", default-features = false, features = ["std"] }
 
+# bench
+divan = { version = "0.1", default-features = false, optional = true }
+tempfile = { version = "3.27.0", default-features = false, optional = true }
+
 [dev-dependencies]
-tempfile = { version = "3.27.0", default-features = false }
 insta = { version = "1.46.3", default-features = false, features = ["filters"] }
 proptest.workspace = true
 proptest-derive.workspace = true
@@ -60,6 +63,7 @@ im-rc = { version = "15.1.0", features = ["proptest"] }
 [features]
 default = []
 _test_docker = []
+_bench = ["dep:divan", "dep:tempfile"]
 
 [lints]
 workspace = true

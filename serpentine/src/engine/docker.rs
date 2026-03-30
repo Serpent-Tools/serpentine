@@ -15,11 +15,12 @@ const CONTAINER_NAME: &str = "serpent-tools.containerd";
 const CONTAINER_VOLUME: &str = "serpent-tools.containerd-data";
 
 /// The containerd tag version to use
-const CONTAINERD_IMAGE_TAG: &str = if cfg!(debug_assertions) {
-    "dev"
-} else {
-    env!("CARGO_PKG_VERSION")
-};
+const CONTAINERD_IMAGE_TAG: &str =
+    if cfg!(debug_assertions) || cfg!(test) || cfg!(feature = "_bench") {
+        "dev"
+    } else {
+        env!("CARGO_PKG_VERSION")
+    };
 
 /// The container image to use for containerd
 const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
@@ -143,6 +144,7 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketA
                     host_config: Some(bollard::plugin::HostConfig {
                         auto_remove: Some(true),
                         privileged: Some(true),
+                        pids_limit: Some(-1),
                         binds: Some(vec![format!("{volume}:/var/lib/containerd")]),
                         log_config: Some(bollard::plugin::HostConfigLogConfig {
                             typ: Some("json-file".to_owned()),

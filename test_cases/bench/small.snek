@@ -1,0 +1,28 @@
+// Benchmark: ~20 cheap steps in a single file.
+// Stresses scheduler, cache, and container reuse
+// with minimal work in the actual commands.
+
+base = Image("quay.io/toolbx-images/alpine-toolbox:latest");
+
+// Parallel chains of cheap commands
+a1 = base > Exec("true");
+a2 = base > Exec("true");
+a3 = base > Exec("true");
+a4 = base > Exec("true");
+
+// Chain of cheap commands (sequential)
+b1 = base > Exec("echo 1") > Exec("echo 2") > Exec("echo 3") > Exec("echo 4");
+
+// File copy path
+c1 = base > Exec("dd if=/dev/zero of=/bench.bin bs=1024 count=64 2>/dev/null") > Export("bench.bin");
+c2 = base > With(c1, "imported.bin") > Exec("ls -la imported.bin");
+
+// Environment manipulation chain
+d1 = base
+    > Env("FOO", "bar")
+    > Env("BAZ", "qux")
+    > WorkingDir("/tmp")
+    > Exec("true");
+
+// Phantom dependencies (fan-in)
+export DEFAULT = !(a1, a2, a3, a4, b1, c2, d1) Noop(0);

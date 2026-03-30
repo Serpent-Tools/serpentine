@@ -1,0 +1,15 @@
+// Helper library for large benchmark.
+
+export def Touch(container) {
+    return container > Exec("touch /tmp/bench_file");
+}
+
+export def WriteFile(container) {
+    return container > Exec("dd if=/dev/zero of=/tmp/data.bin bs=1024 count=32 2>/dev/null");
+}
+
+export def CopyChain(container) {
+    return container
+        > Exec("cp /tmp/data.bin /tmp/data2.bin")
+        > Exec("cp /tmp/data2.bin /tmp/data3.bin");
+}

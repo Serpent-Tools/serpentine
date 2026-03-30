@@ -1,4 +1,8 @@
 #![doc = include_str!(concat!("../../", std::env!("CARGO_PKG_README")))]
+#![cfg_attr(
+    feature = "_bench",
+    expect(unreachable_code, reason = "bench feature replaces main body")
+)]
 
 use std::borrow::Cow;
 use std::io::IsTerminal;
@@ -197,6 +201,12 @@ fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
 }
 
 fn main() -> miette::Result<()> {
+    #[cfg(feature = "_bench")]
+    {
+        divan::main();
+        return Ok(());
+    }
+
     let command = Cli::parse();
 
     match command.command {

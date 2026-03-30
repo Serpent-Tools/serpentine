@@ -294,6 +294,67 @@ pub fn run(
     Ok(())
 }
 
+/// Benchmarks for the engine pipeline.
+#[cfg(all(feature = "_bench", feature = "_test_docker"))]
+#[expect(clippy::unwrap_used, reason = "benchmarks")]
+mod benchmarks {
+    use std::path::PathBuf;
+
+    /// Compile and run a full pipeline from a snek file.
+    fn run_pipeline(
+        snek_path: &std::path::Path,
+        cache_path: &std::path::Path,
+        standalone_cache: bool,
+    ) {
+        let graph = crate::snek::compile_graph(snek_path, "DEFAULT").unwrap();
+        let cli = crate::Run {
+            pipeline: snek_path.to_path_buf(),
+            ci: true,
+            cache: Some(cache_path.to_path_buf()),
+            standalone_cache,
+            clean_old: false,
+            entry_point: "DEFAULT".into(),
+            jobs: 2,
+        };
+        super::run(graph, crate::tui::TuiSender(None), &cli).unwrap();
+    }
+
+    /// Benchmark a cold pipeline run (no cache).
+    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
+    fn live_cold(bencher: divan::Bencher, snek: &str) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../test_cases")
+            .join(snek);
+        bencher
+            .with_inputs(|| tempfile::NamedTempFile::new().unwrap())
+            .bench_values(|cache| run_pipeline(&path, cache.path(), false));
+    }
+
+    /// Benchmark a warm pipeline run (with primed cache).
+    #[divan::bench(threads = false, sample_count = 20, args = ["bench/small.snek", "bench/large.snek"])]
+    fn live_warm(bencher: divan::Bencher, snek: &str) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../test_cases")
+            .join(snek);
+        let cache = tempfile::NamedTempFile::new().unwrap();
+        run_pipeline(&path, cache.path(), false);
+
+        bencher.bench(|| run_pipeline(&path, cache.path(), false));
+    }
+
+    /// Benchmark a warm pipeline run with standalone cache.
+    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
+    fn live_warm_standalone(bencher: divan::Bencher, snek: &str) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../test_cases")
+            .join(snek);
+        let cache = tempfile::NamedTempFile::new().unwrap();
+        run_pipeline(&path, cache.path(), true);
+
+        bencher.bench(|| run_pipeline(&path, cache.path(), true));
+    }
+}
+
 /// Clear out the given cache file
 pub fn clear_cache(file_path: &Path) -> Result<(), RuntimeError> {
     tokio::runtime::Builder::new_current_thread()
