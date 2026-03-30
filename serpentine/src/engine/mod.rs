@@ -298,14 +298,10 @@ pub fn run(
 #[cfg(all(feature = "_bench", feature = "_test_docker"))]
 #[expect(clippy::unwrap_used, reason = "benchmarks")]
 mod benchmarks {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Compile and run a full pipeline from a snek file.
-    fn run_pipeline(
-        snek_path: &std::path::Path,
-        cache_path: &std::path::Path,
-        standalone_cache: bool,
-    ) {
+    fn run_pipeline(snek_path: &Path, cache_path: &Path, standalone_cache: bool) {
         let graph = crate::snek::compile_graph(snek_path, "DEFAULT").unwrap();
         let cli = crate::Run {
             pipeline: snek_path.to_path_buf(),

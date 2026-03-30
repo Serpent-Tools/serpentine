@@ -711,9 +711,9 @@ impl Client {
         })
     }
 
-    /// Check if a state exists
+    /// Check if a state and all its services exist
     pub async fn healthcheck(&self, config: &ContainerState) -> bool {
-        let root_exists = self
+        if self
             .containerd
             .snapshot()
             .stat(containerd_services::snapshots::StatSnapshotRequest {
@@ -721,19 +721,18 @@ impl Client {
                 key: (*config.snapshot).to_owned(),
             })
             .await
-            .is_ok();
-
-        if root_exists {
-            for service in config.config.services.values() {
-                if !Box::pin(self.healthcheck(service)).await {
-                    return false;
-                }
-            }
-
-            true
-        } else {
-            false
+            .is_err()
+        {
+            return false;
         }
+
+        for service in config.config.services.values() {
+            if !Box::pin(self.healthcheck(service)).await {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Create a new lease
