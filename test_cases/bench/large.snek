@@ -1,0 +1,70 @@
+// Benchmark: ~50+ steps across multiple files.
+// Stresses resolver imports, function inlining, node deduplication,
+// cache at scale, and scheduler with deep dependency graphs.
+
+import "./lib_helpers.snek" as helpers;
+
+base = Image("quay.io/toolbx-images/alpine-toolbox:latest");
+
+// --- Wave 1: parallel cheap ops ---
+w1a = base > Exec("true");
+w1b = base > Exec("true");
+w1c = base > Exec("true");
+w1d = base > Exec("true");
+w1e = base > Exec("true");
+w1f = base > Exec("true");
+w1g = base > Exec("true");
+w1h = base > Exec("true");
+
+// --- Wave 2: uses imported functions (tests function inlining + dedup) ---
+w2a = base > helpers::WriteFile() > helpers::CopyChain();
+w2b = base > helpers::WriteFile() > helpers::CopyChain();
+w2c = base > helpers::Touch();
+w2d = base > helpers::Touch();
+
+// --- Wave 3: file export/import chains ---
+exported = base > Exec("echo benchmark > /out.txt") > Export("out.txt");
+w3a = base > With(exported, "in.txt") > Exec("cat in.txt");
+w3b = base > With(exported, "in2.txt") > Exec("cat in2.txt");
+w3c = base > With(exported, "in3.txt") > Exec("cat in3.txt");
+
+// --- Wave 4: environment + workdir manipulation ---
+def ConfiguredContainer(container) {
+    return container
+        > Env("BENCH", "true")
+        > Env("ITERATION", "1")
+        > WorkingDir("/tmp");
+}
+
+w4a = base > ConfiguredContainer() > Exec("true");
+w4b = base > ConfiguredContainer() > Exec("true");
+w4c = base > ConfiguredContainer() > Exec("true");
+w4d = base > ConfiguredContainer() > Exec("true");
+
+// --- Wave 5: deeper chains (sequential depth) ---
+w5 = base
+    > Exec("echo step1")
+    > Exec("echo step2")
+    > Exec("echo step3")
+    > Exec("echo step4")
+    > Exec("echo step5")
+    > Exec("echo step6")
+    > Exec("echo step7")
+    > Exec("echo step8");
+
+// --- Wave 6: second image to test multi-image scheduling ---
+base2 = Image("quay.io/toolbx-images/alpine-toolbox:latest") > Env("ALT", "true");
+w6a = base2 > Exec("true");
+w6b = base2 > Exec("true");
+w6c = base2 > Exec("true");
+w6d = base2 > Exec("true");
+
+// --- Wave 7: fan-in with phantom deps from multiple waves ---
+gate1 = !(w1a, w1b, w1c, w1d, w1e, w1f, w1g, w1h) Noop(0);
+gate2 = !(w2a, w2b, w2c, w2d) Noop(0);
+gate3 = !(w3a, w3b, w3c) Noop(0);
+gate4 = !(w4a, w4b, w4c, w4d) Noop(0);
+gate5 = !(w6a, w6b, w6c, w6d) Noop(0);
+
+// Final fan-in
+export DEFAULT = !(w5, gate1, gate2, gate3, gate4, gate5) Noop(0);

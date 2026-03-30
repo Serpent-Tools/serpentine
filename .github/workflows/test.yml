@@ -133,7 +133,7 @@ jobs:
       # --- Run tests ---
       - name: Run tests (Linux/Docker)
         if: matrix.platform == 'linux' && matrix.runtime != 'podman'
-        run: cargo nextest run --all-features --fail-fast
+        run: cargo nextest run --features _test_docker --fail-fast
         env:
           RUST_LOG: serpentine=trace
 

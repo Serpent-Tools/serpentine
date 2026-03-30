@@ -1,5 +1,4 @@
 //! Implementation of the snek language.
-//!
 //! Snek is pretty simplistic.
 //! You define nodes, and their connections.
 //!
@@ -215,6 +214,20 @@ pub fn compile_graph(
     let resolved = resolver::resolve(&arena, file, entry_point)?;
     let compiled = compiler::compile(resolved)?;
     Ok(compiled)
+}
+
+/// Benchmarks for the snek compiler.
+#[cfg(feature = "_bench")]
+mod benchmarks {
+    /// Benchmark for the snek compiler.
+    #[divan::bench(args = [
+        "../test_cases/bench/small.snek",
+        "../test_cases/bench/large.snek",
+    ])]
+    fn compile(path: &str) {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
+        let _ = super::compile_graph(&path, "DEFAULT");
+    }
 }
 
 #[cfg(test)]
