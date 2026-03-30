@@ -6,6 +6,9 @@ run entry_point="DEFAULT": build_container
 test filter="": build_container
     RUST_LOG="serpentine=trace" cargo nextest run --no-fail-fast --jobs num-cpus --features _test_docker {{filter}} 
 
+bench: build_container
+    cargo run --release -p serpentine --features _test_docker,_bench -- --bench
+
 build_container:
     docker container rm -f serpent-tools.containerd
     docker build -t serpent-tools/containerd:dev . --pull=false
