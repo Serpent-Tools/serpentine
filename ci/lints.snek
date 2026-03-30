@@ -1,17 +1,11 @@
 import "./lib.snek" as lib;
 
-def EnsureBuilds(package) {
-    return lib::rust
-        > lib::Cooked(Join("--check --package ", package))
-        > Exec(Join("cargo check --locked --package ", package));
-}
 
-// These tests ensure the crates build in isolation.
-// i.e `serpentine_internals` doesnt magically work because of features enabled by `serpentine` and `sidecar`.
-sidecar_builds = EnsureBuilds("sidecar");
-serpentine_builds = EnsureBuilds("serpentine");
-internals_builds = EnsureBuilds("serpentine_internal");
-crates_build_in_isolation = !(sidecar_builds, serpentine_builds, internals_builds) Noop(0);
+export clippy_hack = lib::rust
+    > Exec("rustup component add clippy")
+    > lib::Cooked("--clippy")
+    > lib::Binstall("cargo-hack", "cargo-hack")
+    > Exec("cargo hack --locked --feature-powerset --all clippy -- -Dwarnings");
 
 clippy = lib::rust 
     > Exec("rustup component add clippy")
@@ -40,7 +34,7 @@ deny = lib::rust
     > Exec("cargo deny check all");
 
 export light_lints = !(clippy, fmt, spelling) Noop(0);
-export full_lints = !(clippy, fmt, spelling, unused, deny, crates_build_in_isolation) Noop(0);
+export full_lints = !(clippy_hack, fmt, spelling, unused, deny) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
