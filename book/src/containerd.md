@@ -26,7 +26,7 @@ Essentially, a specific `ContainerState` represents a specific layer in a docker
 For example setting a environment variable does not require creating a new snapshot. 
 
 ## Pulling images
-Pulling a image works similar to docker, serpentine will contact a OCI compatible hub and pull the image manifest, then it will in parallel query containerd for if it contains the needed layers and if not stream them directly from the hub to the containerd (i.e serpentine never holds the entire image in memory itself). The `pull_image` function returns a `ContainerState` representing the image, to keep the abstractions consistent serpentine doesnt actually register a image with containerd, instead serpentine converts the image metadata to its generic `ContainerState` struct instead.
+Pulling a image works similar to docker, serpentine will contact a OCI compatible hub and pull the image manifest, then it will in order query containerd for if it contains the needed layers and if not stream them directly from the hub to the containerd (i.e serpentine never holds the entire image in memory itself). The `pull_image` function returns a `ContainerState` representing the image, to keep the abstractions consistent serpentine doesnt actually register a image with containerd, instead serpentine converts the image metadata to its generic `ContainerState` struct instead.
 
 ```mermaid
 sequenceDiagram
@@ -37,18 +37,13 @@ sequenceDiagram
     serpentine ->> docker_hub : get manifest
     docker_hub ->> serpentine : Image manifest
 
-    par each layer
+    loop each layer
         opt if missing
             serpentine ->> docker_hub : download layer
             docker_hub ->> serpentine : Layer data (Streaming)
             serpentine ->> containerd : Layer data (Streaming)
 
             serpentine ->> containerd : Commit layer
-        end
-    end
-
-    loop each layer
-        opt if missing 
             serpentine ->> containerd : Prepare snapshot
             serpentine ->> containerd : Apply layer
             serpentine ->> containerd : Commit snapshot
@@ -148,5 +143,35 @@ sequenceDiagram
     containerd ->> process : start process in namespace
     loop until done
         process <<->> lan : network traffic over bridge plugin
+    end
+```
+
+
+## Services
+
+Services is essentially just spinning up multiple containers in a secific order, with some healthchecks before hand. essentially:
+
+```mermaid
+sequenceDiagram
+    participant serpentine
+    participant containerd
+
+    note over serpentine : Setup networking for all containers.
+    loop for each container
+        note over serpentine,containerd : Spin up container (see above)
+        serpentine ->> containerd : CreateTask(cmd=curl ...)
+
+        loop until success
+            serpentine ->> containerd : get exit code
+            containerd ->> serpentine: exit code
+        end
+    end
+
+    note over serpentine : normal container waiting
+
+    loop for each container
+        serpentine ->> containerd : stop task
+        serpentine ->> containerd : commit snapshot
+        note over serpentine,containerd : ...
     end
 ```
