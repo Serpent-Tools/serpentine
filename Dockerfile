@@ -4,21 +4,32 @@ RUN apk add tar curl
 RUN curl -fsSL https://github.com/krallin/tini/releases/latest/download/tini-static -o /tini && \
     chmod +x /tini
 
-ARG CNI_VERSION=v1.9.0
-RUN curl -fsSL https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-amd64-${CNI_VERSION}.tgz -o /cni.tgz && \
-    mkdir -p /cni_all && \
-    tar -xzf /cni.tgz -C /cni_all && \
-    mkdir -p /cni && \
-    mv /cni_all/loopback /cni_all/bridge /cni_all/host-local  /cni_all/static /cni
+FROM golang:1.26-bookworm AS cni
 
-FROM golang:1.24-bookworm AS runc
+ARG CNI_VERSION=v1.9.1
+
+RUN git clone --depth 1 --branch ${CNI_VERSION} \
+    https://github.com/containernetworking/plugins.git /src/cni-plugins
+WORKDIR /src/cni-plugins
+
+ENV CGO_ENABLED=0
+ENV GOFLAGS="-mod=vendor"
+ENV LDFLAGS="-w -s -extldflags -static -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=${CNI_VERSION}"
+
+RUN go build -o /cni/loopback -ldflags "$LDFLAGS" ./plugins/main/loopback && \
+    go build -o /cni/bridge -ldflags "$LDFLAGS" ./plugins/main/bridge && \
+    go build -o /cni/host-local -ldflags "$LDFLAGS" ./plugins/ipam/host-local && \
+    go build -o /cni/static -ldflags "$LDFLAGS" ./plugins/ipam/static
+RUN strip --strip-all /cni/*
+
+FROM golang:1.26-bookworm AS runc
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     libbtrfs-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ARG RUNC_VERSION=v1.4.0
+ARG RUNC_VERSION=v1.4.2
 
 RUN git clone --depth 1 --branch ${RUNC_VERSION} \
     https://github.com/opencontainers/runc.git /src/runc
@@ -26,18 +37,23 @@ WORKDIR /src/runc
 RUN make BUILDTAGS="" EXTRA_FLAGS="-a" EXTRA_LDFLAGS="-w -s" static
 RUN strip --strip-all runc
 
-FROM golang:1.24-bookworm AS containerd
+FROM golang:1.26-bookworm AS containerd
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ARG CONTAINERD_VERSION=v2.2.1
+ARG CONTAINERD_VERSION=v2.2.2
 
 RUN git clone --depth 1 --branch ${CONTAINERD_VERSION} \
     https://github.com/containerd/containerd.git /src/containerd
 
 WORKDIR /src/containerd
+
+RUN sed -i 's|google.golang.org/grpc v1.78.0|google.golang.org/grpc v1.79.3|' go.mod && \
+    go mod download google.golang.org/grpc@v1.79.3 && \
+    go mod tidy && \
+    go mod vendor
 
 RUN sed -i \
     -e '/plugins\/imageverifier/d' \
@@ -85,12 +101,13 @@ COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
 FROM alpine
+RUN apk upgrade zlib --no-cache
 RUN apk add --no-cache iptables
 
 COPY --from=containerd /src/containerd/bin /bin
 COPY --from=runc /src/runc/runc /bin/runc
 COPY --from=download /tini /bin/tini
-COPY --from=download /cni /cni
+COPY --from=cni /cni /cni
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/sidecar /bin
 
 EXPOSE 8000

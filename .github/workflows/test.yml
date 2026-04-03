@@ -19,6 +19,13 @@ jobs:
           tags: serpent-tools/containerd:dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: 'serpent-tools/containerd:dev'
+          format: 'table'
+          exit-code: '1'
+          vuln-type: 'os,library'
       - name: Export Docker image
         run: docker save serpent-tools/containerd:dev | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
