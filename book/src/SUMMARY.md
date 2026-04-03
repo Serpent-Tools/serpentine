@@ -11,5 +11,4 @@
 - [Builtins/Prelude]()
 
 # Internals
-- [Contributing]()
 - [Containerd](containerd.md)
