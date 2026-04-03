@@ -18,7 +18,7 @@ base = Image("rust:latest") > With(FromHost("."), "/app") > Workdir("/app");
 test = base > Exec("cargo test");
 clippy = base > Exec("cargo clippy");
 
-export DEFAULT = base > !(test, clippy) Exec("Cargo build");
+export DEFAULT = base > !(test, clippy) Exec("cargo build");
 ```
 
 This represents the following graph:
@@ -29,7 +29,7 @@ config:
   layout: elk
 ---
 flowchart TD
-    A["Image(rust:image)"] --> B["With(FromHost(.), /app)"]
+    A["Image(rust:latest)"] --> B["With(FromHost(.), /app)"]
     B --> C["Workdir(/app)"]
     C --> D["Exec(cargo test)"] & E["Exec(cargo clippy)"] & F["Exec(cargo build)"]
     D -.-> F

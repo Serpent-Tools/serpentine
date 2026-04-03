@@ -3,7 +3,7 @@
 - [Getting Started]()
 - [Cli]()
 - [Snek](snek.md)
-    - [Comparison with Dockerfile]()
+    - [Comparison with Dockerfile](dockerfile.md)
 - [Caching]()
 - [Security](security.md)
 

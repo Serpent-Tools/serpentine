@@ -1,6 +1,6 @@
 import "./lib.snek" as lib;
 
-export clippy_hack = lib::rust
+clippy_hack = lib::rust
     > Exec("rustup component add clippy")
     > lib::Cooked("--clippy")
     > lib::Binstall("cargo-hack@0.6.44", "cargo-hack")
