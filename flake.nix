@@ -61,6 +61,8 @@
             just
             protobuf
             cargo-nextest
+            cargo-vet
+            trivy
 
             mdbook
             mdbook-mermaid

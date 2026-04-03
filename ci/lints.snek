@@ -22,18 +22,18 @@ export spelling = Image("debian")
     > With(lib::source_code, ".")
     > Exec("typos");
 
-unused = lib::rust
-    > lib::Binstall("cargo-udeps", "cargo-udeps")
-    > With(lib::source_code, ".")
-    > Exec("cargo udeps --locked");
-
 deny = lib::rust
     > lib::Binstall("cargo-deny", "cargo-deny")
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
+vet = lib::rust
+    > lib::Binstall("cargo-vet", "cargo-vet")
+    > With(lib::source_code, ".")
+    > Exec("cargo vet check");
+
 export light_lints = !(clippy, fmt, spelling) Noop(0);
-export full_lints = !(clippy_hack, fmt, spelling, unused, deny) Noop(0);
+export full_lints = !(clippy_hack, fmt, spelling, deny, vet) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
