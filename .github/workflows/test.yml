@@ -57,24 +57,24 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
       - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
         with:
-          toolchain: stable
+          toolchain: 1.94.1
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@7627fb428e65e78e2ec9a24ae5c5bd5f8553f182
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.132
 
       # --- Protobuf (platform-specific) ---
       - name: Install protobuf (Linux)
         if: matrix.platform == 'linux'
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get install -y protobuf-compiler=3.21.12-8.2ubuntu0.3
       - name: Install protobuf (macOS)
         if: matrix.platform == 'macos'
-        run: brew install protobuf
+        run: brew install protobuf@33
       - name: Install protobuf (Windows)
         if: matrix.platform == 'windows'
-        run: choco install protoc -y
+        run: choco install protoc --version=34.1.0 -y
 
       # --- Container runtime setup (platform-specific) ---
       - name: Setup Podman (Linux/Podman)
@@ -99,7 +99,7 @@ jobs:
         if: matrix.platform == 'windows'
         shell: wsl-bash {0}
         run: |
-          curl -fsSL https://get.docker.com | sudo sh
+          curl -fsSL https://get.docker.com | sudo VERSION=29.3 sh
           sudo usermod -aG docker $USER
 
       - name: Start Docker daemon in WSL (Windows)
@@ -162,7 +162,7 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
       - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
         with:
-          toolchain: stable
+          toolchain: 1.94.1
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           cache-on-failure: true
@@ -173,7 +173,7 @@ jobs:
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
       - name: Install protobuf
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get install -y protobuf-compiler=3.21.12-8.2ubuntu0.3
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: containerd-image

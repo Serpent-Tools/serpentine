@@ -1,10 +1,13 @@
 // Most of this will be moved into the stdlib
 
-export rust = Image("rustlang/rust:nightly") > WorkingDir("/app") > Exec("apt-get update && apt-get install -y protobuf-compiler");
+export rust = Image("rustlang/rust:nightly@sha256:0fc2f1427a3c0bef08395adfbf23b959872ce0225314ba2c483c3fd8c6d1fd0e")
+    > WorkingDir("/app")
+    > Exec("apt-get update && apt-get install -y protobuf-compiler=3.21.12-11");
 
 export def Binstall(container, crate, bin_name) {
     binary = rust 
-        > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash")
+        // cargo-binstall v1.17.9
+        > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/0b24824336e2b3800b0f89d9e08b2c08bfa3dcdd/install-from-binstall-release.sh | bash")
         > Exec(Join("cargo binstall --root /out ", crate))
         > Export(Join("/out/bin/", bin_name));
 
@@ -15,13 +18,13 @@ export source_code = FromHost(".");
 
 export def Cooked(container, build_kind) {
     recipe = rust
-        > Binstall("cargo-chef", "cargo-chef")
+        > Binstall("cargo-chef@0.1.77", "cargo-chef")
         > With(source_code, ".")
         > Exec("cargo chef prepare --recipe-path recipe.json")
         > Export("recipe.json");
 
     return container 
-        > Binstall("cargo-chef", "cargo-chef")
+        > Binstall("cargo-chef@0.1.77", "cargo-chef")
         > With(recipe, "recipe.json")
         > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
         > With(source_code, ".");

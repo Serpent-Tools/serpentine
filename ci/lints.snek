@@ -3,7 +3,7 @@ import "./lib.snek" as lib;
 export clippy_hack = lib::rust
     > Exec("rustup component add clippy")
     > lib::Cooked("--clippy")
-    > lib::Binstall("cargo-hack", "cargo-hack")
+    > lib::Binstall("cargo-hack@0.6.44", "cargo-hack")
     > Exec("cargo hack --locked --feature-powerset --all clippy -- -Dwarnings");
 
 clippy = lib::rust 
@@ -16,19 +16,19 @@ fmt = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo fmt --check");
 
-export spelling = Image("debian")
+export spelling = Image("debian:bookworm@sha256:db7a4382d9bfc480ca4ef9542bd33cad0566a19b5765a1550f335d232254753c")
     > WorkingDir("/app")
-    > lib::Binstall("typos-cli", "typos")
+    > lib::Binstall("typos-cli@1.45.0", "typos")
     > With(lib::source_code, ".")
     > Exec("typos");
 
 deny = lib::rust
-    > lib::Binstall("cargo-deny", "cargo-deny")
+    > lib::Binstall("cargo-deny@0.19.0", "cargo-deny")
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
 vet = lib::rust
-    > lib::Binstall("cargo-vet", "cargo-vet")
+    > lib::Binstall("cargo-vet@0.10.2", "cargo-vet")
     > With(lib::source_code, ".")
     > Exec("cargo vet check");
 
@@ -37,8 +37,8 @@ export full_lints = !(clippy_hack, fmt, spelling, deny, vet) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
-    > lib::Binstall("typos-cli", "typos")
-    > lib::Binstall("cargo-edit", "cargo-upgrade")
+    > lib::Binstall("typos-cli@1.45.0", "typos")
+    > lib::Binstall("cargo-edit@0.13.9", "cargo-upgrade")
     > With(lib::source_code, ".")
     > Exec("cargo upgrade")
     > Exec("cargo fmt")

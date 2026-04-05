@@ -1,15 +1,19 @@
-FROM alpine as download
-RUN apk add tar curl
+FROM alpine:3.21@sha256:22e0ec13c0db6b3e1ba3280e831fc50ba7bffe58e81f31670a64b1afede247bc as download
+RUN apk add tar=1.35-r2 curl=8.14.1-r2
 
-RUN curl -fsSL https://github.com/krallin/tini/releases/latest/download/tini-static -o /tini && \
+ARG TINI_VERSION=v0.19.0
+RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static" -o /tini && \
+    echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum -c - && \
     chmod +x /tini
 
-FROM golang:1.26-bookworm AS cni
+FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS cni
 
 ARG CNI_VERSION=v1.9.1
+# CNI plugins v1.9.1
+ARG CNI_COMMIT=adc3e6b5b581638afbd194cf2e9319ecbb0151a1
 
-RUN git clone --depth 1 --branch ${CNI_VERSION} \
-    https://github.com/containernetworking/plugins.git /src/cni-plugins
+RUN git clone https://github.com/containernetworking/plugins.git /src/cni-plugins && \
+    git -C /src/cni-plugins checkout ${CNI_COMMIT}
 WORKDIR /src/cni-plugins
 
 ENV CGO_ENABLED=0
@@ -22,31 +26,33 @@ RUN go build -o /cni/loopback -ldflags "$LDFLAGS" ./plugins/main/loopback && \
     go build -o /cni/static -ldflags "$LDFLAGS" ./plugins/ipam/static
 RUN strip --strip-all /cni/*
 
-FROM golang:1.26-bookworm AS runc
+FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS runc
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
-    libbtrfs-dev \
+    libbtrfs-dev=6.2-1+deb12u2 \
     && rm -rf /var/lib/apt/lists/*
 
-ARG RUNC_VERSION=v1.4.2
+# runc v1.4.2
+ARG RUNC_COMMIT=c241c0bb5e60a8e8c1b2e53d4eca8d0068d8d57e
 
-RUN git clone --depth 1 --branch ${RUNC_VERSION} \
-    https://github.com/opencontainers/runc.git /src/runc
+RUN git clone https://github.com/opencontainers/runc.git /src/runc && \
+    git -C /src/runc checkout ${RUNC_COMMIT}
 WORKDIR /src/runc
 RUN make BUILDTAGS="" EXTRA_FLAGS="-a" EXTRA_LDFLAGS="-w -s" static
 RUN strip --strip-all runc
 
-FROM golang:1.26-bookworm AS containerd
+FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS containerd
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y gcc libseccomp-dev \
+RUN apt-get update && apt-get install -y gcc=4:12.2.0-3 libseccomp-dev=2.5.4-1+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
-ARG CONTAINERD_VERSION=v2.2.2
+# containerd v2.2.2
+ARG CONTAINERD_COMMIT=301b2dac98f15c27117da5c8af12118a041a31d9
 
-RUN git clone --depth 1 --branch ${CONTAINERD_VERSION} \
-    https://github.com/containerd/containerd.git /src/containerd
+RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
+    git -C /src/containerd checkout ${CONTAINERD_COMMIT}
 
 WORKDIR /src/containerd
 
@@ -85,8 +91,8 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM rust as chef
-RUN cargo install cargo-chef
+FROM rust:1.94.1-bookworm@sha256:2ab796040c03a34d0f090f0d4da18f6ac0503124167c6898ed70a434f108e4ef as chef
+RUN cargo install cargo-chef@0.1.77 --locked
 WORKDIR /app
 
 FROM chef as planner
@@ -100,9 +106,9 @@ RUN cargo chef cook --release -p sidecar --target x86_64-unknown-linux-gnu --rec
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
-FROM alpine
-RUN apk upgrade zlib --no-cache
-RUN apk add --no-cache iptables
+FROM alpine:3.21@sha256:22e0ec13c0db6b3e1ba3280e831fc50ba7bffe58e81f31670a64b1afede247bc
+RUN apk add --no-cache zlib=1.3.1-r2
+RUN apk add --no-cache iptables=1.8.11-r1
 
 COPY --from=containerd /src/containerd/bin /bin
 COPY --from=runc /src/runc/runc /bin/runc

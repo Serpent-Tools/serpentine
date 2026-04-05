@@ -4,7 +4,7 @@
 
 import "./lib_helpers.snek" as helpers;
 
-base = Image("quay.io/toolbx-images/alpine-toolbox:latest");
+base = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0");
 
 // --- Wave 1: parallel cheap ops ---
 w1a = base > Exec("true");
@@ -53,7 +53,7 @@ w5 = base
     > Exec("echo step8");
 
 // --- Wave 6: second image to test multi-image scheduling ---
-base2 = Image("quay.io/toolbx-images/alpine-toolbox:latest") > Env("ALT", "true");
+base2 = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0") > Env("ALT", "true");
 w6a = base2 > Exec("true");
 w6b = base2 > Exec("true");
 w6c = base2 > Exec("true");

@@ -2,7 +2,7 @@
 // Stresses scheduler, cache, and container reuse
 // with minimal work in the actual commands.
 
-base = Image("quay.io/toolbx-images/alpine-toolbox:latest");
+base = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0");
 
 // Parallel chains of cheap commands
 a1 = base > Exec("true");

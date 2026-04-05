@@ -1,8 +1,8 @@
-postgres = ImageService("docker.io/library/postgres:16")
+postgres = ImageService("docker.io/library/postgres:16@sha256:6c8c5db168194563125927cbc43e6caa972b1c1503593406184db3e74c6d074e")
     > Env("POSTGRES_PASSWORD", "test")
     > HealthCheck("pg_isready -h localhost -U postgres", 30);
 
-app = Image("docker.io/library/postgres:16")
+app = Image("docker.io/library/postgres:16@sha256:6c8c5db168194563125927cbc43e6caa972b1c1503593406184db3e74c6d074e")
     > Env("PGPASSWORD", "test");
 
 with_user = app
