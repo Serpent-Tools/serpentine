@@ -1,8 +1,6 @@
-import "./ci/tests.snek" as tests;
 import "./ci/lints.snek" as lints;
 
 export DEFAULT = !(lints::light_lints) Noop(0);
 export FULL = !(lints::full_lints) Noop(0);
 
-export SNAPSHOT = tests::update_snapshot;
 export FIX = lints::fix;

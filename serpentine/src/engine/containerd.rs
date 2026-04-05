@@ -2264,7 +2264,7 @@ mod tests {
 
     use super::*;
 
-    const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:latest";
+    const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0";
 
     #[fixture]
     async fn containerd_client() -> Client {

@@ -1,4 +1,4 @@
-base = Image("quay.io/toolbx-images/alpine-toolbox:latest") > Exec("apk add curl");
+base = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0") > Exec("apk add curl");
 
 python_server = base
     > Exec("apk add python3")

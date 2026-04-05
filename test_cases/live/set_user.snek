@@ -1,14 +1,14 @@
-image_with_user = Image("quay.io/prometheus/prometheus") 
+image_with_user = Image("quay.io/prometheus/prometheus:v3.11.0@sha256:1361e7e2b9d85426bb9c1c9fa10d75bd4849ae9a0abfac689edea38fdd3afa54") 
     > Exec("test $(id -u) = 65534")
     > Exec("test $(id -g) = 65534")
     > Exec("test $(whoami) = nobody");
 
-default_is_root = Image("quay.io/toolbx-images/alpine-toolbox:latest")
+default_is_root = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0")
     > Exec("test $(id -u) = 0")
     > Exec("test $(id -g) = 0")
     > Exec("test $(whoami) = root");
 
-create_new_user = Image("quay.io/toolbx-images/alpine-toolbox:latest")
+create_new_user = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0")
     > WorkingDir("/run")
     > Exec("useradd viv")
     > Exec("install -m 600 -o root -g root /dev/null root.txt")

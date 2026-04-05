@@ -12,10 +12,10 @@ Error: node_error
         x Failed to execute command (exit code 1): "exit 1"
         |
       
-   ,-[<redacted-path>:2:67]
+   ,-[<redacted-path>:2:137]
  1 | def Foo() {
- 2 |     return Image("quay.io<redacted-path>:latest") > Exec("exit 1");
-   :                                                                   ^^^^^^^|^^^^^^^
-   :                                                                          `-- Error occurred in this node
+ 2 |     return Image("quay.io<redacted-path>:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0") > Exec("exit 1");
+   :                                                                                                                                         ^^^^^^^|^^^^^^^
+   :                                                                                                                                                `-- Error occurred in this node
  3 | }
    `----

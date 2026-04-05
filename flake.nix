@@ -55,13 +55,13 @@
               "cargo"
               "clippy"
               "rustc"
-              "rust-src"
               "rustfmt"
             ])
             just
             protobuf
             cargo-nextest
             cargo-vet
+            cargo-insta
             trivy
 
             mdbook
