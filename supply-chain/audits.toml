@@ -526,10 +526,10 @@ start = "2019-03-04"
 end = "2027-04-03"
 
 [[trusted.ring]]
-criteria = "safe-to-deploy"
-user-id = 2751 # Joe Birr-Pixton (ctz)
-start = "2025-02-22"
-end = "2027-04-03"
+criteria = "safe-to-run"
+user-id = 2342 # Brian Smith (briansmith)
+start = "2019-07-03"
+end = "2027-04-05"
 
 [[trusted.rustix]]
 criteria = "safe-to-deploy"
@@ -651,12 +651,6 @@ user-id = 359 # Sean McArthur (seanmonstar)
 start = "2024-09-09"
 end = "2027-04-03"
 
-[[trusted.tower]]
-criteria = "safe-to-deploy"
-user-id = 1249
-start = "2021-01-07"
-end = "2027-04-04"
-
 [[trusted.tower-http]]
 criteria = "safe-to-deploy"
 user-id = 359 # Sean McArthur (seanmonstar)
@@ -668,30 +662,6 @@ criteria = "safe-to-deploy"
 user-id = 12432 # David Pedersen (davidpdrsn)
 start = "2022-10-10"
 end = "2027-04-03"
-
-[[trusted.tower-service]]
-criteria = "safe-to-deploy"
-user-id = 1249
-start = "2022-06-17"
-end = "2027-04-03"
-
-[[trusted.tracing]]
-criteria = "safe-to-deploy"
-user-id = 1249
-start = "2019-06-28"
-end = "2027-04-04"
-
-[[trusted.tracing-attributes]]
-criteria = "safe-to-deploy"
-user-id = 1249
-start = "2019-08-08"
-end = "2027-04-04"
-
-[[trusted.tracing-core]]
-criteria = "safe-to-deploy"
-user-id = 1249
-start = "2019-06-20"
-end = "2027-04-04"
 
 [[trusted.typetag]]
 criteria = "safe-to-deploy"
@@ -729,12 +699,6 @@ user-id = 1139 # Manish Goregaokar (Manishearth)
 start = "2021-02-18"
 end = "2027-04-04"
 
-[[trusted.wait-timeout]]
-criteria = "safe-to-deploy"
-user-id = 1 # Alex Crichton (alexcrichton)
-start = "2025-02-03"
-end = "2027-04-03"
-
 [[trusted.walkdir]]
 criteria = "safe-to-deploy"
 user-id = 189 # Andrew Gallant (BurntSushi)
@@ -747,37 +711,7 @@ user-id = 1 # Alex Crichton (alexcrichton)
 start = "2020-06-03"
 end = "2027-04-03"
 
-[[trusted.wasm-bindgen]]
-criteria = "safe-to-deploy"
-user-id = 1 # Alex Crichton (alexcrichton)
-start = "2019-03-04"
-end = "2027-04-03"
-
-[[trusted.wasm-bindgen-futures]]
-criteria = "safe-to-deploy"
-user-id = 1 # Alex Crichton (alexcrichton)
-start = "2019-03-04"
-end = "2027-04-03"
-
 [[trusted.wasm-bindgen-macro]]
-criteria = "safe-to-deploy"
-user-id = 1 # Alex Crichton (alexcrichton)
-start = "2019-03-04"
-end = "2027-04-03"
-
-[[trusted.wasm-bindgen-macro-support]]
-criteria = "safe-to-deploy"
-user-id = 1 # Alex Crichton (alexcrichton)
-start = "2019-03-04"
-end = "2027-04-03"
-
-[[trusted.wasm-bindgen-shared]]
-criteria = "safe-to-deploy"
-user-id = 1 # Alex Crichton (alexcrichton)
-start = "2019-03-04"
-end = "2027-04-03"
-
-[[trusted.web-sys]]
 criteria = "safe-to-deploy"
 user-id = 1 # Alex Crichton (alexcrichton)
 start = "2019-03-04"
@@ -787,18 +721,6 @@ end = "2027-04-03"
 criteria = "safe-to-deploy"
 user-id = 2751 # Joe Birr-Pixton (ctz)
 start = "2019-07-21"
-end = "2027-04-03"
-
-[[trusted.webpki-roots]]
-criteria = "safe-to-deploy"
-user-id = 4556 # Dirkjan Ochtman (djc)
-start = "2023-03-31"
-end = "2027-04-03"
-
-[[trusted.winapi-util]]
-criteria = "safe-to-deploy"
-user-id = 189 # Andrew Gallant (BurntSushi)
-start = "2020-01-11"
 end = "2027-04-03"
 
 [[trusted.windows-core]]

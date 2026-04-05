@@ -28,9 +28,9 @@ deny = lib::rust
     > Exec("cargo deny check all");
 
 vet = lib::rust
-    > lib::Binstall("cargo-vet@0.10.2", "cargo-vet")
+    > lib::Binstall("cargo-vet@0.10.1", "cargo-vet")
     > With(lib::source_code, ".")
-    > Exec("cargo vet check");
+    > Exec("cargo vet check --locked");
 
 export light_lints = !(clippy, fmt, spelling) Noop(0);
 export full_lints = !(clippy_hack, fmt, spelling, deny, vet) Noop(0);

@@ -9,7 +9,6 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION
 FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS cni
 
 ARG CNI_VERSION=v1.9.1
-# CNI plugins v1.9.1
 ARG CNI_COMMIT=adc3e6b5b581638afbd194cf2e9319ecbb0151a1
 
 RUN git clone https://github.com/containernetworking/plugins.git /src/cni-plugins && \

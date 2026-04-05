@@ -509,11 +509,11 @@ user-login = "seanmonstar"
 user-name = "Sean McArthur"
 
 [[publisher.ring]]
-version = "0.17.11"
-when = "2025-02-22"
-user-id = 2751
-user-login = "ctz"
-user-name = "Joe Birr-Pixton"
+version = "0.17.12"
+when = "2025-03-06"
+user-id = 2342
+user-login = "briansmith"
+user-name = "Brian Smith"
 
 [[publisher.rustix]]
 version = "0.38.44"
