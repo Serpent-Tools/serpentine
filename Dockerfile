@@ -85,7 +85,7 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM rustlang/rust:nightly-slim as chef
+FROM rust as chef
 RUN cargo install cargo-chef
 WORKDIR /app
 
