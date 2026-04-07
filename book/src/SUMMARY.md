@@ -8,7 +8,7 @@
 - [Security](security.md)
 
 # Standard library
-- [Builtins/Prelude]()
+- [Builtins/Prelude](prelude.md)
 
 # Internals
 - [Containerd](containerd.md)
