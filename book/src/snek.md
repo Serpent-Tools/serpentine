@@ -61,6 +61,9 @@ flowchart LR
 Now its a very common pattern to apply a chain of operations one after the other, think of method chaining, function composition in haskell, etc. 
 Snek allows this using the `>` operator, which places the left hand side as the first argument to a node call on the right.
 For example `A > B(1) > C(2)` compiles down to `C(B(A, 1), 2)`. As such the above example would more commonly be written as:
+```snek
+Image("rust:latest") > Exec("rustup component add clippy") > Exec("rustup component add rustfmt")
+```
 
 ### Labels
 Labels function like variables and let you assign the result of a node to a specific name, which lets you re-use it in multiple locations.
@@ -135,8 +138,8 @@ One big (and honestly super cool) advantage of functions and sneks arithecture i
 def Binstall(container, crate, bin_name) {
     binary = Image("rust:latest")
         > Exec("cargo install cargo-binstall")
-        > Exec(Join("cargo binstall ", crate, " --install-path out"))
-        > Export(Join("out/", bin_name));
+        > Exec(Join("cargo binstall ", crate, " --root /out"))
+        > Export(Join("/out/", bin_name));
 
     return container > With(binary, Join("/bin/", bin_name));
 }
@@ -146,8 +149,8 @@ This function can be used like `Image("debian:bookworm-slim") > Binstall("typos-
 In this case it will construct a graph like:
 ```mermaid
 flowchart LR
-    IR["Image(rust:latest)"] --> EI["cargo install cargo-binstall"] --> EB["cargo binstall typos-cli --install-path out"]
-    EB --> EX["Export(out/typos)"] --> W["With"]
+    IR["Image(rust:latest)"] --> EI["cargo install cargo-binstall"] --> EB["cargo binstall typos-cli --root /out"]
+    EB --> EX["Export(/out/typos)"] --> W["With"]
     I["image(debian:bookworm-slim)"] --> W
 ```
 
