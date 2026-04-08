@@ -10,7 +10,7 @@ Serpentine requires a docker or podman daemon installed on your system to run it
 
 ## Hello ~World~ Clippy
 
-While this section cant explain everything in the following snippets, it hopes to give you a taste of the basics of serpentine.
+While this section can't explain everything in the following snippets, it hopes to give you a taste of the basics of serpentine.
 Serpentine uses a custom DSL called snek to define workflows, by default serpentine will look for the `DEFAULT` entrypoint in the `./main.snek` file,
 Lets write a simple pipeline to check that our rust code compiles:
 
@@ -22,7 +22,7 @@ export DEFAULT = Image("rust:latest")
 ```
 
 Saving this to `main.snek` and running `serpentine run` should download the rust image, copy your source code into a container and run `cargo check`.
-Further chapthers in the book (and the examples page) will show patterns for making this play nicer with caching and doing more complex stuff. 
+Further chapters in the book (and the examples page) will show patterns for making this play nicer with caching and doing more complex stuff. 
 
 ## Further Reading
 
