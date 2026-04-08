@@ -1,4 +1,4 @@
-check: test (run "FULL")
+check: test (run "FULL") trivy
 
 run entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}}
@@ -17,7 +17,7 @@ build_container:
     docker build -t serpent-tools/containerd:dev . --pull=false
 
 trivy: build_container
-    trivy image --disable-telemetry --exit-code 1 --no-progress localhost/serpent-tools/containerd:dev
+    trivy image --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml localhost/serpent-tools/containerd:dev
 
 clean: build_container
     cargo run -p serpentine -- clean || exit 0

@@ -182,7 +182,7 @@ def Binstall(container, crate, bin_name) {
     binary = Image("rust:latest")
         > Exec("cargo install cargo-binstall")
         > Exec(Join("cargo binstall ", crate, " --root /out"))
-        > Export(Join("/out/", bin_name));
+        > Export(Join("/out/bin/", bin_name));
     return binary;
 }
 ```
