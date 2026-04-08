@@ -2,7 +2,7 @@
 
 - [Getting Started](getting_started.md)
     - [Examples](examples.md)
-- [Cli]()
+- [Cli](cli.md)
 - [Snek](snek.md)
     - [Comparison with Dockerfile](dockerfile.md)
 - [Caching](caching.md)
