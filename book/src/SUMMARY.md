@@ -6,6 +6,7 @@
 - [Snek](snek.md)
     - [Comparison with Dockerfile](dockerfile.md)
 - [Caching](caching.md)
+- [Using in CI](ci.md)
 - [Security](security.md)
 
 # Standard library

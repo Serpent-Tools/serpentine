@@ -2,6 +2,8 @@
 
 ## Installation
 
+Serpentine requires a docker or podman daemon installed on your system to run its daemon process.
+
 > [!CAUTION]
 > Serpentine currently is not distributed anywhere, this section will ofc be updated once thats the case.
 > For now please following instructions in `CONTRIBUTING.md` to run Serpentine from source.
