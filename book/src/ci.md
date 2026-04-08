@@ -4,7 +4,7 @@ This is maybe the most important page in serpentine, because it is built to be r
 
 ## \<Insert your CI runner here>
 
-Running serpentine in Ci is as simple as ensuring a docker or podman daemon is available, and that you have serpentine installed in some manner, and then running:
+Running serpentine in CI is as simple as ensuring a docker or podman daemon is available, and that you have serpentine installed in some manner, and then running:
 ```bash
 serpentine run --ci
 ```

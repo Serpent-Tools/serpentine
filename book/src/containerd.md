@@ -1,6 +1,6 @@
 # Containerd
 
-Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [BuildKit](https://github.com/moby/buildkit) does, this page documents the the high level flow of the code in `src/engine/containerd.rs`.
+Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [BuildKit](https://github.com/moby/buildkit) does, this page documents the high-level flow of the code in `src/engine/containerd.rs`.
 
 ## Running containerd
 Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github, and a few other supporting tools.
@@ -18,7 +18,7 @@ flowchart LR
 > The below diagrams leave out the proxy where it isnt relevant.
 
 ## Snapshots
-Snapshots are essentially a docker layer, they are modification to the file system.
+Snapshots are essentially a docker layer, they are modifications to the file system.
 They are generally created via the containerd api by pointing at a parent, running a action against them, then committing them to a read-only snapshot.
 These snapshots are the core part of serpentines `ContainerState` (which also holds other container data such as env vars).
 
@@ -101,7 +101,7 @@ sequenceDiagram
     participant sidecar
     participant process
 
-    note over serpentine,containerd: over sidecard proxy
+    note over serpentine,containerd: over sidecar proxy
 
     serpentine ->>+ sidecar : Create stdout stream
     note over sidecar : mkfifo(/run/serpentine/XYZ)
@@ -119,7 +119,7 @@ sequenceDiagram
 
 ### Network access
 To provide isolated network access to containers we use [CNI](https://www.cni.dev/) to attach a loopback and a bridge adapter to it. The sidecar will construct a network namespace and use CNI to setup the needed adapters.
-Serpetine will only create a new name-space when required, and will re-use once not actively in use by a container when running steps, on exit a serpentine process will instruct the sidecar to clean up the network namespaces created this run.
+Serpentine will only create a new name-space when required, and will re-use once not actively in use by a container when running steps, on exit a serpentine process will instruct the sidecar to clean up the network namespaces created this run.
 
 ```mermaid
 sequenceDiagram
@@ -130,7 +130,7 @@ sequenceDiagram
     participant process
     participant lan
 
-    note over serpentine,containerd: over sidecard proxy
+    note over serpentine,containerd: over sidecar proxy
     opt If no free network
         serpentine ->>+ sidecar : Create network
         sidecar ->> linux : Create namespace
@@ -149,7 +149,7 @@ sequenceDiagram
 
 ## Services
 
-Services is essentially just spinning up multiple containers in a specific order, with some healthchecks before hand. essentially:
+Services is essentially just spinning up multiple containers in a specific order, with some healthchecks beforehand. essentially:
 
 ```mermaid
 sequenceDiagram

@@ -18,7 +18,7 @@ If we run this, and then say swap `cargo-hack` for `cargo-deny` the nextest step
 An important point is that the cache is keyed by node type and inputs, not its exact position in the graph. This means that if a node gets inputs it has seen before, but in a completely different context it is still cached.
 
 ### How is this different from the compiler de-duplicator?
-You may recall that the compiler de-duplicates identical graphs? This might sound similar to the cache, and in fact if you removed the compiler optimizer the cache would be able to cover some of its usecase. Where it breaks down however is in race conditions, if you have two identical graphs they will likely both start to execute as neither has committed its result to the cache, while with the compiler optimizer it would have combined the two branches before runtime.
+You may recall that the compiler de-duplicates identical graphs? This might sound similar to the cache, and in fact if you removed the compiler optimizer the cache would be able to cover some of its use cases. Where it breaks down however is in race conditions, if you have two identical graphs they will likely both start to execute as neither has committed its result to the cache, while with the compiler optimizer it would have combined the two branches before runtime.
 
 Another important difference is that the compiler is structural matching, while the cache is semantic matching. What we mean is that the compiler folds together what amounts to copy and pasted *code*, while the cache handles all cases where a node might be asked to perform an operation it has already done, an example of this is:
 

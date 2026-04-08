@@ -41,7 +41,7 @@ This call itself is relative, so `... > WorkingDir("./foo") > WorkingDir("./bar"
 ### `Env`
 
 Set a environment variable in the container, for example `PATH`, `HOME`, etc.
-Takes the the variable to set as the first argument, and the value as the second, 
+Takes the variable to set as the first argument, and the value as the second, 
 for example `... > Env("PATH", "/bin")`
 
 ### `GetEnv`
@@ -102,13 +102,13 @@ export DEFAULT = ... > Export("./build/foo") > ToHost("./out/foo");
 ```
 
 > [!CAUTION]
-> The permissions (and other metadata) set on the exported files is set to the "platform defaults", its therefor extremely important to be careful when exporting big directories to replace content that was imported, for example if you run `cargo fmt` in serpentine.
+> The permissions (and other metadata) set on the exported files is set to the "platform defaults", it's therefore extremely important to be careful when exporting big directories to replace content that was imported, for example if you run `cargo fmt` in serpentine.
 
 ## Service nodes
 
-Services in serpentine work differently than one would expect from other ci products, specifically while services are attached to a container and stay with the container, the actual process live only for the duration of one node.
+Services in serpentine work differently than one would expect from other ci products, specifically while services are attached to a container and stay with the container, the actual processes live only for the duration of one node.
 
-specifically serpentine will spin up and down services at each `Exec`, this is to ensure warm and cold cache runs behave the same and is a nice compromise to ensure services can still be cached, in practice we have found its rare you need a service for more then one `Exec`.
+Specifically serpentine will spin up and down services at each `Exec`, this is to ensure warm and cold cache runs behave the same and is a nice compromise to ensure services can still be cached. In practice we have found it's rare you need a service for more than one `Exec`.
 Another benefit is that you get all the benefits of containers in serpentine for services as well, specifically forking the graph.
 
 > [!TIP]
@@ -116,14 +116,14 @@ Another benefit is that you get all the benefits of containers in serpentine for
 
 ### `ImageService`
 
-This is the service version of `Image`, it returns a service and reads `ENTERYPOINT`/`CMD` from the pulled image.
+This is the service version of `Image`, it returns a service and reads `ENTRYPOINT`/`CMD` from the pulled image.
 
 > [!NOTE]
 > Since technically speaking `HEALTHCHECK` is not part of the oci-spec serpentine does not read it.
 
 ### `WithService`
 
-This attached a service to a container, the first argument is the service to attach and the second is the hostname to attach it under:
+This attaches a service to a container, the first argument is the service to attach and the second is the hostname to attach it under:
 
 ```snek
 postgres = ImageService("docker.io/library/postgres:16")
@@ -137,7 +137,7 @@ foo = Image("docker.io/library/postgres:16")
 
 ### `HealthCheck`
 
-Since healthchecs dont come with images its often very important to define a healthcheck so that your CI doesnt become flaky due to running on slower hardware etc.
+Since healthchecks don't come with images its often very important to define a healthcheck so that your CI doesnt become flaky due to running on slower hardware etc.
 
 The first argument is the healthcheck command, and the second is the number of seconds to wait on the service maximum.
 
@@ -152,7 +152,7 @@ postgres = ImageService("docker.io/library/postgres:16")
 
 ### `ToService`
 
-This node converts a container to a service, It takes the entroypoint as a argument:
+This node converts a container to a service, It takes the entrypoint as an argument:
 ```snek
 base = Image("quay.io/toolbx-images/alpine-toolbox:3.21") > Exec("apk add curl");
 

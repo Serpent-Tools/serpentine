@@ -30,7 +30,7 @@ foo = /* I am a inline comment */ 10;
 The core primitive in snek is the node, its defined like a function call, `A()`, and it can take arguments, `A(1, 2, 3)`.
 In fact this is all you need to express everything snek can express, the rest is simple ergonomics and de-duplications. 
 
-while generally you might think of most operations as a chain of operations, and we will get to the syntactic sugar for that, but its important to keep in mind that at the end of the day serpentine just sees nodes and their arguments. For example a chain of commands is really just one `Exec` call taking the output of another as a argument.
+while generally you might think of most operations as a chain of operations, and we will get to the syntactic sugar for that, but it's important to keep in mind that at the end of the day serpentine just sees nodes and their arguments. For example a chain of commands is really just one `Exec` call taking the output of another as a argument.
 
 For example `Exec(Exec(Image("rust:latest"), "rustup component add clippy"), "rustup component add rustfmt")` is represented as the following graph:
 ```mermaid
@@ -93,7 +93,7 @@ flowchart LR
 ```
 This is one of serpentines stronger features, as it makes sharing setup logic extremely easy.
 
-In other for a serpentine pipeline to be executed it needs to export a entrypoint label, if not specified otherwise on the cli this will be `DEFAULT`. for example:
+In order for a serpentine pipeline to be executed it needs to export a entrypoint label, if not specified otherwise on the cli this will be `DEFAULT`. for example:
 ```snek
 export DEFAULT = Image("rust:latest")
     > WorkingDir("/app")
@@ -103,7 +103,7 @@ export DEFAULT = Image("rust:latest")
 (See further down about modules and other uses of `export`)
 
 ### Phantom inputs
-Phantom inputs lets you make the scheduler wait on certain other nodes before containing with the execution of the given node, it can also be used to create a group of nodes. Phantom inputs are marked by adding a `!` before the node call and then the name of the label to wait on, for example `!tests Exec("cargo build")` will wait for the node pointed to by the `tests` label to complete before starting to pull the build exec. if you want to specify multiple phantom inputs use `()`, for example to define a set of tests one might do 
+Phantom inputs lets you make the scheduler wait on certain other nodes before continuing with the execution of the given node, it can also be used to create a group of nodes. Phantom inputs are marked by adding a `!` before the node call and then the name of the label to wait on, for example `!tests Exec("cargo build")` will wait for the node pointed to by the `tests` label to complete before starting to pull the build exec. if you want to specify multiple phantom inputs use `()`, for example to define a set of tests one might do 
 ```snek
 tests = !(unit_tests, integration_tests) Noop(0);
 ```
@@ -133,7 +133,7 @@ flowchart LR
     J["Join('cargo install ', 'cargo-nextest')"] --> E
 ```
 
-One big (and honestly super cool) advantage of functions and sneks arithecture in general is that functions can spin up other containers if they want to complete their job. For example the following function install the given package in another container then copies it over to the input, this has the amazing advantage that due to caching you can insert this call basically anywhere without worrying about invalidating the cache, as the actual install step will always stay cached as it doesnt depend on the input container.
+One big (and honestly super cool) advantage of functions and snek's architecture in general is that functions can spin up other containers if they want to complete their job. For example the following function install the given package in another container then copies it over to the input, this has the amazing advantage that due to caching you can insert this call basically anywhere without worrying about invalidating the cache, as the actual install step will always stay cached as it doesnt depend on the input container.
 ```snek
 def Binstall(container, crate, bin_name) {
     binary = Image("rust:latest")
@@ -144,7 +144,7 @@ def Binstall(container, crate, bin_name) {
     return container > With(binary, Join("/bin/", bin_name));
 }
 ```
-This function can be used like `Image("debian:bookworm-slim") > Binstall("typos-cli", "typos")` (another neat thing is that the target container doesnt have to have rust/cargo installed.)
+This function can be used like `Image("debian:bookworm-slim") > Binstall("typos-cli", "typos")` (another neat thing is that the target container doesn't have to have rust/cargo installed.)
 
 In this case it will construct a graph like:
 ```mermaid
@@ -205,5 +205,5 @@ flowchart LR
     E1 -.-> N;
 ```
 
-This becomes even more important with Functions take our `Binstall` function from before, without this optimization every call to it would install binstall and the given tool every time, but with the de-duplicator binstall is only installed ones, and each specific tool is also only installed once.
+This becomes even more important with Functions take our `Binstall` function from before, without this optimization every call to it would install binstall and the given tool every time, but with the de-duplicator binstall is only installed once, and each specific tool is also only installed once.
 This means you can write functions as ergonomicly as you want and as long as you are smart with at which points you introduce the arguments you can still get amazing performance.

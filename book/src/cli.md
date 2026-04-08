@@ -1,4 +1,4 @@
-# Cli
+# CLI
 
 > [!TIP]
 > You can always refer to `serpentine --help`, `serpentine run --help` etc locally
@@ -52,4 +52,4 @@ Cleans out the serpentine cache.
 > [!IMPORTANT]
 > This is not just deleting the file on disk (while it does do that), it also cleans up any referenced data from serpentines docker volumes.
 
-Takes a optional argument which is the cache file to clean.
+Takes an optional argument which is the cache file to clean.
