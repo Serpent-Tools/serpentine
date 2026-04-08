@@ -38,9 +38,7 @@ export full_lints = !(clippy_hack, fmt, spelling, deny, vet) Noop(0);
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
     > lib::Binstall("typos-cli@1.45.0", "typos")
-    > lib::Binstall("cargo-edit@0.13.9", "cargo-upgrade")
     > With(lib::source_code, ".")
-    > Exec("cargo upgrade")
     > Exec("cargo fmt")
     > Exec("typos -w")
     > Export(".")

@@ -26,7 +26,7 @@ One can for example have a exported label that just runs tests, while the defaul
 ### `--jobs` / `-j`
 * default: 2
 
-Limits the number of *`Exec`/`ExecOutput` nodes* that can run in parallel, in other words it limits meaningfull CPU heavy workloads, while file copying and similar is allowed to happen fully parallel. Its recommended to only increase this value after warming caches, as a high value on cold caches will often lead to no gain due to build systems like cargo already using a large number of cores.
+Limits the number of *`Exec`/`ExecOutput` nodes* that can run in parallel, in other words it limits meaningful CPU heavy workloads, while file copying and similar is allowed to happen fully parallel. Its recommended to only increase this value after warming caches, as a high value on cold caches will often lead to no gain due to build systems like cargo already using a large number of cores.
 
 ### `--ci`
 

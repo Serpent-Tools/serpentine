@@ -149,7 +149,7 @@ sequenceDiagram
 
 ## Services
 
-Services is essentially just spinning up multiple containers in a secific order, with some healthchecks before hand. essentially:
+Services is essentially just spinning up multiple containers in a specific order, with some healthchecks before hand. essentially:
 
 ```mermaid
 sequenceDiagram

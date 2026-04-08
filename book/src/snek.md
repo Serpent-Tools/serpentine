@@ -139,7 +139,7 @@ def Binstall(container, crate, bin_name) {
     binary = Image("rust:latest")
         > Exec("cargo install cargo-binstall")
         > Exec(Join("cargo binstall ", crate, " --root /out"))
-        > Export(Join("/out/", bin_name));
+        > Export(Join("/out/bin/", bin_name));
 
     return container > With(binary, Join("/bin/", bin_name));
 }
@@ -150,7 +150,7 @@ In this case it will construct a graph like:
 ```mermaid
 flowchart LR
     IR["Image(rust:latest)"] --> EI["cargo install cargo-binstall"] --> EB["cargo binstall typos-cli --root /out"]
-    EB --> EX["Export(/out/typos)"] --> W["With"]
+    EB --> EX["Export(/out/bin/typos)"] --> W["With"]
     I["image(debian:bookworm-slim)"] --> W
 ```
 

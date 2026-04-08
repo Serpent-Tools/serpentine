@@ -16,11 +16,11 @@ For example `Join("hello ", "world")` results in `"hello world"`
 
 ## Container nodes
 
-"Containers" in serpentine, or more accuratly containerd snapshots (essentially docker layers) are immutable values, the below nodes take in a container and return a new one.
+"Containers" in serpentine, or more accurately containerd snapshots (essentially docker layers) are immutable values, the below nodes take in a container and return a new one.
 
 ### `Image`
 
-This node will pull a image from docker hub, or simialr, and construct a serpentine "container" from them.
+This node will pull a image from docker hub, or similar, and construct a serpentine "container" from them.
 For example `Image("rust:latest")` is similar to the dockerfile `FROM rust:latest`
 
 ### `Exec`
@@ -106,7 +106,7 @@ export DEFAULT = ... > Export("./build/foo") > ToHost("./out/foo");
 
 ## Service nodes
 
-Services in serpentine work differantly than one would expect from other ci products, specifically while services are attached to a container and stay with the container, the actual process live only for the duration of one node.
+Services in serpentine work differently than one would expect from other ci products, specifically while services are attached to a container and stay with the container, the actual process live only for the duration of one node.
 
 specifically serpentine will spin up and down services at each `Exec`, this is to ensure warm and cold cache runs behave the same and is a nice compromise to ensure services can still be cached, in practice we have found its rare you need a service for more then one `Exec`.
 Another benefit is that you get all the benefits of containers in serpentine for services as well, specifically forking the graph.
@@ -119,7 +119,7 @@ Another benefit is that you get all the benefits of containers in serpentine for
 This is the service version of `Image`, it returns a service and reads `ENTERYPOINT`/`CMD` from the pulled image.
 
 > [!NOTE]
-> Since techically speaking `HEALTHCHECK` is not part of the oci-spec serpentine does not read it.
+> Since technically speaking `HEALTHCHECK` is not part of the oci-spec serpentine does not read it.
 
 ### `WithService`
 
@@ -152,7 +152,7 @@ postgres = ImageService("docker.io/library/postgres:16")
 
 ### `ToService`
 
-Tihs node converts a container to a service, It takes the entroypoint as a argument:
+This node converts a container to a service, It takes the entroypoint as a argument:
 ```snek
 base = Image("quay.io/toolbx-images/alpine-toolbox:3.21") > Exec("apk add curl");
 

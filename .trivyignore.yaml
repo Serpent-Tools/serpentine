@@ -1,0 +1,4 @@
+vulnerabilities:
+  - id: CVE-2026-33817
+    expired_at: 2026-04-13
+    statement: Withdrawn 2026-04-08 https://nvd.nist.gov/vuln/detail/CVE-2026-33817

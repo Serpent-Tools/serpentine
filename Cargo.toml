@@ -19,7 +19,7 @@ panic = "abort"
 strip = "symbols"
 
 [workspace.metadata.typos.files]
-extend-exclude = ["supply-chain/*"]
+extend-exclude = ["supply-chain/*", "book/theme/*"]
 
 [workspace.lints.rust]
 missing_docs = "warn"

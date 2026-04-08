@@ -6,7 +6,7 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION
     echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum -c - && \
     chmod +x /tini
 
-FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS cni
+FROM golang:1.26-bookworm@sha256:4f4ab2c90005e7e63cb631f0b4427f05422f241622ee3ec4727cc5febbf83e34 AS cni
 
 ARG CNI_VERSION=v1.9.1
 ARG CNI_COMMIT=adc3e6b5b581638afbd194cf2e9319ecbb0151a1
@@ -25,7 +25,7 @@ RUN go build -o /cni/loopback -ldflags "$LDFLAGS" ./plugins/main/loopback && \
     go build -o /cni/static -ldflags "$LDFLAGS" ./plugins/ipam/static
 RUN strip --strip-all /cni/*
 
-FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS runc
+FROM golang:1.26-bookworm@sha256:4f4ab2c90005e7e63cb631f0b4427f05422f241622ee3ec4727cc5febbf83e34 AS runc
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
@@ -41,7 +41,7 @@ WORKDIR /src/runc
 RUN make BUILDTAGS="" EXTRA_FLAGS="-a" EXTRA_LDFLAGS="-w -s" static
 RUN strip --strip-all runc
 
-FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS containerd
+FROM golang:1.26-bookworm@sha256:4f4ab2c90005e7e63cb631f0b4427f05422f241622ee3ec4727cc5febbf83e34 AS containerd
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y gcc=4:12.2.0-3 libseccomp-dev=2.5.4-1+deb12u1 \
