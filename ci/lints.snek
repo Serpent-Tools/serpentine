@@ -16,7 +16,7 @@ fmt = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo fmt --check");
 
-export spelling = Image("debian:bookworm@sha256:db7a4382d9bfc480ca4ef9542bd33cad0566a19b5765a1550f335d232254753c")
+export spelling = lib::debian 
     > WorkingDir("/app")
     > lib::Binstall("typos-cli@1.45.0", "typos")
     > With(lib::source_code, ".")
@@ -32,8 +32,15 @@ vet = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo vet check --locked");
 
+trivy = Image("aquasec/trivy:0.69.3@sha256:b8d98eef2262b6725d9050186fa793bd1aba51bf8e807597e965ec0d29c8b927") 
+    > Exec("trivy image --disable-telemetry --download-db-only")
+    > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
+    > With(lib::container_image, "containerd.tar")
+    > Exec("trivy image --input containerd.tar --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml");
+    
+
 export light_lints = !(clippy, fmt, spelling) Noop(0);
-export full_lints = !(clippy_hack, fmt, spelling, deny, vet) Noop(0);
+export full_lints = !(clippy_hack, fmt, spelling, deny, vet, trivy) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
