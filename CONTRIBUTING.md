@@ -44,12 +44,7 @@ Serpentine's integration tests and linting can be run locally:
 ## `cargo-vet`
 When updating/adding a dependency you might run into a `cargo-vet` error. When this happens we have a few options in order of preference:
 
-* Downgrade to an audited version (you can use the `ci/cargo_vet_downgrade.sh` script to do this for all failing/exempt crates).
+* Downgrade to an audited version.
 * Audit the diff yourself if it's small enough and reasonable.
 * Trust the crate. This should rarely be done, but is generally accepted if there are no other options and the crate is popular.
 
-### Cutting down on trusts and exemptions
-If you wish to help us cut down on exemptions and trust entries we have two scripts for this:
-
-* `ci/cargo_vet_improvements.sh` — Sort current exemptions by line count, allowing you to quickly see what might be easy pickings.
-* `ci/cargo_vet_unneeded_trusts.sh` — Attempt to remove a trust entry and report the effect. Any trust entries marked as `REDUNDANT` can/should be removed. Other entries will require line review; you can consider removing the trust entry and doing the audit (though in general spending audit time on the current exempt crates is more impactful).

@@ -6,7 +6,7 @@ filter = "test(engine::containerd::) | test(tests::live_examples::) | test(tests
 test-group = "docker"
 
 [profile.integration_tests]
-default-filter = "test(engine::containerd::) | test(tests::live_examples::) | test(tests::live_fails::)"
+default-filter = "test(tests::live_examples::)"
 
 [profile.snapshots]
 default-filter = "test(snek::) | test(tests::live_fails::)"
