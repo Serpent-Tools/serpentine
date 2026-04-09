@@ -1,8 +1,16 @@
 // Most of this will be moved into the stdlib
 
+export def Chain(node_a, node_b) {
+    // Phantom dependencies are pulled before the inner expression.
+    return !node_a Noop(node_b);
+}
+
+export debian = Image("debian:bookworm@sha256:db7a4382d9bfc480ca4ef9542bd33cad0566a19b5765a1550f335d232254753c");
+
 export rust = Image("rustlang/rust:nightly@sha256:0fc2f1427a3c0bef08395adfbf23b959872ce0225314ba2c483c3fd8c6d1fd0e")
     > WorkingDir("/app")
-    > Exec("apt-get update && apt-get install -y protobuf-compiler=3.21.12-11");
+    > Exec("apt-get update && apt-get install -y protobuf-compiler=3.21.12-11")
+    > Env("RUST_LOG", "serpentine=trace");
 
 export def Binstall(container, crate, bin_name) {
     binary = rust 
@@ -29,3 +37,6 @@ export def Cooked(container, build_kind) {
         > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
         > With(source_code, ".");
 }
+
+export container_image = FromHost("./target/containerd.tar");
+

@@ -1,6 +1,8 @@
+import "./ci/lib.snek" as lib;
 import "./ci/lints.snek" as lints;
+import "./ci/tests.snek" as tests;
 
-export DEFAULT = !(lints::light_lints) Noop(0);
+export DEFAULT = lib::Chain(tests::simple, lints::light_lints);
 export FULL = !(lints::full_lints) Noop(0);
 
 export FIX = lints::fix;

@@ -14,7 +14,9 @@ bench: build_container
 
 build_container:
     docker container rm -f serpent-tools.containerd
+    rm ./target/containerd.tar || true
     docker build -t serpent-tools/containerd:dev . --pull=false
+    docker image save serpent-tools/containerd:dev -o ./target/containerd.tar
 
 clean: build_container
     cargo run -p serpentine -- clean || exit 0
