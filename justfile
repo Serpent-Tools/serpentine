@@ -14,7 +14,8 @@ bench: build_container
 
 build_container:
     docker container rm -f serpent-tools.containerd
-    rm ./target/containerd.tar || true
+    rm -f ./target/containerd.tar
+    mkdir -p ./target
     docker build -t serpent-tools/containerd:dev . --pull=false
     docker image save serpent-tools/containerd:dev -o ./target/containerd.tar
 

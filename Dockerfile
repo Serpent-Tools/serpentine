@@ -1,4 +1,4 @@
-FROM alpine:3.21@sha256:22e0ec13c0db6b3e1ba3280e831fc50ba7bffe58e81f31670a64b1afede247bc as download
+FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709 as download
 RUN apk add tar=1.35-r2 curl=8.14.1-r2
 
 ARG TINI_VERSION=v0.19.0
@@ -105,9 +105,10 @@ RUN cargo chef cook --release -p sidecar --target x86_64-unknown-linux-gnu --rec
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
-FROM alpine:3.21@sha256:22e0ec13c0db6b3e1ba3280e831fc50ba7bffe58e81f31670a64b1afede247bc
+FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709
 RUN apk add --no-cache zlib=1.3.1-r2
 RUN apk add --no-cache iptables=1.8.11-r1
+RUN apk add --no-cache libcrypto3=3.3.7-r0 libssl3=3.3.7-r0 musl=1.2.5-r11 musl-utils=1.2.5-r11
 
 COPY --from=containerd /src/containerd/bin /bin
 COPY --from=runc /src/runc/runc /bin/runc
