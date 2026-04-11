@@ -32,8 +32,7 @@ vet = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo vet check --locked");
 
-trivy = Image("aquasec/trivy:0.69.3@sha256:b8d98eef2262b6725d9050186fa793bd1aba51bf8e807597e965ec0d29c8b927") 
-    > Exec("trivy image --disable-telemetry --download-db-only")
+trivy = Image("aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c") 
     > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
     > With(lib::container_image, "containerd.tar")
     > Exec("trivy image --input containerd.tar --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml");

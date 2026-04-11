@@ -172,7 +172,9 @@ jobs:
           name: containerd-image
           path: /tmp
       - name: Load Docker image
-        run: zstd -d /tmp/containerd-dev.tar.zst --stdout | docker load
+        run: |
+          mkdir -p target
+          zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
       - name: Run serpentine pipeline
         run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point FULL --jobs 1
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830

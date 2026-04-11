@@ -2,6 +2,6 @@ import "./lib.snek" as lib;
 
 
 export simple = lib::rust
-    > lib::Binstall("cargo-nextest", "cargo-nextest")
+    > lib::Binstall("cargo-nextest@0.9.132", "cargo-nextest")
     > lib::Cooked("--tests")
     > Exec("cargo nextest run");
