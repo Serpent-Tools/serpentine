@@ -355,7 +355,7 @@ mod tests {
             insta::with_settings! { {
                 filters => vec![
                     // Redact file paths
-                    (r#"(?:\\\\[?.]\\)?(?:[A-Za-z]:)?(?:[/\\][^/\\\s:"'\]]+)+"#, "<redacted-path>"),
+                    (r#"(?:\\\\[?.]\\)?(?:[A-Za-z]:)?(?:[/\\][^/\\\s:"'\]]+){2,}"#, "<redacted-path>"),
                     // Redact OS error messages, they can be different on different systems
                     (r"(?i)os error \d+: [^\n]+", "OS error <redacted>"),
                 ],

@@ -1,5 +1,5 @@
 ---
-source: src/snek/mod.rs
+source: serpentine/src/snek/mod.rs
 expression: err
 ---
   x Compile Error
@@ -8,7 +8,7 @@ Error:
   x Importing module '<redacted-path>' failed
   |->   x Importing module '<redacted-path>' failed
   |      ,-[<redacted-path>:1:8]
-  |    1 | import ".<redacted-path>" as lib;
+  |    1 | import "./recursive_import_2.snek" as lib;
   |      :        ^^^^^^^^^^^^^|^^^^^^^^^^^^^
   |      :                     `-- In this import statement
   |      `----
@@ -18,7 +18,7 @@ Error:
         x Circular import. Module <redacted-path> attempted to be imported while resolving.
       
    ,-[<redacted-path>:1:8]
- 1 | import ".<redacted-path>" as lib;
+ 1 | import "./recursive_import_1.snek" as lib;
    :        ^^^^^^^^^^^^^|^^^^^^^^^^^^^
    :                     `-- In this import statement
    `----

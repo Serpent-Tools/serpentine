@@ -1,0 +1,14 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: parsing::unexpected_token
+
+  x Expected `identifier`
+   ,-[<redacted-path>:1:13]
+ 1 | export foo =
+   :             |
+   :             `-- Got `end of file`
+   `----

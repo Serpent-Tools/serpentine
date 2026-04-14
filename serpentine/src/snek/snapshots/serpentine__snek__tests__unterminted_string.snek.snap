@@ -1,0 +1,14 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: parsing::unterminated_string
+
+  x Unterminated string literal
+   ,-[<redacted-path>:1:20]
+ 1 | export foo = Image("rust:latest);
+   :                    ^^^^^^^|^^^^^^^
+   :                           `-- String literal not terminated
+   `----

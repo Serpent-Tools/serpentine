@@ -75,6 +75,8 @@ impl Token<'_> {
 
 /// the tokenizer handles turning a input stream into tokens
 pub struct Tokenizer<'arena> {
+    /// The arena to allocate token data in
+    arena: &'arena bumpalo::Bump,
     /// File id for the file
     file_id: FileId,
     /// The code to parse into tokens
@@ -86,10 +88,12 @@ pub struct Tokenizer<'arena> {
 impl<'arena> Tokenizer<'arena> {
     /// tokenize the given string and return the spanned tokens
     pub fn tokenize(
+        arena: &'arena bumpalo::Bump,
         file_id: FileId,
         code: &'arena str,
     ) -> Result<Box<[Spanned<Token<'arena>>]>, CompileError> {
         let mut tokenizer = Self {
+            arena,
             file_id,
             code,
             byte: 0,
@@ -126,19 +130,7 @@ impl<'arena> Tokenizer<'arena> {
                 self.advance()?;
                 self.span(2).with(Token::Path)
             }
-            '"' => {
-                let consumed = self.advance_while(|next_char| next_char != '"')?;
-                let content_span = self.span(consumed);
-                if self.advance()?.is_none() {
-                    return Err(CompileError::UnterminatedString {
-                        location: content_span,
-                    });
-                }
-                let string_span = self.span(consumed.saturating_add(2));
-
-                let content = content_span.index_str(self.code)?;
-                string_span.with(Token::String(content))
-            }
+            '"' => self.handle_string()?,
             '/' if self.peek()? == Some('/') => {
                 // consume until end of line
                 self.advance()?;
@@ -199,11 +191,53 @@ impl<'arena> Tokenizer<'arena> {
         }))
     }
 
-    /// Consume characters that satifisy the predicate, returning the number of bytes consumed
-    pub fn advance_while(
-        &mut self,
-        predicate: impl Fn(char) -> bool,
-    ) -> Result<usize, CompileError> {
+    /// Handle the tokenization of a string
+    fn handle_string(&mut self) -> Result<Spanned<Token<'arena>>, CompileError> {
+        enum ParsingState {
+            Normal,
+            Escape,
+        }
+
+        let mut consumed = 1_usize; // initial "
+        let mut content = bumpalo::collections::String::new_in(self.arena);
+        let mut state = ParsingState::Normal;
+
+        loop {
+            if let Some(next_char) = self.advance()? {
+                consumed = consumed.saturating_add(next_char.len_utf8());
+
+                match state {
+                    ParsingState::Normal => match next_char {
+                        '"' => break,
+                        '\\' => state = ParsingState::Escape,
+                        _ => content.push(next_char),
+                    },
+                    ParsingState::Escape => {
+                        let escaped_char = match next_char {
+                            '\\' => '\\',
+                            '"' => '"',
+                            other => {
+                                content.push('\\');
+                                other
+                            }
+                        };
+                        content.push(escaped_char);
+                        state = ParsingState::Normal;
+                    }
+                }
+            } else {
+                return Err(CompileError::UnterminatedString {
+                    location: self.span(consumed),
+                });
+            }
+        }
+
+        let string_span = self.span(consumed);
+        Ok(string_span.with(Token::String(content.into_bump_str())))
+    }
+
+    /// Consume characters that satisfy the predicate, returning the number of bytes consumed
+    fn advance_while(&mut self, predicate: impl Fn(char) -> bool) -> Result<usize, CompileError> {
         let mut consumed: usize = 0;
         while let Some(next_character) = self.peek()?
             && predicate(next_character)
@@ -244,7 +278,7 @@ impl<'arena> Tokenizer<'arena> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::expect_used, clippy::panic, reason = "tests")]
 mod tests {
     use proptest::property_test;
     use rstest::rstest;
@@ -254,20 +288,44 @@ mod tests {
 
     #[property_test]
     fn doesnt_panic(code: String) {
-        let _ = Tokenizer::tokenize(FileId(0), &code);
+        let _ = Tokenizer::tokenize(&bumpalo::Bump::new(), FileId(0), &code);
     }
 
     #[rstest]
     #[case::simple_number("123")]
     #[case::string(r#""hello""#)]
     fn tokenize(#[case] code: String) {
-        let res = Tokenizer::tokenize(FileId(0), &code);
+        let arena = bumpalo::Bump::new();
+        let res = Tokenizer::tokenize(&arena, FileId(0), &code);
         assert!(res.is_ok(), "Failed to tokenize {code:?}: {res:?}");
+    }
+
+    #[rstest]
+    #[case::simple(r#""hello""#, "hello")]
+    #[case::backslash(r#""hello\\nworld""#, r"hello\nworld")]
+    #[case::quote(r#""hello\"world""#, r#"hello"world"#)]
+    #[case::quote_start(r#""\"hello""#, r#""hello"#)]
+    #[case::quote_end(r#""hello\"""#, r#"hello""#)]
+    #[case::unknown_escape(r#""\v""#, r"\v")]
+    fn string_parsing(#[case] code: String, #[case] expected: String) {
+        let arena = bumpalo::Bump::new();
+        let res = Tokenizer::tokenize(&arena, FileId(0), &code).expect("Failed to tokenize");
+
+        assert_eq!(res.len(), 2, "Expected 2 tokens, string, EOF");
+        let Some(string_token) = res.first() else {
+            panic!("Expected first token to be a string, got EOF");
+        };
+
+        assert!(
+            matches!(string_token.take(), Token::String(value) if value == expected),
+            "Expected first token to be a string with value {expected:?}, got {string_token:?}",
+        );
     }
 
     #[test]
     fn empty_comment() {
-        let res = Tokenizer::tokenize(FileId(0), "/**/123").expect("Failed to tokenize");
+        let arena = bumpalo::Bump::new();
+        let res = Tokenizer::tokenize(&arena, FileId(0), "/**/123").expect("Failed to tokenize");
         assert_eq!(res.len(), 2, "Expected 2 tokens, number, EOF");
     }
 
@@ -277,7 +335,8 @@ mod tests {
     #[case::single_colon(":")]
     #[case::double_colon_with_whitespace(": :")]
     fn edge_case_fails(#[case] code: String) {
-        let res = Tokenizer::tokenize(FileId(0), &code);
+        let arena = bumpalo::Bump::new();
+        let res = Tokenizer::tokenize(&arena, FileId(0), &code);
         assert!(res.is_err(), "Should fail to tokenize {code:?}: {res:?}");
     }
 }
