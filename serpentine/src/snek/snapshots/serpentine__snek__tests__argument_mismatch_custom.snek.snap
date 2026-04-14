@@ -1,5 +1,5 @@
 ---
-source: src/snek/mod.rs
+source: serpentine/src/snek/mod.rs
 expression: err
 ---
   x Compile Error
@@ -10,7 +10,7 @@ Error: compiler::argument_count
    ,-[<redacted-path>:5:18]
  4 | 
  5 | export DEFAULT = Foo();
-   :                  ^^^|^^
-   :                     `-- This node expects 1 arguments
+   :                  ^|^
+   :                   `-- This node expects 1 arguments
    `----
   help: Remember that chaining counts as a argument, `... > Foo(1, 2)` has 3 arguments passed for example.

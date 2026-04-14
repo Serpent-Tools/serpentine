@@ -1,5 +1,5 @@
 ---
-source: src/snek/mod.rs
+source: serpentine/src/snek/mod.rs
 expression: err
 ---
   x Compile Error
@@ -10,8 +10,8 @@ Error: compiler::type_mismatch
    ,-[<redacted-path>:2:20]
  1 | def Foo(value) {
  2 |     return value > Exec("echo hello");
-   :                    ^^^^^^^^^|^^^^^^^^^
-   :                             `-- In call to this node
+   :                    ^^^^^^^^|^^^^^^^^
+   :                            `-- In call to this node
  3 | }
  4 | 
  5 | export DEFAULT = Foo("Hello");

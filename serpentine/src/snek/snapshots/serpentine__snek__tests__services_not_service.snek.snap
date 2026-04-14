@@ -10,7 +10,7 @@ Error: compiler::type_mismatch
    ,-[<redacted-path>:2:7]
  1 | export DEFAULT = Image("...")
  2 |     > WithService(Image("..."), "...");
-   :       ^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^|
-   :                       |                `-- Has type `container`
-   :                       `-- In call to this node
+   :       ^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^|
+   :                      |               `-- Has type `container`
+   :                      `-- In call to this node
    `----
