@@ -264,7 +264,9 @@ impl<'arena> Parser<'arena> {
             Some(Token::Comma),
             Self::parse_expression,
         )?;
-        let end_span = self.tokens.peek().map_or(start_span, Spanned::span);
+        let end_span = arguments
+            .last()
+            .map_or(start_span, super::ast::Expression::span);
 
         let node = ast::Node {
             name,

@@ -1,0 +1,21 @@
+---
+source: serpentine/src/main.rs
+expression: err
+---
+  x Runtime Error
+
+Error: node_error
+
+  x Error in node StoreId(3)
+  `-> command_execution_error
+      
+        x Failed to execute command (exit code 1): "exit 1"
+        |
+      
+   ,-[<redacted-path>:2:7]
+ 1 | export DEFAULT = Image("quay.io<redacted-path>:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0")
+ 2 |     > Exec("exit 1")
+   :       ^^^^^^|^^^^^^
+   :             `-- Error occurred in this node
+ 3 |     > Exec("echo hello");
+   `----

@@ -11,9 +11,9 @@ Error: compiler::type_mismatch
  1 |     export DEFAULT = Image("...")
  2 | ,->     > WithService(
  3 | |           Image("...") > Exec("..."),
-   : |                          ^^^^^^|^^^^^
-   : |                                `-- Has type `container`
- 4 | |           "..."
- 5 | |->     );
+   : |                          ^^^^^|^^^^
+   : |                               `-- Has type `container`
+ 4 | |->         "..."
    : `---- In call to this node
+ 5 |         );
    `----
