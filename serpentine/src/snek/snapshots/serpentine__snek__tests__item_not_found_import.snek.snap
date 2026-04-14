@@ -1,5 +1,5 @@
 ---
-source: src/snek/mod.rs
+source: serpentine/src/snek/mod.rs
 expression: err
 ---
   x Compile Error
@@ -12,7 +12,7 @@ Error:
   |   
   `-> No such file or directory (os error 2)
    ,-[<redacted-path>:1:8]
- 1 | import "..<redacted-path>" as lib;
+ 1 | import "../lib.snek" as lib;
    :        ^^^^^^|^^^^^^
    :              `-- In this import statement
  2 | 

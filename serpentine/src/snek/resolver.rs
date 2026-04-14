@@ -437,7 +437,7 @@ impl<'arena> Resolver<'arena> {
             })?;
 
         let file_id = self.file.push(module.to_owned(), code);
-        let tokens = super::tokenizer::Tokenizer::tokenize(file_id, code)?;
+        let tokens = super::tokenizer::Tokenizer::tokenize(self.arena, file_id, code)?;
         let ast = super::parser::Parser::parse_file(tokens)?;
 
         let mut exports = Scope::root();

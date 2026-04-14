@@ -207,3 +207,7 @@ flowchart LR
 
 This becomes even more important with Functions take our `Binstall` function from before, without this optimization every call to it would install binstall and the given tool every time, but with the de-duplicator binstall is only installed once, and each specific tool is also only installed once.
 This means you can write functions as ergonomicly as you want and as long as you are smart with at which points you introduce the arguments you can still get amazing performance.
+
+## String escapes
+Snek also supports a small number of string escapes, mainly `\\`, `\"`, other unknown escapes are inserted directly, allowing `sh` to handle them. 
+
