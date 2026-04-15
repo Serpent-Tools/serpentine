@@ -6,6 +6,11 @@ who = "Vivax"
 criteria = "safe-to-deploy"
 delta = "2.10.0 -> 2.11.0"
 
+[[audits.containerd-client]]
+who = "Vivax"
+criteria = "safe-to-run"
+delta = "0.8.0 -> 0.9.0"
+
 [[audits.crossbeam-utils]]
 who = "Vivax"
 criteria = "safe-to-run"
@@ -41,6 +46,11 @@ who = "Vivax"
 criteria = "safe-to-deploy"
 delta = "1.1.1 -> 1.2.0"
 
+[[audits.prost-build]]
+who = "Vivax"
+criteria = "safe-to-run"
+delta = "0.13.5 -> 0.14.1"
+
 [[audits.rand]]
 who = "Vivax"
 criteria = "safe-to-deploy"
@@ -75,6 +85,16 @@ delta = "0.2.18 -> 0.2.19"
 who = "Vivax"
 criteria = "safe-to-run"
 delta = "0.2.18 -> 0.2.19"
+
+[[audits.tonic-prost]]
+who = "Vivax"
+criteria = "safe-to-run"
+version = "0.14.5"
+
+[[audits.tonic-prost-build]]
+who = "Vivax"
+criteria = "safe-to-run"
+version = "0.14.5"
 
 [[audits.version_check]]
 who = "Vivax"
@@ -649,6 +669,18 @@ criteria = "safe-to-deploy"
 user-id = 6741 # Alice Ryhl (Darksonn)
 start = "2021-01-12"
 end = "2027-04-03"
+
+[[trusted.tonic]]
+criteria = "safe-to-run"
+user-id = 3959 # Lucio Franco (LucioFranco)
+start = "2019-10-02"
+end = "2027-04-15"
+
+[[trusted.tonic]]
+criteria = "safe-to-run"
+user-id = 12432 # David Pedersen (davidpdrsn)
+start = "2021-03-17"
+end = "2027-04-15"
 
 [[trusted.tower]]
 criteria = "safe-to-deploy"

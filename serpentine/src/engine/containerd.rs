@@ -572,7 +572,6 @@ struct ContainerdRootClient(containerd_client::Client);
 /// Injects the serpentine namespace into all requests
 #[expect(clippy::expect_used, reason = "constant value")]
 #[expect(
-    clippy::result_large_err,
     clippy::unnecessary_wraps,
     reason = "This is the signature needed by tonic"
 )]
