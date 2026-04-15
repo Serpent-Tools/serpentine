@@ -39,7 +39,8 @@ trivy = Image("aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528
     
 
 export light_lints = !(clippy, fmt, spelling) Noop(0);
-export full_lints = !(clippy_hack, fmt, spelling, deny, vet, trivy) Noop(0);
+export full_lints = !(clippy_hack, fmt, spelling) Noop(0);
+export security = !(deny, vet, trivy) Noop(0); 
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")

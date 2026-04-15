@@ -3,6 +3,6 @@ import "./ci/lints.snek" as lints;
 import "./ci/tests.snek" as tests;
 
 export DEFAULT = lib::Chain(tests::simple, lints::light_lints);
-export FULL = !(lints::full_lints) Noop(0);
+export FULL = lib::Chain(lints::full_lints, lints::security);
 
 export FIX = lints::fix;

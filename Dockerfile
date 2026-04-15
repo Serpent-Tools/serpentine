@@ -106,7 +106,7 @@ COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
 FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709
-RUN apk add --no-cache zlib=1.3.1-r2
+RUN apk add --no-cache zlib=1.3.2-r0
 RUN apk add --no-cache iptables=1.8.11-r1
 RUN apk add --no-cache libcrypto3=3.3.7-r0 libssl3=3.3.7-r0 musl=1.2.5-r11 musl-utils=1.2.5-r11
 
