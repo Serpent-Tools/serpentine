@@ -323,10 +323,6 @@ criteria = "safe-to-deploy"
 version = "6.0.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.rand_xorshift]]
-version = "0.4.0"
-criteria = "safe-to-run"
-
 [[exemptions.rand_xoshiro]]
 version = "0.6.0"
 criteria = "safe-to-run"
@@ -401,10 +397,6 @@ criteria = "safe-to-run"
 
 [[exemptions.typenum]]
 version = "1.19.0"
-criteria = "safe-to-run"
-
-[[exemptions.unarray]]
-version = "0.1.4"
 criteria = "safe-to-run"
 
 [[exemptions.unicode-truncate]]
