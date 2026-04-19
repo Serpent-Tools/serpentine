@@ -1,0 +1,83 @@
+name: Security Scan
+on:
+  schedule:
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  issues: write
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e
+        with:
+          toolchain: 1.94.1
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          cache-on-failure: true
+      - name: Install protobuf
+        run: sudo apt-get install -y protobuf-compiler=3.21.12-8.2ubuntu0.3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build container
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          load: true
+          tags: serpent-tools/containerd:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Export Docker image
+        run: |
+          mkdir -p target
+          docker save serpent-tools/containerd:dev -o target/containerd.tar
+      - name: Run security scan
+        run: cargo run -p serpentine --locked -- run --ci --entry-point SECURITY --jobs 1 2>/tmp/serpentine_stderr.log
+      - name: Surface security scan errors
+        if: failure()
+        run: |
+          cat /tmp/serpentine_stderr.log >&2
+          {
+            echo "## Security Scan Failed"
+            echo '```'
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/serpentine_stderr.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Security scan failed: $(head -1 /tmp/serpentine_stderr.log)"
+      - name: Create or update issue on failure
+        if: failure()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const fs = require('fs');
+            const stderr = fs.readFileSync('/tmp/serpentine_stderr.log', 'utf8')
+              .replace(/\x1b\[[0-9;]*m/g, '');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security-scan',
+              state: 'open',
+            });
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const date = new Date().toISOString().slice(0, 10);
+            const body = stderr.slice(0, 60000);
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `## Security scan still failing (${date})\n\nWorkflow run: ${runUrl}\n\n\`\`\`\n${body}\n\`\`\``,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `Security scan failure: ${date}`,
+                labels: ['security-scan'],
+                body: `The scheduled security scan found issues.\n\nWorkflow run: ${runUrl}\n\n\`\`\`\n${body}\n\`\`\``,
+              });
+            }
