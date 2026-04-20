@@ -73,7 +73,6 @@ RUN sed -i \
     -e '/plugins\/transfer/d' \
     -e '/plugins\/streaming/d' \
     -e '/plugins\/snapshots\/btrfsd/d' \
-    -e '/plugins\/snapshots\/native/d' \
     -e '/plugins\/snapshots\/blockfile/d' \
     -e '/plugins\/snapshots\/devmapper/d' \
     -e '/plugins\/snapshots\/erofs/d' \

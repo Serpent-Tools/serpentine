@@ -1,0 +1,10 @@
+amd64 = Image("docker.io/library/alpine:3.21@sha256:f27cad9117495d32d067133afff942cb2dc745dfe9163e949f6bfe8a6a245339", "linux/amd64")
+    > Exec("test $(uname -m) = x86_64");
+
+arm64 = Image("docker.io/library/alpine:3.21@sha256:1832327faf048390adc33852575d37c7ba155e064a339e78b9bd81983a8c7a00", "linux/arm64")
+    > Exec("test $(uname -m) = aarch64");
+
+riscv64 = Image("docker.io/library/alpine:3.21@sha256:eae9b783e97a9fb58fe8282dbf406d3854919e00895ad75940206ebe168dcfee", "linux/riscv64")
+    > Exec("test $(uname -m) = riscv64");
+
+export DEFAULT = !(amd64, arm64, riscv64) Noop(0);

@@ -79,7 +79,6 @@ disabled_plugins = [
     "io.containerd.cri.v1.images",
     "io.containerd.cri.v1.runtime",
     "io.containerd.cri.v1.images",
-    "io.containerd.snapshotter.v1.native",
     "io.containerd.snapshotter.v1.btrfs",
     "io.containerd.snapshotter.v1.devmapper",
     "io.containerd.grpc.v1.images",

@@ -20,8 +20,18 @@ For example `Join("hello ", "world")` results in `"hello world"`
 
 ### `Image`
 
-This node will pull a image from docker hub, or similar, and construct a serpentine "container" from them.
+This node will pull an image from docker hub, or similar, and construct a serpentine "container" from them.
 For example `Image("rust:latest")` is similar to the dockerfile `FROM rust:latest`
+
+By default, the image is pulled for the host's native architecture. An optional second argument specifies the platform explicitly, enabling cross-architecture execution:
+```snek
+native = Image("rust:latest") > Exec("cargo build --release");
+arm_build = Image("rust:latest", "linux/arm64") > Exec("cargo build --release");
+```
+When a cross-architecture platform is specified, serpentine automatically downloads and injects a QEMU emulator (from `tonistiigi/binfmt`) into the container so the entire process tree runs under emulation. No host-level binfmt_misc configuration is required.
+
+> [!WARNING]
+> When specifying a image digest / using single-arch images you should explicitly specify the platform so that it works on all hosts. 
 
 ### `Exec`
 
@@ -116,7 +126,7 @@ Another benefit is that you get all the benefits of containers in serpentine for
 
 ### `ImageService`
 
-This is the service version of `Image`, it returns a service and reads `ENTRYPOINT`/`CMD` from the pulled image.
+This is the service version of `Image`, it returns a service and reads `ENTRYPOINT`/`CMD` from the pulled image. Like `Image`, it takes a platform as its second argument.
 
 > [!NOTE]
 > Since technically speaking `HEALTHCHECK` is not part of the oci-spec serpentine does not read it.
