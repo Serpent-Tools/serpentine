@@ -10,6 +10,7 @@ uuid = { version = "1.22.0", default-features = false, features = ["v4"] }
 proptest = { version = "1.11.0", default-features = false, features = ["attr-macro", "std"] }
 proptest-derive = { version = "0.7.0", default-features = false }
 rstest = { version = "0.26.1", default-features = false }
+typed-path = { version = "0.12.3", default-features = false }
 
 [profile.release]
 opt-level = 3

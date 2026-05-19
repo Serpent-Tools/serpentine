@@ -7,6 +7,7 @@ use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net;
+use typed_path::UnixPath;
 
 use crate::engine::RuntimeError;
 
@@ -75,7 +76,7 @@ impl Client {
     pub async fn export_files(
         &self,
         mounts: Vec<containerd_client::types::Mount>,
-        path: &str,
+        path: &UnixPath,
     ) -> Result<impl AsyncRead + Unpin + Send, RuntimeError> {
         let mut socket = self.connect(RequestKind::ExportFiles).await?;
 
@@ -83,8 +84,8 @@ impl Client {
         for mount in mounts {
             let mount = Mount {
                 type_: mount.r#type.into(),
-                source: mount.source.into(),
-                target: mount.target.into(),
+                source: UnixPath::new(&mount.source).to_path_buf(),
+                target: UnixPath::new(&mount.target).to_path_buf(),
                 options: mount.options.into_iter().map(Into::into).collect(),
             };
             mount.write(&mut socket).await?;
@@ -112,7 +113,7 @@ impl Client {
     pub async fn import_files(
         &self,
         mounts: Vec<containerd_client::types::Mount>,
-        path: &str,
+        path: &UnixPath,
         fs_reader: &mut (impl AsyncRead + Send + Unpin),
     ) -> Result<(), RuntimeError> {
         let mut socket = self.connect(RequestKind::ImportFiles).await?;
@@ -121,8 +122,8 @@ impl Client {
         for mount in mounts {
             let mount = Mount {
                 type_: mount.r#type.into(),
-                source: mount.source.into(),
-                target: mount.target.into(),
+                source: UnixPath::new(&mount.source).to_path_buf(),
+                target: UnixPath::new(&mount.target).to_path_buf(),
                 options: mount.options.into_iter().map(Into::into).collect(),
             };
             mount.write(&mut socket).await?;

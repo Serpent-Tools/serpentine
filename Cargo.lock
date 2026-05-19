@@ -2569,6 +2569,7 @@ dependencies = [
  "proptest-derive",
  "rstest",
  "tokio",
+ "typed-path",
 ]
 
 [[package]]
@@ -2606,6 +2607,7 @@ dependencies = [
  "serpentine_internal",
  "simple_logger",
  "tokio",
+ "typed-path",
  "uuid",
 ]
 

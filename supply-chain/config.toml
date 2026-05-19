@@ -393,7 +393,7 @@ criteria = "safe-to-run"
 
 [[exemptions.typed-path]]
 version = "0.12.3"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
 
 [[exemptions.typenum]]
 version = "1.19.0"

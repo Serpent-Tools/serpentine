@@ -27,7 +27,7 @@ prost-types = { version = "0.14", default-features = false }
 tokio-util = { version = "0.7.18", default-features = false, features = ["rt"] }
 tower = { version = "0.5.3", default-features = false }
 blake3 = { version = "1.8.3", default-features = false }
-typed-path = { version = "0.12.3", default-features = false }
+typed-path.workspace = true
 im-rc = { version = "15.1.0", default-features = false }
 ignore = { version = "0.4.25", default-features = false }
 

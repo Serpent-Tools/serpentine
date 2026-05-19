@@ -12,7 +12,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use serpentine_internal::{WireFormat, network};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
-use typed_path::Utf8UnixPathBuf;
+use typed_path::{UnixPath, UnixPathBuf};
 
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
@@ -39,7 +39,13 @@ pub struct ContainerConfig {
     )]
     env: im_rc::HashMap<Rc<str>, Rc<str>>,
     /// The working directory
-    working_dir: Rc<str>,
+    #[cfg_attr(
+        test,
+        proptest(
+            strategy = "proptest::strategy::Strategy::prop_map(proptest::arbitrary::any::<Vec<u8>>(), |bytes| typed_path::UnixPath::new(&bytes).to_path_buf())"
+        )
+    )]
+    working_dir: UnixPathBuf,
     /// The user to spawn the process as.
     ///
     /// This is stored in the same format as the oci image spec for linux.
@@ -57,11 +63,8 @@ impl ContainerConfig {
     }
 
     /// Set the working directory of the container
-    pub fn set_working_dir(&mut self, dir: &str) {
-        self.working_dir = Utf8UnixPathBuf::from(self.working_dir.as_ref())
-            .join(dir)
-            .into_string()
-            .into();
+    pub fn set_working_dir(&mut self, dir: &UnixPath) {
+        self.working_dir = self.working_dir.join(dir);
     }
 
     /// Set an environment variable in the container
@@ -94,7 +97,10 @@ impl From<oci_client::config::Config> for ContainerConfig {
 
         Self {
             env,
-            working_dir: config.working_dir.unwrap_or("/".to_owned()).into(),
+            working_dir: config.working_dir.map_or_else(
+                || UnixPath::new("/").to_path_buf(),
+                |dir| UnixPath::new(&dir).to_path_buf(),
+            ),
             user: config.user.map(Rc::from),
             services: im_rc::HashMap::new(),
         }
@@ -113,7 +119,8 @@ impl CacheData for ContainerConfig {
             value.write(writer).await?;
         }
 
-        self.working_dir.write(writer).await?;
+        serpentine_internal::write_length_prefixed(&mut **writer, self.working_dir.as_bytes())
+            .await?;
 
         if let Some(user) = &self.user {
             writer.write_u8(1).await?;
@@ -143,7 +150,9 @@ impl CacheData for ContainerConfig {
             env.insert(key, value);
         }
 
-        let working_dir = Rc::<str>::read(reader).await?;
+        let working_dir =
+            UnixPath::new(&serpentine_internal::read_length_prefixed(&mut **reader).await?)
+                .to_path_buf();
 
         let user = if reader.read_u8().await? == 1 {
             Some(Rc::<str>::read(reader).await?)
@@ -178,7 +187,7 @@ impl CacheData for ContainerConfig {
             value.content_hash(hasher).await?;
         }
 
-        hasher.update(&(self.working_dir.len() as u64).to_le_bytes());
+        hasher.update(&(self.working_dir.as_bytes().len() as u64).to_le_bytes());
         hasher.update(self.working_dir.as_bytes());
 
         if let Some(user) = &self.user {
@@ -1217,7 +1226,7 @@ impl Client {
             .create_container(
                 &node.state,
                 node.get_cmd().to_owned(),
-                Utf8UnixPathBuf::from(network_namespace.path.to_string()),
+                &network_namespace.path,
                 hosts,
                 &mounts,
                 lease,
@@ -1384,7 +1393,7 @@ impl Client {
         &self,
         state: &ContainerState,
         cmd: String,
-        network_namespace: Utf8UnixPathBuf,
+        network_namespace: &str,
         hosts: Vec<(Rc<str>, std::net::Ipv4Addr)>,
         mounts: &[containerd_client::types::Mount],
         lease: &str,
@@ -1416,7 +1425,11 @@ impl Client {
                 .chain(std::iter::once(format!("HOME={home_dir}")))
                 .collect(),
         ));
-        process.set_cwd(state.config.working_dir.as_ref().into());
+        process.set_cwd(
+            String::from_utf8_lossy(state.config.working_dir.as_bytes())
+                .into_owned()
+                .into(),
+        );
 
         process.set_user(user);
 
@@ -1457,7 +1470,7 @@ impl Client {
                 .iter_mut()
                 .find(|namespace| namespace.typ() == oci_spec::runtime::LinuxNamespaceType::Network)
         {
-            namespace.set_path(Some(network_namespace.into_string().into()));
+            namespace.set_path(Some(network_namespace.into()));
         }
 
         let mut spec = oci_spec::runtime::Spec::default();
@@ -1575,8 +1588,14 @@ impl Client {
         mounts: &[containerd_client::types::Mount],
         user: &str,
     ) -> Result<(oci_spec::runtime::User, Box<str>), RuntimeError> {
-        let Ok(passwd) = self.read_file(mounts, "/etc/passwd").await?.parse();
-        let Ok(groups) = self.read_file(mounts, "/etc/group").await?.parse();
+        let Ok(passwd) = self
+            .read_file(mounts, UnixPath::new("/etc/passwd"))
+            .await?
+            .parse();
+        let Ok(groups) = self
+            .read_file(mounts, UnixPath::new("/etc/group"))
+            .await?
+            .parse();
 
         let Ok(user): Result<userdb::OciUser, _> = user.parse();
         let (user, home_dir) = user.resolve(passwd, &groups)?;
@@ -1588,7 +1607,7 @@ impl Client {
     async fn read_file(
         &self,
         mounts: &[containerd_client::types::Mount],
-        file: &str,
+        file: &UnixPath,
     ) -> Result<String, RuntimeError> {
         let mut file_system_stream = self.sidecar.export_files(mounts.to_vec(), file).await?;
         let _ = serpentine_internal::FileSystemEntryHeader::read(&mut file_system_stream).await?;
@@ -1601,7 +1620,7 @@ impl Client {
     async fn write_file(
         &self,
         mounts: Vec<containerd_client::types::Mount>,
-        file: &str,
+        file: &UnixPath,
         content: Box<[u8]>,
     ) -> Result<(), RuntimeError> {
         let mut bytes = Vec::new();
@@ -1645,7 +1664,7 @@ impl Client {
         };
         self.write_file(
             vec![temp_dir_mount],
-            &file_name,
+            UnixPath::new(&file_name),
             hosts_content.into_bytes().into(),
         )
         .await?;
@@ -1796,12 +1815,16 @@ impl Client {
         &self,
         state: &ContainerState,
         src: FileSystem,
-        dest: &str,
+        dest: &UnixPath,
     ) -> Result<ContainerState, RuntimeError> {
         let snapshot = uuid::Uuid::new_v4().to_string();
         let lease = self.new_lease().await?;
 
-        let dest = if dest == "." { "" } else { dest };
+        let dest = if dest.as_bytes() == b"." {
+            UnixPath::new("")
+        } else {
+            dest
+        };
 
         let mounts = self
             .containerd
@@ -1820,9 +1843,7 @@ impl Client {
             .mounts;
 
         log::debug!("Copying filesystem into container at {dest}");
-        let dest = Utf8UnixPathBuf::from(state.config.working_dir.as_ref())
-            .join(dest)
-            .into_string();
+        let dest = state.config.working_dir.join(dest);
 
         self.sidecar
             .import_files(mounts, &dest, &mut src.get_reader().await?)
@@ -1850,11 +1871,15 @@ impl Client {
     pub async fn export_path(
         &self,
         state: &ContainerState,
-        docker_path: &str,
+        docker_path: &UnixPath,
     ) -> Result<FileSystem, RuntimeError> {
         log::debug!("Creating file system provider for {state:?} at {docker_path}");
         let snapshot = format!("{}/view/{}", state.snapshot, uuid::Uuid::new_v4());
-        let docker_path = if docker_path == "." { "" } else { docker_path };
+        let docker_path = if docker_path.as_bytes() == b"." {
+            UnixPath::new("")
+        } else {
+            docker_path
+        };
 
         let lease = self.new_lease().await?;
         let mounts = self
@@ -1873,14 +1898,12 @@ impl Client {
             .into_inner()
             .mounts;
 
-        let docker_path = Utf8UnixPathBuf::from(state.config.working_dir.as_ref())
-            .join(docker_path)
-            .into_string();
+        let docker_path = state.config.working_dir.join(docker_path);
 
         Ok(ContainerFileExport {
             sidecar: self.sidecar,
             mounts: mounts.into(),
-            path: docker_path.into(),
+            path: docker_path,
         }
         .into())
     }
@@ -2014,7 +2037,7 @@ impl Client {
                         target: String::new(),
                         options: vec!["ro".to_owned(), "rbind".to_owned()],
                     }],
-                    "",
+                    UnixPath::new(""),
                 )
                 .await?;
             log::debug!("Streaming layer to cache.");
@@ -2174,7 +2197,7 @@ impl ExternalCache for Client {
                                 target: String::new(),
                                 options: vec!["rw".to_owned(), "rbind".to_owned()],
                             }],
-                            "",
+                            UnixPath::new(""),
                             file,
                         )
                         .await?;
@@ -2228,7 +2251,7 @@ struct ContainerFileExport {
     /// The mounts to use
     mounts: Rc<[containerd_client::types::Mount]>,
     /// The path to export
-    path: Rc<str>,
+    path: UnixPathBuf,
 }
 
 impl FileSystemProvider for ContainerFileExport {
@@ -2241,7 +2264,7 @@ impl FileSystemProvider for ContainerFileExport {
         >,
     > {
         Box::pin(async move {
-            log::debug!("Creating reader for {} in container", self.path);
+            log::debug!("Creating reader for {} in container", self.path.display());
             let reader = self
                 .sidecar
                 .export_files(self.mounts.to_vec(), &self.path)
@@ -2468,12 +2491,12 @@ mod tests {
             .expect("Exec failed");
 
         let file = containerd_client
-            .export_path(&from, "/tmp/hello.txt")
+            .export_path(&from, UnixPath::new("/tmp/hello.txt"))
             .await
             .expect("Export failed");
 
         let to = containerd_client
-            .copy_fs_into_container(&base, file, "nice.txt")
+            .copy_fs_into_container(&base, file, UnixPath::new("nice.txt"))
             .await
             .expect("Failed to copy into container");
 
@@ -2509,12 +2532,12 @@ mod tests {
             .expect("Exec failed");
 
         let file = containerd_client
-            .export_path(&from, "/tmp/foo")
+            .export_path(&from, UnixPath::new("/tmp/foo"))
             .await
             .expect("Export failed");
 
         let to = containerd_client
-            .copy_fs_into_container(&base, file, "hello")
+            .copy_fs_into_container(&base, file, UnixPath::new("hello"))
             .await
             .expect("Failed to copy into container");
 
@@ -2541,7 +2564,7 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let base = base.update_config(|config| config.set_working_dir("/testing"));
+        let base = base.update_config(|config| config.set_working_dir(UnixPath::new("/testing")));
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
@@ -2554,12 +2577,12 @@ mod tests {
             .expect("Exec failed");
 
         let file = containerd_client
-            .export_path(&from, "./foo")
+            .export_path(&from, UnixPath::new("./foo"))
             .await
             .expect("Export failed");
 
         let to = containerd_client
-            .copy_fs_into_container(&base, file, "./hello")
+            .copy_fs_into_container(&base, file, UnixPath::new("./hello"))
             .await
             .expect("Failed to copy into container");
 
@@ -2588,7 +2611,7 @@ mod tests {
             .pull_image(TEST_IMAGE)
             .await
             .expect("Failed to create image");
-        let base = base.update_config(|config| config.set_working_dir("/testing"));
+        let base = base.update_config(|config| config.set_working_dir(UnixPath::new("/testing")));
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
@@ -2601,12 +2624,12 @@ mod tests {
             .expect("Exec failed");
 
         let file = containerd_client
-            .export_path(&from, ".")
+            .export_path(&from, UnixPath::new("."))
             .await
             .expect("Export failed");
 
         let to = containerd_client
-            .copy_fs_into_container(&base, file, ".")
+            .copy_fs_into_container(&base, file, UnixPath::new("."))
             .await
             .expect("Failed to copy into container");
 
@@ -2635,12 +2658,12 @@ mod tests {
             .expect("Failed to create image");
 
         let fs = containerd_client
-            .export_path(&base, "i_am_not_real.txt")
+            .export_path(&base, UnixPath::new("i_am_not_real.txt"))
             .await
             .expect("Export only creates lazy reader");
 
         let result = containerd_client
-            .copy_fs_into_container(&base, fs, "huh.txt")
+            .copy_fs_into_container(&base, fs, UnixPath::new("huh.txt"))
             .await;
 
         assert!(
@@ -2662,13 +2685,13 @@ mod tests {
             .exec(&image, "mkdir -p /foo/bar".to_owned())
             .await
             .expect("Exec failed");
-        let image = image.update_config(|config| config.set_working_dir("/foo"));
+        let image = image.update_config(|config| config.set_working_dir(UnixPath::new("/foo")));
         containerd_client
             .exec(&image, "ls bar".to_owned())
             .await
             .expect("Exec failed");
 
-        let image = image.update_config(|config| config.set_working_dir("./bar"));
+        let image = image.update_config(|config| config.set_working_dir(UnixPath::new("./bar")));
         let working_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
             .await
@@ -2679,7 +2702,7 @@ mod tests {
             "pwd reported wrong working directory"
         );
 
-        let image = image.update_config(|config| config.set_working_dir("/app"));
+        let image = image.update_config(|config| config.set_working_dir(UnixPath::new("/app")));
         let working_absolute_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
             .await

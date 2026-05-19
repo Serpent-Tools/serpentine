@@ -12,6 +12,7 @@ categories = ["rust-patterns"]
 [dependencies]
 tokio = { workspace = true, features = ["io-util", "fs"] }
 log.workspace = true
+typed-path.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
