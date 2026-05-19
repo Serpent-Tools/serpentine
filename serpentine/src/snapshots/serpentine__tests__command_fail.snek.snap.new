@@ -1,0 +1,10 @@
+---
+source: serpentine/src/main.rs
+assertion_line: 363
+expression: err
+---
+  x Runtime Error
+
+Error: execution_interrupted
+
+  x Execution interrupted by user (Ctrl-C)
