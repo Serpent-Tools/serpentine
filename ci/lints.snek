@@ -28,7 +28,7 @@ deny = lib::rust
     > Exec("cargo deny check all");
 
 vet = lib::rust
-    > lib::Binstall("cargo-vet@0.10.1", "cargo-vet")
+    > lib::Binstall("cargo-vet@0.10.2", "cargo-vet")
     > With(lib::source_code, ".")
     > Exec("cargo vet check --locked");
 
