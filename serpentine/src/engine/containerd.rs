@@ -686,6 +686,30 @@ pub struct Client {
 }
 
 impl Client {
+    /// Poll the containerd version endpoint until it responds.
+    ///
+    /// Right after the sidecar container starts, the proxy is reachable before containerd inside
+    /// the container has finished initializing its unix socket. Any gRPC call in that window fails
+    /// with a "broken pipe" transport error. Wait for a successful round-trip before returning.
+    async fn wait_for_containerd_ready(
+        client: &containerd_client::Client,
+    ) -> Result<(), RuntimeError> {
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(30);
+        loop {
+            match client.version().version(()).await {
+                Ok(_) => return Ok(()),
+                Err(err) => {
+                    if start.elapsed() >= timeout {
+                        return Err(err.into());
+                    }
+                    log::debug!("containerd not ready yet: {err}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
     /// Create a new containerd client
     pub async fn new(tui: TuiSender, exec_permits: usize) -> Result<Self, RuntimeError> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
@@ -706,6 +730,8 @@ impl Client {
                 }))
                 .await?;
         let containerd = containerd_client::Client::from(containerd);
+
+        Self::wait_for_containerd_ready(&containerd).await?;
 
         Ok(Self {
             sidecar,

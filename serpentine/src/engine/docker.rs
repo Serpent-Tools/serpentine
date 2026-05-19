@@ -170,37 +170,54 @@ async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketA
                 Some(bollard::query_parameters::StartContainerOptionsBuilder::new().build()),
             )
             .await?;
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    let container_details = docker
-        .inspect_container(
-            CONTAINER_NAME,
-            Some(bollard::query_parameters::InspectContainerOptions::default()),
-        )
-        .await?;
-
-    let serpentine_port = container_details
-        .network_settings
-        .ok_or_else(|| RuntimeError::internal("No network settings for container"))?
-        .ports
-        .ok_or_else(|| RuntimeError::internal("No port settings for container"))?
-        .get(&format!("{}/tcp", serpentine_internal::sidecar::PORT))
-        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
-        .as_ref()
-        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
-        .first()
-        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
-        .host_port
-        .as_ref()
-        .ok_or_else(|| RuntimeError::internal("No port settings for port in container"))?
-        .parse()
-        .map_err(|_| RuntimeError::internal("Port wasn't a number"))?;
+    let serpentine_port = wait_for_host_port(&docker).await?;
 
     Ok(std::net::SocketAddr::new(
         std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         serpentine_port,
     ))
+}
+
+/// Poll `inspect_container` until docker has populated the host port binding for the sidecar.
+///
+/// Immediately after `start_container` returns, the port binding may still be empty for a brief
+/// window before docker reconciles it. Retrying avoids racing on that gap.
+async fn wait_for_host_port(docker: &bollard::Docker) -> Result<u16, RuntimeError> {
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(30);
+    let port_key = format!("{}/tcp", serpentine_internal::sidecar::PORT);
+    loop {
+        let container_details = docker
+            .inspect_container(
+                CONTAINER_NAME,
+                Some(bollard::query_parameters::InspectContainerOptions::default()),
+            )
+            .await?;
+
+        let host_port = container_details
+            .network_settings
+            .as_ref()
+            .and_then(|net| net.ports.as_ref())
+            .and_then(|ports| ports.get(&port_key))
+            .and_then(Option::as_ref)
+            .and_then(|bindings| bindings.first())
+            .and_then(|binding| binding.host_port.as_ref());
+
+        if let Some(host_port) = host_port {
+            return host_port
+                .parse()
+                .map_err(|_| RuntimeError::internal("Port wasn't a number"));
+        }
+
+        if start.elapsed() >= timeout {
+            return Err(RuntimeError::internal(
+                "Timed out waiting for host port binding on containerd container",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Ensure the containerd data volume exists
