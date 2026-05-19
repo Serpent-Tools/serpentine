@@ -1,12 +1,49 @@
 //! Internal crate for serpentine, Nothing in this crate follows semantic versioning.
 
 use std::io::{Error, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use typed_path::{PlatformPath, UnixPath, UnixPathBuf};
 
 pub mod network;
 pub mod sidecar;
+
+/// Convert a platform typed path into a [`std::path::PathBuf`] for real filesystem access.
+///
+/// This is the single airlock where a typed path degrades into the OS's untyped path ABI. The result
+/// is meant to be ephemeral (handed straight to a syscall), never stored or flowed through logic.
+///
+/// On unix the path is raw bytes, identical to those of an [`std::ffi::OsStr`], so this is lossless
+/// for every path. On other platforms there is no safe way to build an `OsStr` from arbitrary bytes,
+/// so only valid UTF-8 (which maps losslessly onto an `OsStr`) is accepted.
+///
+/// # Errors
+/// On non-unix platforms, if the path bytes are not valid UTF-8 we cannot represent them losslessly,
+/// so this errors rather than silently transcoding.
+pub fn platform_to_std(path: &PlatformPath) -> Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path.as_bytes())))
+    }
+    #[cfg(not(unix))]
+    {
+        let path = std::str::from_utf8(path.as_bytes()).map_err(Error::other)?;
+        Ok(PathBuf::from(path))
+    }
+}
+
+impl WireFormat for UnixPathBuf {
+    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
+        write_length_prefixed(writer, self.as_bytes()).await
+    }
+
+    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
+        Ok(UnixPath::new(&read_length_prefixed(reader).await?).to_path_buf())
+    }
+}
 
 /// Trait for types that can be serialized to/from an async byte stream.
 #[expect(
@@ -139,14 +176,14 @@ pub enum FileSystemEntryHeader {
     /// A file
     File {
         /// The name of the file (including extension)
-        name: Box<str>,
+        name: Box<[u8]>,
         /// The amount of following bytes to read as this files contents
         length: u64,
     },
     /// A folder is a container of files
     Folder {
         /// The name of the folder
-        name: Box<str>,
+        name: Box<[u8]>,
         /// The number of other entries in this folder (direct children only)
         entries: u64,
     },
@@ -157,12 +194,12 @@ impl WireFormat for FileSystemEntryHeader {
         match self {
             Self::File { name, length } => {
                 writer.write_u8(0).await?;
-                write_length_prefixed(writer, name.as_bytes()).await?;
+                write_length_prefixed(writer, name).await?;
                 write_u64_variable_length(writer, length).await?;
             }
             Self::Folder { name, entries } => {
                 writer.write_u8(1).await?;
-                write_length_prefixed(writer, name.as_bytes()).await?;
+                write_length_prefixed(writer, name).await?;
                 write_u64_variable_length(writer, entries).await?;
             }
         }
@@ -172,7 +209,7 @@ impl WireFormat for FileSystemEntryHeader {
 
     async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
         let kind = reader.read_u8().await?;
-        let name = read_length_prefixed_string(reader).await?.into();
+        let name = read_length_prefixed(reader).await?.into();
         let length = read_u64_length_encoded(reader).await?;
         match kind {
             0 => Ok(Self::File { name, length }),
@@ -197,25 +234,22 @@ impl WireFormat for FileSystemEntryHeader {
 /// # Errors
 /// If the `writer` returns a error or reading from the filesystem runs into a error.
 pub async fn read_disk_to_filesystem_stream(
-    absolute_path: &Path,
-    relative_path: &Path,
+    absolute_path: &PlatformPath,
+    relative_path: &PlatformPath,
     writer: &mut (impl AsyncWrite + Unpin + Send),
     filter: impl Fn(&Path, bool) -> bool + Copy,
 ) -> Result<()> {
-    let name = relative_path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into();
+    let name = relative_path.file_name().unwrap_or_default().into();
 
-    let absolute_path_to_item = if relative_path.to_string_lossy().is_empty() {
-        absolute_path.into()
+    let absolute_path_to_item = if relative_path.as_bytes().is_empty() {
+        absolute_path.to_path_buf()
     } else {
         absolute_path.join(relative_path)
     };
 
+    let std_path = platform_to_std(&absolute_path_to_item)?;
     log::trace!("Exporting {}", absolute_path_to_item.display());
-    let metadata = tokio::fs::metadata(&absolute_path_to_item).await?;
+    let metadata = tokio::fs::metadata(&std_path).await?;
 
     if metadata.is_file() {
         let header = FileSystemEntryHeader::File {
@@ -224,12 +258,12 @@ pub async fn read_disk_to_filesystem_stream(
         };
         header.write(writer).await?;
 
-        let mut file = tokio::fs::File::open(absolute_path_to_item).await?;
+        let mut file = tokio::fs::File::open(&std_path).await?;
         tokio::io::copy(&mut file, writer).await?;
     } else if metadata.is_dir() {
         let entries = {
             let mut entries = Vec::new();
-            let mut entry_stream = tokio::fs::read_dir(&absolute_path_to_item).await?;
+            let mut entry_stream = tokio::fs::read_dir(&std_path).await?;
 
             while let Some(entry) = entry_stream.next_entry().await? {
                 if filter(&entry.path(), entry.metadata().await?.is_dir()) {
@@ -248,7 +282,8 @@ pub async fn read_disk_to_filesystem_stream(
         header.write(writer).await?;
 
         for entry in entries {
-            let relative_path = relative_path.join(entry.file_name());
+            let relative_path =
+                relative_path.join(PlatformPath::new(entry.file_name().as_encoded_bytes()));
             Box::pin(read_disk_to_filesystem_stream(
                 absolute_path,
                 &relative_path,
@@ -269,7 +304,7 @@ pub async fn read_disk_to_filesystem_stream(
 /// # Errors
 /// If the `reader` returns a error or writing to the filesystem runs into a error.
 pub async fn read_filesystem_stream_to_disk(
-    target_path: &Path,
+    target_path: &PlatformPath,
     reader: &mut (impl AsyncRead + Unpin + Send),
     permissive_permissions: bool,
 ) -> Result<()> {
@@ -277,14 +312,15 @@ pub async fn read_filesystem_stream_to_disk(
     match header {
         FileSystemEntryHeader::File { name, length } => {
             let target_path = if name.is_empty() {
-                target_path.into()
+                target_path.to_path_buf()
             } else {
-                target_path.join(&*name)
+                target_path.join(PlatformPath::new(&*name))
             };
+            let std_path = platform_to_std(&target_path)?;
             log::trace!("Writing file at {}", target_path.display());
 
             if let Some(parent) = target_path.parent() {
-                tokio::fs::create_dir_all(&parent).await?;
+                tokio::fs::create_dir_all(&platform_to_std(parent)?).await?;
             }
 
             let mut open_options = tokio::fs::File::options();
@@ -295,14 +331,14 @@ pub async fn read_filesystem_stream_to_disk(
                 open_options.mode(0o777);
             }
 
-            let mut file = open_options.open(&target_path).await?;
+            let mut file = open_options.open(&std_path).await?;
 
             tokio::io::copy(&mut reader.take(length), &mut file).await?;
         }
         FileSystemEntryHeader::Folder { name, entries } => {
-            let target_path = target_path.join(&*name);
+            let target_path = target_path.join(PlatformPath::new(&*name));
             log::trace!("Writing directory at {}", target_path.display());
-            tokio::fs::create_dir_all(&target_path).await?;
+            tokio::fs::create_dir_all(&platform_to_std(&target_path)?).await?;
 
             for _ in 0..entries {
                 Box::pin(read_filesystem_stream_to_disk(
@@ -361,5 +397,20 @@ mod tests {
         let decoded = read_length_prefixed_string(&mut buf).await.unwrap();
 
         assert_eq!(decoded, value, "failed for {value:?}");
+    }
+
+    #[tokio::test]
+    #[rstest::rstest]
+    #[proptest::property_test]
+    async fn unix_path_roundtrips(#[ignore] value: Vec<u8>) {
+        let path = UnixPath::new(&value).to_path_buf();
+
+        let mut buf = std::io::Cursor::new(Vec::new());
+        path.clone().write(&mut buf).await.unwrap();
+
+        buf.set_position(0);
+        let decoded = UnixPathBuf::read(&mut buf).await.unwrap();
+
+        assert_eq!(decoded, path, "failed for {value:?}");
     }
 }

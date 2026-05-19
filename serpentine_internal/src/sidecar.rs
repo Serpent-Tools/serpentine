@@ -5,6 +5,7 @@
 use std::io::{Error, Result};
 
 use tokio::io::{AsyncRead, AsyncWrite};
+use typed_path::UnixPathBuf;
 
 use super::{
     WireFormat,
@@ -60,9 +61,9 @@ pub struct Mount {
     /// The kind of mount
     pub type_: Box<str>,
     /// The source to mount from
-    pub source: Box<str>,
+    pub source: UnixPathBuf,
     /// The target to mount to
-    pub target: Box<str>,
+    pub target: UnixPathBuf,
     /// The options for the mount
     pub options: Box<[Box<str>]>,
 }
@@ -70,8 +71,8 @@ pub struct Mount {
 impl WireFormat for Mount {
     async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
         write_length_prefixed(writer, self.type_.as_bytes()).await?;
-        write_length_prefixed(writer, self.source.as_bytes()).await?;
-        write_length_prefixed(writer, self.target.as_bytes()).await?;
+        self.source.write(writer).await?;
+        self.target.write(writer).await?;
 
         write_u64_variable_length(writer, self.options.len() as u64).await?;
         for option in self.options {
@@ -83,8 +84,8 @@ impl WireFormat for Mount {
 
     async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
         let type_ = read_length_prefixed_string(reader).await?.into_boxed_str();
-        let source = read_length_prefixed_string(reader).await?.into_boxed_str();
-        let target = read_length_prefixed_string(reader).await?.into_boxed_str();
+        let source = UnixPathBuf::read(reader).await?;
+        let target = UnixPathBuf::read(reader).await?;
 
         let length = read_u64_length_encoded(reader)
             .await?

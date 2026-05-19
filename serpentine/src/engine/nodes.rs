@@ -2,9 +2,10 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
+
+use typed_path::{PlatformPathBuf, UnixPath};
 
 use crate::engine::cache::CacheKey;
 use crate::engine::data_model::{Data, DataType, NodeInstanceId, NodeKindId};
@@ -482,7 +483,8 @@ async fn exec_output(
 
 /// Read a file/folder into a tar from the host system.
 async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSystem, RuntimeError> {
-    Ok(filesystem::LocalFiles(src.as_ref().into()).into())
+    let src: PlatformPathBuf = UnixPath::new(src.as_bytes()).with_encoding();
+    Ok(filesystem::LocalFiles(src).into())
 }
 
 /// Extract a `FileSystem` from a container at the given path
@@ -492,7 +494,10 @@ async fn export(
     container: containerd::ContainerLike,
     path: Rc<str>,
 ) -> Result<FileSystem, RuntimeError> {
-    context.containerd.export_path(&container, &path).await
+    context
+        .containerd
+        .export_path(&container, UnixPath::new(path.as_bytes()))
+        .await
 }
 
 /// Write the given file to the host
@@ -503,8 +508,8 @@ async fn to_host(
 ) -> Result<i128, RuntimeError> {
     let mut reader = fs.get_reader().await?;
 
-    serpentine_internal::read_filesystem_stream_to_disk(Path::new(&*path), &mut reader, false)
-        .await?;
+    let path: PlatformPathBuf = UnixPath::new(path.as_bytes()).with_encoding();
+    serpentine_internal::read_filesystem_stream_to_disk(&path, &mut reader, false).await?;
 
     Ok(0)
 }
@@ -519,7 +524,7 @@ async fn with(
 ) -> Result<containerd::ContainerLike, RuntimeError> {
     *container = context
         .containerd
-        .copy_fs_into_container(&container, fs, &path)
+        .copy_fs_into_container(&container, fs, UnixPath::new(path.as_bytes()))
         .await?;
 
     Ok(container)
@@ -531,7 +536,7 @@ async fn with_working_dir(
     container: containerd::ContainerLike,
     dir: Rc<str>,
 ) -> Result<containerd::ContainerLike, RuntimeError> {
-    Ok(container.update_config(|config| config.set_working_dir(&dir)))
+    Ok(container.update_config(|config| config.set_working_dir(UnixPath::new(dir.as_bytes()))))
 }
 
 /// Set a environment variable.

@@ -2,7 +2,7 @@
 //! ensuring they can be cached if needed.
 
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -10,6 +10,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serpentine_internal::{FileSystemEntryHeader, WireFormat};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::OnceCell;
+use typed_path::{PlatformPath, PlatformPathBuf};
 
 use crate::engine::RuntimeError;
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
@@ -207,7 +208,7 @@ pub async fn copy_filesystem_stream(
 }
 
 /// A `FileSystemProvider` that reads from the given path on the current system
-pub struct LocalFiles(pub PathBuf);
+pub struct LocalFiles(pub PlatformPathBuf);
 
 impl FileSystemProvider for LocalFiles {
     fn get_reader<'this>(
@@ -216,12 +217,12 @@ impl FileSystemProvider for LocalFiles {
         Box::pin(async move {
             let (mut writer, reader) = tokio::io::duplex(4096);
             let path = self.0.clone();
-            let ignore = discover_gitignore(&self.0);
+            let ignore = discover_gitignore(&serpentine_internal::platform_to_std(&self.0)?);
 
             tokio::spawn(async move {
                 let res = serpentine_internal::read_disk_to_filesystem_stream(
                     &path,
-                    Path::new(""),
+                    PlatformPath::new(""),
                     &mut writer,
                     |path, is_dir| {
                         if let Some(ignore) = &ignore {

@@ -6,6 +6,11 @@
     reason = "The proxy runs in a known container image and should have a stable environment."
 )]
 
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "the serpentine sidecar only supports linux: it relies on containerd, linux namespaces, and unix path/mount semantics"
+);
+
 use std::error::Error;
 use std::net::Ipv4Addr;
 use std::ops::Deref;
@@ -20,6 +25,7 @@ use serpentine_internal::WireFormat;
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, PORT, RequestKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net;
+use typed_path::{PlatformPath, PlatformPathBuf, UnixPath, UnixPathBuf};
 
 /// The location serpentine connects to the containerd over
 const SOCKET_LOCATION: &str = "/run/containerd.sock";
@@ -494,8 +500,8 @@ fn delete_namespace(
 /// Export files from a given mount to the path
 async fn export_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<(), Box<dyn Error>> {
     log::debug!("Exporting files");
-    let mount_folder =
-        PathBuf::from("/run/serpentine/mounts/").join(uuid::Uuid::new_v4().to_string());
+    let id = uuid::Uuid::new_v4().to_string();
+    let mount_folder = UnixPath::new("/run/serpentine/mounts/").join(UnixPath::new(&id));
     let mount_folder = DemountOnDrop(mount_folder);
 
     let mount_count = serpentine_internal::read_u64_length_encoded(&mut remote_socket).await?;
@@ -504,13 +510,15 @@ async fn export_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<()
         mount_containerd(&mount, &mount_folder).await?;
     }
 
-    let path_to_export =
-        serpentine_internal::read_length_prefixed_string(&mut remote_socket).await?;
-    log::debug!("Exporting {path_to_export}");
+    let path_to_export = serpentine_internal::read_length_prefixed(&mut remote_socket).await?;
+    log::debug!("Exporting {}", UnixPath::new(&path_to_export).display());
 
-    let full_path = mount_folder.join(path_to_export.strip_prefix("/").unwrap_or(&path_to_export));
+    let relative = path_to_export
+        .strip_prefix(b"/")
+        .unwrap_or(path_to_export.as_slice());
+    let full_path = mount_folder.join(UnixPath::new(relative));
 
-    if let Err(err) = tokio::fs::metadata(&full_path).await {
+    if let Err(err) = tokio::fs::metadata(&unix_to_std(&full_path)).await {
         log::error!(
             "Export pre-flight failed for {}: {err}",
             full_path.display()
@@ -526,9 +534,10 @@ async fn export_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<()
     }
 
     remote_socket.write_u8(0).await?;
+    let full_path: PlatformPathBuf = full_path.with_encoding();
     serpentine_internal::read_disk_to_filesystem_stream(
         &full_path,
-        Path::new(""),
+        PlatformPath::new(""),
         &mut remote_socket,
         |_path, _is_dir| true,
     )
@@ -542,8 +551,8 @@ async fn export_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<()
 async fn import_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<(), Box<dyn Error>> {
     log::debug!("Importing files");
 
-    let mount_folder =
-        PathBuf::from("/run/serpentine/mounts/").join(uuid::Uuid::new_v4().to_string());
+    let id = uuid::Uuid::new_v4().to_string();
+    let mount_folder = UnixPath::new("/run/serpentine/mounts/").join(UnixPath::new(&id));
     let mount_folder = DemountOnDrop(mount_folder);
 
     let mount_count = serpentine_internal::read_u64_length_encoded(&mut remote_socket).await?;
@@ -552,28 +561,26 @@ async fn import_files(mut remote_socket: BufWriter<net::TcpStream>) -> Result<()
         mount_containerd(&mount, &mount_folder).await?;
     }
 
-    let destination_path =
-        serpentine_internal::read_length_prefixed_string(&mut remote_socket).await?;
-    log::debug!("Importing files into {destination_path}");
-    serpentine_internal::read_filesystem_stream_to_disk(
-        &mount_folder.join(
-            destination_path
-                .strip_prefix('/')
-                .unwrap_or(&destination_path),
-        ),
-        &mut remote_socket,
-        true,
-    )
-    .await?;
+    let destination_path = serpentine_internal::read_length_prefixed(&mut remote_socket).await?;
+    log::debug!(
+        "Importing files into {}",
+        UnixPath::new(&destination_path).display()
+    );
+
+    let relative = destination_path
+        .strip_prefix(b"/")
+        .unwrap_or(destination_path.as_slice());
+    let target: PlatformPathBuf = mount_folder.join(UnixPath::new(relative)).with_encoding();
+    serpentine_internal::read_filesystem_stream_to_disk(&target, &mut remote_socket, true).await?;
 
     Ok(())
 }
 
 /// Call `nix::mount::unmount` on drop
-struct DemountOnDrop(PathBuf);
+struct DemountOnDrop(UnixPathBuf);
 
 impl Deref for DemountOnDrop {
-    type Target = Path;
+    type Target = UnixPath;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -582,15 +589,25 @@ impl Deref for DemountOnDrop {
 
 impl Drop for DemountOnDrop {
     fn drop(&mut self) {
-        let res = nix::mount::umount(&*self.0);
+        let res = nix::mount::umount(&unix_to_std(&self.0));
         if let Err(err) = res {
             log::error!("Failed to unmount {}: {err}", self.0.display());
         }
     }
 }
 
+/// Convert a unix typed path into a std path for filesystem syscalls.
+///
+/// The sidecar always runs on unix, where a `UnixPath`'s bytes are exactly an `OsStr`'s, so this is
+/// lossless.
+fn unix_to_std(path: &UnixPath) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+
+    PathBuf::from(std::ffi::OsStr::from_bytes(path.as_bytes()))
+}
+
 /// Mount the provided containerd mount at the given location
-async fn mount_containerd(mount: &Mount, target: &Path) -> Result<(), Box<dyn Error>> {
+async fn mount_containerd(mount: &Mount, target: &UnixPath) -> Result<(), Box<dyn Error>> {
     let (flags, data) = parse_containerd_mount_options(&mount.options);
     let fstype = if &*mount.type_ == "bind" {
         None
@@ -598,10 +615,16 @@ async fn mount_containerd(mount: &Mount, target: &Path) -> Result<(), Box<dyn Er
         Some(&*mount.type_)
     };
 
-    let target = target.join(mount.target.strip_prefix("/").unwrap_or(&mount.target));
+    let relative_target = mount
+        .target
+        .as_bytes()
+        .strip_prefix(b"/")
+        .unwrap_or(mount.target.as_bytes());
+    let target = unix_to_std(&target.join(UnixPath::new(relative_target)));
     tokio::fs::create_dir_all(&target).await?;
 
-    nix::mount::mount(Some(&*mount.source), &target, fstype, flags, Some(&*data))?;
+    let source = unix_to_std(&mount.source);
+    nix::mount::mount(Some(&source), &target, fstype, flags, Some(&*data))?;
 
     Ok(())
 }
