@@ -47,8 +47,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y gcc=4:12.2.0-3 libseccomp-dev=2.5.4-1+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
-# containerd v2.2.3
-ARG CONTAINERD_COMMIT=2976f38ccbfcda5ef1364d63d60b0a304e4bf94a
+# containerd v2.3.1
+ARG CONTAINERD_COMMIT=64b425cf570b3b8dd1d4cc46da7c1fce65c6651a
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
