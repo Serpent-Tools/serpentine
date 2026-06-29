@@ -15,6 +15,12 @@ RUN git clone https://github.com/containernetworking/plugins.git /src/cni-plugin
     git -C /src/cni-plugins checkout ${CNI_COMMIT}
 WORKDIR /src/cni-plugins
 
+# Bump golang.org/x/sys to a release that fixes CVE-2026-39824 (>= v0.44.0);
+# no tagged cni-plugins release pins it yet.
+RUN GOFLAGS=-mod=mod go get golang.org/x/sys@v0.44.0 && \
+    GOFLAGS=-mod=mod go mod tidy && \
+    go mod vendor
+
 ENV CGO_ENABLED=0
 ENV GOFLAGS="-mod=vendor"
 ENV LDFLAGS="-w -s -extldflags -static -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=${CNI_VERSION}"
@@ -32,12 +38,17 @@ RUN apt-get update && apt-get install -y \
     libbtrfs-dev=6.2-1+deb12u2 \
     && rm -rf /var/lib/apt/lists/*
 
-# runc v1.4.2
-ARG RUNC_COMMIT=c241c0bb5e60a8e8c1b2e53d4eca8d0068d8d57e
+# runc v1.4.3
+ARG RUNC_COMMIT=74199b9d198f6c61cd0c8971386337eea5d1c2ad
 
 RUN git clone https://github.com/opencontainers/runc.git /src/runc && \
     git -C /src/runc checkout ${RUNC_COMMIT}
 WORKDIR /src/runc
+# Bump golang.org/x/sys to a release that fixes CVE-2026-39824 (>= v0.44.0);
+# runc v1.4.3 still pins an older version.
+RUN GOFLAGS=-mod=mod go get golang.org/x/sys@v0.44.0 && \
+    GOFLAGS=-mod=mod go mod tidy && \
+    go mod vendor
 RUN make BUILDTAGS="" EXTRA_FLAGS="-a" EXTRA_LDFLAGS="-w -s" static
 RUN strip --strip-all runc
 
@@ -47,8 +58,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y gcc=4:12.2.0-3 libseccomp-dev=2.5.4-1+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
-# containerd v2.3.1
-ARG CONTAINERD_COMMIT=64b425cf570b3b8dd1d4cc46da7c1fce65c6651a
+# containerd v2.3.2
+ARG CONTAINERD_COMMIT=c2be8504d753b8e360526e405e27c4164595daf6
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
