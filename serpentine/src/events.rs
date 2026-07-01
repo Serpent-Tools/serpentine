@@ -120,24 +120,23 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    /// A reporter with no consumer; every send is discarded.
-    pub fn none() -> Self {
+    /// Build a reporter from an optional sink channel.
+    fn new(sink: Option<Sender<SerpentineEvent>>) -> Self {
         Self {
-            sink: None,
+            sink,
             next_task: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// A reporter with no consumer; every send is discarded.
+    pub fn none() -> Self {
+        Self::new(None)
     }
 
     /// A reporter paired with the receiver its consumer drains.
     pub fn channel() -> (Self, Receiver<SerpentineEvent>) {
         let (sender, receiver) = std::sync::mpsc::channel();
-        (
-            Self {
-                sink: Some(sender),
-                next_task: Arc::new(AtomicU64::new(0)),
-            },
-            receiver,
-        )
+        (Self::new(Some(sender)), receiver)
     }
 
     /// Send an event, discarding it when there is no consumer or it has hung up.

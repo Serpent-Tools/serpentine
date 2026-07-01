@@ -313,8 +313,8 @@ macro_rules! impl_node_impl {
                     if let Some(argument) = arguments.next() {
                         if !$arg::accepts(**argument) {
                             return Err(CompileError::TypeMismatch {
-                                expected: $arg::KIND.describe().to_owned(),
-                                got: argument.describe().to_owned(),
+                                expected: $arg::KIND.describe(),
+                                got: argument.describe(),
                                 location: argument.span(),
                                 node: node_span,
                             })
@@ -602,8 +602,8 @@ impl NodeImpl for Join {
         for argument in arguments {
             if argument.0 != DataType::String {
                 return Err(CompileError::TypeMismatch {
-                    expected: DataType::String.describe().into(),
-                    got: argument.0.describe().into(),
+                    expected: DataType::String.describe(),
+                    got: argument.0.describe(),
                     location: argument.span(),
                     node: node_span,
                 });

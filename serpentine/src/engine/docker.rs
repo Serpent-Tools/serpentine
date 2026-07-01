@@ -262,6 +262,7 @@ async fn ensure_containerd_image(
         log::info!("Pulling image {image_name}");
         let task = reporter.start_task(TaskKind::Pull, format!("engine {CONTAINERD_IMAGE_TAG}"));
         let mut layer_state: HashMap<String, bool> = HashMap::new();
+        let mut done_count: usize = 0;
         docker
             .create_image(
                 Some(
@@ -282,7 +283,11 @@ async fn ensure_containerd_image(
                             status,
                             "Pull complete" | "Already exists" | "Download complete"
                         );
-                        *layer_state.entry(id.to_owned()).or_insert(false) |= is_done;
+                        let entry = layer_state.entry(id.to_owned()).or_insert(false);
+                        if is_done && !*entry {
+                            done_count = done_count.saturating_add(1);
+                        }
+                        *entry |= is_done;
                     }
                     if let Some(detail) = &info.progress_detail
                         && let (Some(current), Some(total)) = (detail.current, detail.total)
@@ -295,7 +300,6 @@ async fn ensure_containerd_image(
                         );
                     }
                     if !layer_state.is_empty() {
-                        let done_count = layer_state.values().copied().filter(|&done| done).count();
                         reporter.task_layer_progress(task.id(), done_count, layer_state.len());
                     }
                 }
