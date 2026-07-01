@@ -1,437 +1,541 @@
-//! Handles the display of progress and container state to the terminal.
+//! Renders pipeline progress to the terminal.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Padding, Paragraph};
-use ratatui::{crossterm, symbols};
+use ratatui::widgets::Paragraph;
 
-/// The messages that can be passed to the tui;
-///
-/// These messages carry no information about which node is being updated,
-/// as the tui is only concerned with overall progress.
-/// and trusts the executor to send sensible messages.
-#[derive(Debug)]
-pub enum TuiMessage {
-    /// The executor is complete, shutdown the tui
-    Shutdown,
-    /// We are in the process of shutting down
-    ShuttingDown,
-    /// A node is pending execution
-    PendingNode,
-    /// A node is now running
-    RunningNode,
-    /// A node has finished execution
-    NodeFinished,
-    /// Update the progress of a task (or create it if it doesn't exist)
-    UpdateTask(Task),
-    /// A task is done
-    FinishTask(Arc<str>),
-    /// Add a line to the logs
-    Log(Box<str>),
+use crate::events::{Lifecycle, NodeTransition, SerpentineEvent, TaskId, TaskKind, TaskUpdate};
+
+/// Frames of the activity spinner, advanced by elapsed time.
+const SPINNER: [char; 4] = ['│', '╱', '─', '╲'];
+/// The shell prompt glyph.
+const PROMPT: char = '>';
+/// Marker shown beside a scrollback milestone.
+const MILESTONE_MARK: char = '·';
+/// Marker shown beside an image-pull row.
+const PULL_MARK: char = '↓';
+/// The filled segment of a progress bar.
+const BAR_FILLED: char = '━';
+/// The empty segment of a progress bar.
+const BAR_EMPTY: char = '─';
+/// Width in cells reserved for a task's name column.
+const NAME_WIDTH: usize = 30;
+/// Width in cells of an in-row progress bar.
+const PULL_BAR_WIDTH: usize = 12;
+/// Number of recent engine log lines shown at the bottom of the live block.
+const LOG_LINES: usize = 8;
+
+/// A line of persistent scrollback summarising something the run reached.
+struct Milestone {
+    /// The short label, e.g. `engine ready`.
+    label: Box<str>,
+    /// The detail, e.g. `podman · 0.4.1`.
+    value: Box<str>,
 }
 
-/// Wrapper around a threaded channel, allows channel to not be set.
-#[derive(Clone)]
-pub struct TuiSender(pub Option<std::sync::mpsc::Sender<TuiMessage>>);
+/// A task currently shown in the live block.
+struct LiveTask {
+    /// Whether this is an image pull or a command exec.
+    kind: TaskKind,
+    /// The name shown for the task.
+    label: Box<str>,
+    /// When the task started, for the elapsed readout.
+    started: Instant,
+    /// The most recent line of output (execs).
+    detail: Box<str>,
+    /// Bytes transferred so far (pulls).
+    done_bytes: u64,
+    /// Total bytes expected (pulls).
+    total_bytes: u64,
+    /// Smoothed transfer rate in bytes per second (pulls).
+    rate: f64,
+    /// Byte count at the last rate sample.
+    last_bytes: u64,
+    /// When the rate was last sampled.
+    last_sample: Instant,
+    /// Layers fully pulled so far (pulls).
+    layer_done: usize,
+    /// Total layers discovered so far (pulls).
+    layer_total: usize,
+}
 
-impl TuiSender {
-    /// Send a message over the channel.
-    ///
-    /// Noop if not in tui mode.
-    pub fn send(&self, msg: TuiMessage) {
-        if let Some(channel) = &self.0 {
-            let _ = channel.send(msg);
+impl LiveTask {
+    /// Apply a progress update, recomputing the transfer rate for byte updates.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the transfer-rate readout tolerates rounding"
+    )]
+    fn apply(&mut self, update: TaskUpdate) {
+        match update {
+            TaskUpdate::Bytes { done, total } => {
+                self.done_bytes = done;
+                self.total_bytes = total;
+
+                let now = Instant::now();
+                let elapsed = now.duration_since(self.last_sample).as_secs_f64();
+                if elapsed >= 0.25 {
+                    let delta = done.saturating_sub(self.last_bytes);
+                    let instant_rate = delta as f64 / elapsed;
+                    self.rate = if self.rate <= 0.0 {
+                        instant_rate
+                    } else {
+                        self.rate * 0.6 + instant_rate * 0.4
+                    };
+                    self.last_bytes = done;
+                    self.last_sample = now;
+                }
+            }
+            TaskUpdate::Line(line) => self.detail = line,
+            TaskUpdate::LayerProgress { done, total } => {
+                self.layer_done = done;
+                self.layer_total = total;
+            }
         }
     }
 }
 
-/// Represents the progress of a task
-#[derive(Debug)]
-pub enum TaskProgress {
-    /// A task with a measurable progress
-    Measurable {
-        /// How many units have been completed
-        completed: u64,
-        /// How much work there is total
-        total: u64,
-    },
-    /// A task with no measurable progress
-    Log(Box<str>),
-}
-
-/// Represents a task being executed in the pipeline
-#[derive(Debug)]
-pub struct Task {
-    /// The identifier for the task
-    pub identifier: Arc<str>,
-    /// The name to show in the UI
-    pub title: Arc<str>,
-    /// The current progress of the task
-    pub progress: TaskProgress,
-}
-
-/// The current state of the ui
-#[derive(Debug)]
+/// The current state of the ui.
 struct UiState {
-    /// The total amount of nodes
+    /// When the run started, driving the timer and spinner.
+    start: Instant,
+    /// The pipeline file being run.
+    pipeline: String,
+    /// Total number of nodes in the pipeline.
     total_nodes: usize,
-    /// Nodes that are pending execution.
-    pending_nodes: usize,
-    /// Nodes that are currently running.
-    running_nodes: usize,
-    /// Nodes that are finished executing.
-    finished_nodes: usize,
-    /// Are we shutting down?
+    /// Nodes scheduled but not yet running.
+    queued: usize,
+    /// Nodes currently running.
+    active: usize,
+    /// Nodes finished, whether cached or executed.
+    done: usize,
+    /// Nodes finished by reusing a cached result.
+    cached: usize,
+    /// Nodes finished by executing.
+    ran: usize,
+    /// Whether the engine has begun shutting down.
     shutting_down: bool,
-    /// Tasks being tracked by the UI
-    tasks: HashMap<Arc<str>, Task>,
-    /// Log lines
-    logs: heapless::Deque<Box<str>, 20>,
-    /// Logs from tasks
-    task_logs: heapless::Deque<Box<str>, 40>,
+    /// Live tasks keyed by id, ordered by start.
+    tasks: BTreeMap<TaskId, LiveTask>,
+    /// Scrollback milestones, in the order they were reached.
+    milestones: Vec<Milestone>,
+    /// Engine log lines.
+    logs: heapless::Deque<Box<str>, LOG_LINES>,
 }
 
 impl UiState {
-    /// Create a new ui state
-    fn new(total_nodes: usize) -> Self {
+    /// Create a new ui state for a run of `total_nodes` nodes.
+    fn new(total_nodes: usize, pipeline: String) -> Self {
         Self {
+            start: Instant::now(),
+            pipeline,
             total_nodes,
-            pending_nodes: 0,
-            running_nodes: 0,
-            finished_nodes: 0,
+            queued: 0,
+            active: 0,
+            done: 0,
+            cached: 0,
+            ran: 0,
             shutting_down: false,
-            tasks: HashMap::new(),
+            tasks: BTreeMap::new(),
+            milestones: Vec::new(),
             logs: heapless::Deque::new(),
-            task_logs: heapless::Deque::new(),
         }
     }
 
-    /// Update the ui state based on a message
-    fn update(&mut self, message: TuiMessage) {
-        match message {
-            TuiMessage::Shutdown | TuiMessage::ShuttingDown => {
-                self.shutting_down = true;
+    /// Update the ui state from an event.
+    fn update(&mut self, event: SerpentineEvent) {
+        match event {
+            SerpentineEvent::Node(transition) => self.apply_node(transition),
+            SerpentineEvent::TaskStarted { id, kind, label } => {
+                let now = Instant::now();
+                self.tasks.insert(
+                    id,
+                    LiveTask {
+                        kind,
+                        label,
+                        started: now,
+                        detail: Box::default(),
+                        done_bytes: 0,
+                        total_bytes: 0,
+                        rate: 0.0,
+                        last_bytes: 0,
+                        last_sample: now,
+                        layer_done: 0,
+                        layer_total: 0,
+                    },
+                );
             }
-            TuiMessage::PendingNode => {
-                self.pending_nodes = self.pending_nodes.saturating_add(1);
-            }
-            TuiMessage::RunningNode => {
-                self.pending_nodes = self.pending_nodes.saturating_sub(1);
-                self.running_nodes = self.running_nodes.saturating_add(1);
-            }
-            TuiMessage::NodeFinished => {
-                self.running_nodes = self.running_nodes.saturating_sub(1);
-                self.finished_nodes = self.finished_nodes.saturating_add(1);
-            }
-            TuiMessage::UpdateTask(task) => {
-                if let TaskProgress::Log(msg) = &task.progress {
-                    if self.task_logs.is_full() {
-                        self.task_logs.pop_front();
-                    }
-                    let _ = self.task_logs.push_back(msg.clone());
+            SerpentineEvent::Task { id, update } => {
+                if let Some(task) = self.tasks.get_mut(&id) {
+                    task.apply(update);
                 }
-
-                self.tasks.insert(Arc::clone(&task.identifier), task);
             }
-            TuiMessage::FinishTask(identifier) => {
-                self.tasks.remove(&identifier);
+            SerpentineEvent::TaskFinished { id } => {
+                self.tasks.remove(&id);
             }
-            TuiMessage::Log(msg) => {
+            SerpentineEvent::Lifecycle(lifecycle) => self.apply_lifecycle(lifecycle),
+            SerpentineEvent::Log(line) => {
                 if self.logs.is_full() {
                     self.logs.pop_front();
                 }
-                let _ = self.logs.push_back(msg);
+                let _ = self.logs.push_back(line);
             }
         }
     }
 
-    /// Draw the current state to the terminal
+    /// Move a node between the queued/active/done tallies.
+    fn apply_node(&mut self, transition: NodeTransition) {
+        match transition {
+            NodeTransition::Queued => self.queued = self.queued.saturating_add(1),
+            NodeTransition::Started => {
+                self.queued = self.queued.saturating_sub(1);
+                self.active = self.active.saturating_add(1);
+            }
+            NodeTransition::Cached => {
+                self.active = self.active.saturating_sub(1);
+                self.done = self.done.saturating_add(1);
+                self.cached = self.cached.saturating_add(1);
+            }
+            NodeTransition::Ran => {
+                self.active = self.active.saturating_sub(1);
+                self.done = self.done.saturating_add(1);
+                self.ran = self.ran.saturating_add(1);
+            }
+        }
+    }
+
+    /// Record a lifecycle stage.
+    fn apply_lifecycle(&mut self, lifecycle: Lifecycle) {
+        match lifecycle {
+            Lifecycle::EngineReady { runtime, image_tag } => self.milestones.push(Milestone {
+                label: "engine ready".into(),
+                value: format!("{runtime} · {image_tag}").into(),
+            }),
+            Lifecycle::CacheLoaded { entries } => self.milestones.push(Milestone {
+                label: "cache loaded".into(),
+                value: format!("{entries} entries").into(),
+            }),
+            Lifecycle::ShuttingDown => self.shutting_down = true,
+            Lifecycle::Stop => {}
+        }
+    }
+
+    /// The current spinner frame.
+    fn spinner(&self) -> char {
+        let ticks = self
+            .start
+            .elapsed()
+            .as_millis()
+            .checked_div(110)
+            .unwrap_or(0);
+        let index = usize::try_from(ticks)
+            .unwrap_or(0)
+            .checked_rem(SPINNER.len())
+            .unwrap_or(0);
+        SPINNER.get(index).copied().unwrap_or(PROMPT)
+    }
+
+    /// Draw the current state to the terminal.
     fn draw(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
-        let [progress_area, task_area, status_area] = Layout::new(
-            Direction::Vertical,
-            [
-                Constraint::Length(3),
-                Constraint::Min(6),
-                Constraint::Max(22),
-            ],
-        )
-        .areas(area);
+        let width = usize::from(area.width);
 
-        let progress = Block::default()
-            .borders(Borders::ALL)
-            .title(" Pipeline Progress ");
-        let progress_inner = progress.inner(progress_area);
+        let mut lines: Vec<Line> = Vec::new();
 
-        frame.render_widget(progress, progress_area);
-        self.draw_progress_bar(progress_inner, frame);
+        for milestone in &self.milestones {
+            lines.push(milestone_line(milestone));
+        }
 
-        let [task_area, task_logs_area] = Layout::new(
-            Direction::Horizontal,
-            [Constraint::Min(100), Constraint::Fill(1)],
-        )
-        .areas(task_area);
-        let tasks = Block::default()
-            .borders(Borders::ALL)
-            .title(" Tasks ")
-            .padding(Padding {
-                left: 1,
-                right: 1,
-                top: 0,
-                bottom: 0,
-            });
-        let tasks_inner = tasks.inner(task_area);
-        frame.render_widget(tasks, task_area);
-        self.draw_tasks(tasks_inner, frame);
+        lines.push(Line::default());
+        lines.push(self.live_header_line(width));
+        if !self.shutting_down {
+            for task in self.tasks.values() {
+                lines.push(self.task_line(task, width));
+            }
+        }
 
-        let task_logs = Block::default().borders(Borders::ALL).title(" Task Logs ");
-        let task_logs_inner = task_logs.inner(task_logs_area);
-        frame.render_widget(task_logs, task_logs_area);
-        frame.render_widget(
-            Paragraph::new(
-                self.task_logs
-                    .iter()
-                    .skip(
-                        self.task_logs
-                            .len()
-                            .saturating_sub(task_logs_inner.height.into()),
-                    )
-                    .map(|line| Line::from(line.as_ref()))
-                    .collect::<Vec<_>>(),
-            ),
-            task_logs_inner,
-        );
+        if !self.logs.is_empty() {
+            lines.push(Line::default());
+            for entry in &self.logs {
+                lines.push(Line::from(Span::styled(
+                    truncate(entry, width),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
 
-        self.draw_status(status_area, frame);
+        frame.render_widget(Paragraph::new(lines), area);
     }
 
-    /// Draw the tasks
-    fn draw_tasks(&self, area: Rect, frame: &mut ratatui::Frame) {
-        let areas = Layout::new(
-            Direction::Vertical,
-            self.tasks.iter().map(|_| Constraint::Length(1)),
+    /// The live-block header: spinner, command, node tallies, and timer.
+    fn live_header_line(&self, width: usize) -> Line<'static> {
+        let spinner_style = if self.shutting_down {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        let mut right = vec![
+            Span::styled(
+                format!("{} cached", self.cached),
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::raw(" · "),
+            Span::styled(
+                format!("{} active", self.active),
+                Style::default().fg(Color::Green),
+            ),
+            Span::raw(" · "),
+            Span::styled(
+                format!("{} queued", self.queued),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw("  "),
+            Span::raw(format!("{}/{}", self.done, self.total_nodes)),
+            Span::raw("  "),
+        ];
+        if self.shutting_down {
+            right.push(Span::styled(
+                "shutting down  ".to_owned(),
+                Style::default().fg(Color::Red),
+            ));
+        }
+        right.push(Span::raw(format_timer(self.start.elapsed())));
+        right.push(Span::raw(" "));
+        justify(
+            width,
+            vec![
+                Span::styled(format!(" {} ", self.spinner()), spinner_style),
+                Span::raw(format!("serpentine {}", self.pipeline)),
+            ],
+            right,
         )
-        .split(area);
+    }
 
-        for (task, task_area) in self.tasks.values().zip(areas.iter()) {
-            match &task.progress {
-                TaskProgress::Measurable { completed, total } => {
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "we want to do floating point division here"
-                    )]
-                    let widget = Gauge::default()
-                        .ratio((*completed as f64) / (*total as f64).max(1.0))
-                        .label(task.title.as_ref());
-                    frame.render_widget(widget, *task_area);
+    /// A single live task row.
+    fn task_line(&self, task: &LiveTask, width: usize) -> Line<'static> {
+        match task.kind {
+            TaskKind::Exec => {
+                let right = format!("{} ", format_short(task.started.elapsed()));
+                let prefix_width = 3 + NAME_WIDTH + 1;
+                let detail_room = width
+                    .saturating_sub(prefix_width)
+                    .saturating_sub(right.chars().count());
+                justify(
+                    width,
+                    vec![
+                        Span::styled(
+                            format!(" {} ", self.spinner()),
+                            Style::default().fg(Color::Green),
+                        ),
+                        Span::raw(pad_truncate(&task.label, NAME_WIDTH)),
+                        Span::raw(" "),
+                        Span::styled(
+                            truncate(&task.detail, detail_room),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ],
+                    vec![Span::styled(right, Style::default().fg(Color::DarkGray))],
+                )
+            }
+            TaskKind::Pull => {
+                let percent = percent(task.done_bytes, task.total_bytes);
+                let filled = scaled(percent, 100, PULL_BAR_WIDTH);
+                let mut left = vec![
+                    Span::styled(format!(" {PULL_MARK} "), Style::default().fg(Color::Yellow)),
+                    Span::raw(pad_truncate(&task.label, NAME_WIDTH)),
+                    Span::raw(" "),
+                ];
+                left.extend(bar_spans(filled, PULL_BAR_WIDTH, Color::Yellow));
+                left.push(Span::raw(format!(" {percent}%")));
+                if task.layer_total > 0 {
+                    left.push(Span::styled(
+                        format!("  {}/{}", task.layer_done, task.layer_total),
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
-                TaskProgress::Log(message) => {
-                    const MAX_LENGTH: usize = 30;
-                    let title = if task.title.len() > MAX_LENGTH {
-                        format!(
-                            "{}...",
-                            task.title
-                                .chars()
-                                .take(MAX_LENGTH.saturating_sub(3))
-                                .collect::<String>()
-                        )
-                    } else {
-                        format!("{:<width$}", task.title, width = MAX_LENGTH)
-                    };
-
-                    let widget = Line::from(vec![
-                        Span {
-                            content: title.into(),
-                            style: Style::default().fg(Color::Yellow),
-                        },
-                        Span {
-                            content: message.as_ref().into(),
-                            style: Style::default().fg(Color::Gray),
-                        },
-                    ]);
-                    frame.render_widget(widget, *task_area);
-                }
+                justify(
+                    width,
+                    left,
+                    vec![Span::styled(
+                        format!("{} ", format_rate(task.rate)),
+                        Style::default().fg(Color::Yellow),
+                    )],
+                )
             }
         }
     }
 
-    /// Draw the progress bar widget
-    fn draw_progress_bar(&self, area: Rect, frame: &mut ratatui::Frame) {
-        let prefix = Line::from(vec![
-            Span {
-                content: self.pending_nodes.to_string().into(),
-                style: Style::default().fg(Color::White),
-            },
-            Span::from(">"),
-            Span {
-                content: self.running_nodes.to_string().into(),
-                style: Style::default().fg(Color::Yellow),
-            },
-            Span::from(">"),
-            Span {
-                content: self.finished_nodes.to_string().into(),
-                style: Style::default().fg(Color::Green),
-            },
-            Span {
-                content: " ".into(),
-                style: Style::default(),
-            },
-        ]);
-
-        let suffix = Line::from(vec![
-            Span {
-                content: "···".into(),
-                style: Style::default().fg(Color::Gray),
-            },
-            Span {
-                content: " ".into(),
-                style: Style::default(),
-            },
-            Span::from("/"),
-            Span {
-                content: self.total_nodes.to_string().into(),
-                style: Style::default().fg(Color::Gray),
-            },
-        ]);
-
-        let [prefix_area, bar_area, suffix_area] = Layout::new(
-            Direction::Horizontal,
-            [
-                Constraint::Length(
-                    prefix
-                        .width()
-                        .try_into()
-                        .unwrap_or(u16::MAX)
-                        .min(area.width),
-                ),
-                Constraint::Fill(1),
-                Constraint::Length(
-                    suffix
-                        .width()
-                        .try_into()
-                        .unwrap_or(u16::MAX)
-                        .min(area.width),
-                ),
-            ],
-        )
-        .areas(area);
-
-        frame.render_widget(prefix, prefix_area);
-        frame.render_widget(suffix, suffix_area);
-        self.create_bar_widget(bar_area, frame);
-    }
-
-    /// Create the actual bar widget of the progress bar
-    fn create_bar_widget(&self, area: Rect, frame: &mut ratatui::Frame) {
-        let total_width = area.width as usize;
-
-        let total_nodes = self
-            .pending_nodes
-            .saturating_add(self.running_nodes)
-            .saturating_add(self.finished_nodes);
-        let finished_width = fraction_of(self.finished_nodes, total_nodes, total_width);
-        let pending_width = fraction_of(self.pending_nodes, total_nodes, total_width);
-        let running_width = total_width
-            .saturating_sub(finished_width)
-            .saturating_sub(pending_width);
-
-        let bar = Line::from(vec![
-            Span {
-                content: symbols::line::DOUBLE_HORIZONTAL
-                    .repeat(finished_width)
-                    .into(),
-                style: Style::default().fg(Color::Green),
-            },
-            Span {
-                content: symbols::line::HORIZONTAL.repeat(running_width).into(),
-                style: Style::default().fg(if self.shutting_down {
-                    Color::Red
-                } else {
-                    Color::Yellow
-                }),
-            },
-            Span {
-                content: ":".repeat(pending_width).into(),
-                style: Style::default().fg(if self.shutting_down {
-                    Color::Red
-                } else {
-                    Color::White
-                }),
-            },
-        ]);
-
-        frame.render_widget(bar, area);
-    }
-
-    /// Draw the various status readouts
-    fn draw_status(&self, area: Rect, frame: &mut ratatui::Frame) {
-        let [log_area] = Layout::new(Direction::Horizontal, [Constraint::Fill(1); 1]).areas(area);
-
-        let logs = Block::default()
-            .borders(Borders::ALL)
-            .title(" Serpentine Logs ");
-        let log_inner = logs.inner(log_area);
-        frame.render_widget(logs, log_area);
-        frame.render_widget(
-            Paragraph::new(
-                self.logs
-                    .iter()
-                    .skip(self.logs.len().saturating_sub(log_inner.height.into()))
-                    .map(|line| Line::from(line.as_ref()))
-                    .collect::<Vec<_>>(),
-            ),
-            log_inner,
+    /// Print a final summary to stdout once the tui has exited.
+    fn print_summary(&self) {
+        println!(
+            "  {}  {} nodes · {} cached · {} ran · {}",
+            self.pipeline,
+            self.total_nodes,
+            self.cached,
+            self.ran,
+            format_timer(self.start.elapsed()),
         );
     }
 }
 
-/// Calculate the usize width that represents the given fraction of `total_width`
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "if you terminal size exceeds f32 precision you have bigger problems"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "we want to round to usize"
-)]
-fn fraction_of(numerator: usize, denominator: usize, total_width: usize) -> usize {
-    let numerator = numerator as f32;
-    let denominator = denominator as f32;
-    let total_width = total_width as f32;
-
-    let ratio = numerator / denominator;
-    let perfect_width = ratio * total_width;
-
-    perfect_width.round().abs() as usize
+/// Render a scrollback milestone line.
+fn milestone_line(milestone: &Milestone) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!(" {MILESTONE_MARK} "),
+            Style::default().fg(Color::Green),
+        ),
+        Span::raw(pad_truncate(&milestone.label, 14)),
+        Span::raw(" "),
+        Span::styled(
+            milestone.value.to_string(),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
 }
 
-/// Start the TUI to display progress of the running pipeline
-#[expect(clippy::needless_pass_by_value, reason = "TUI runs in its own thread")]
-pub fn start_tui(events: std::sync::mpsc::Receiver<TuiMessage>, total_nodes: usize) {
+/// The filled and empty spans of a progress bar.
+fn bar_spans(filled: usize, total_width: usize, color: Color) -> Vec<Span<'static>> {
+    let filled = filled.min(total_width);
+    let empty = total_width.saturating_sub(filled);
+    vec![
+        Span::styled(
+            BAR_FILLED.to_string().repeat(filled),
+            Style::default().fg(color),
+        ),
+        Span::styled(
+            BAR_EMPTY.to_string().repeat(empty),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]
+}
+
+/// Combine left- and right-aligned spans into one line, padding the gap to `width`.
+fn justify(width: usize, mut left: Vec<Span<'static>>, right: Vec<Span<'static>>) -> Line<'static> {
+    let used = span_width(&left).saturating_add(span_width(&right));
+    left.push(Span::raw(" ".repeat(width.saturating_sub(used))));
+    left.extend(right);
+    Line::from(left)
+}
+
+/// The total display width of a run of spans.
+fn span_width(spans: &[Span]) -> usize {
+    spans.iter().map(|span| span.content.chars().count()).sum()
+}
+
+/// A percentage of `done` out of `total`, clamped to 0..=100.
+fn percent(done: u64, total: u64) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let percent = done
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(0)
+        .min(100);
+    usize::try_from(percent).unwrap_or(0)
+}
+
+/// Scale `part` of `whole` onto a bar of `width` cells.
+fn scaled(part: usize, whole: usize, width: usize) -> usize {
+    if whole == 0 {
+        return 0;
+    }
+    part.saturating_mul(width)
+        .checked_div(whole)
+        .unwrap_or(0)
+        .min(width)
+}
+
+/// Pad `text` with spaces, or truncate it with an ellipsis, to exactly `width` cells.
+fn pad_truncate(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count > width {
+        let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    } else {
+        let mut out = text.to_owned();
+        out.push_str(&" ".repeat(width.saturating_sub(count)));
+        out
+    }
+}
+
+/// Truncate `text` to at most `width` cells, appending an ellipsis when shortened.
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() > width {
+        let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Format a transfer rate, or `pulling` when not yet known.
+fn format_rate(bytes_per_sec: f64) -> String {
+    if bytes_per_sec <= 0.0 {
+        return "pulling".to_owned();
+    }
+    let megabytes = bytes_per_sec / 1_000_000.0;
+    if megabytes >= 1.0 {
+        format!("{megabytes:.1} MB/s")
+    } else {
+        format!("{:.0} KB/s", bytes_per_sec / 1000.0)
+    }
+}
+
+/// Format a duration as `m:ss`.
+fn format_short(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let minutes = seconds.checked_div(60).unwrap_or(0);
+    let remainder = seconds.checked_rem(60).unwrap_or(0);
+    format!("{minutes}:{remainder:02}")
+}
+
+/// Format a duration as `mm:ss`.
+fn format_timer(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let minutes = seconds.checked_div(60).unwrap_or(0);
+    let remainder = seconds.checked_rem(60).unwrap_or(0);
+    format!("{minutes:02}:{remainder:02}")
+}
+
+/// Start the TUI to display progress of the running pipeline.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Receiver is deliberately owned by the consumer thread"
+)]
+pub fn start_tui(events: Receiver<SerpentineEvent>, total_nodes: usize, pipeline: String) {
     log::info!("Starting TUI");
 
     std::panic::set_hook(Box::new(|info| {
-        ratatui::restore();
         log::error!("Serpentine panicked: {info}");
         eprintln!("Tui panicked: {info}");
     }));
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
+
+    // Reserve enough lines for: milestones (up to 4) + blank + live header + tasks (capped) +
+    // blank + engine logs.
+    let max_tasks = total_nodes.min(10);
+    let reserved = max_tasks
+        .saturating_add(7)
+        .saturating_add(LOG_LINES.saturating_add(1));
+    let height = u16::try_from(reserved).unwrap_or(25);
 
     let Ok(mut terminal) = ratatui::Terminal::with_options(
         ratatui::backend::CrosstermBackend::new(std::io::stdout()),
-        ratatui::TerminalOptions::default(),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Inline(height),
+        },
     ) else {
         log::error!("Failed to initialize terminal for TUI, terminating TUI");
         return;
     };
 
-    let mut ui_state = UiState::new(total_nodes);
+    let mut ui_state = UiState::new(total_nodes, pipeline);
 
     'draw_loop: loop {
         let draw_result = terminal.draw(|frame| {
@@ -442,22 +546,19 @@ pub fn start_tui(events: std::sync::mpsc::Receiver<TuiMessage>, total_nodes: usi
             break;
         }
 
-        // Handle burst messages
-        while let Ok(message) = events.recv_timeout(Duration::from_millis(10)) {
-            match message {
-                TuiMessage::Shutdown => {
-                    log::info!("Received shutdown message, terminating TUI");
+        while let Ok(event) = events.recv_timeout(Duration::from_millis(10)) {
+            match event {
+                SerpentineEvent::Lifecycle(Lifecycle::Stop) => {
+                    log::info!("Received stop, terminating TUI");
                     break 'draw_loop;
                 }
-                message => {
-                    ui_state.update(message);
-                }
+                event => ui_state.update(event),
             }
         }
     }
 
-    println!("Executed {} nodes", ui_state.finished_nodes);
-
-    ratatui::restore();
+    drop(terminal);
+    println!();
+    ui_state.print_summary();
     log::info!("TUI terminated");
 }
