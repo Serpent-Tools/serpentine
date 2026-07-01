@@ -64,14 +64,14 @@ impl<'arena> Parser<'arena> {
                     }
                     Token::Import => self.parse_import(Some(token_span)),
                     next_token => Err(CompileError::UnexpectedToken {
-                        expected: "def/ident".to_owned(),
+                        expected: "def/ident".into(),
                         got: next_token.describe(),
                         location: next_token_span,
                     }),
                 }
             }
             token => Err(CompileError::UnexpectedToken {
-                expected: "import/export/return/def/ident".to_owned(),
+                expected: "import/export/return/def/ident".into(),
                 got: token.describe(),
                 location: token_span,
             }),
@@ -340,7 +340,7 @@ impl<'arena> Parser<'arena> {
             Ok(ast::Ident(token.span().with(ident)))
         } else {
             Err(CompileError::UnexpectedToken {
-                expected: "identifier".to_owned(),
+                expected: "identifier".into(),
                 got: token.describe(),
                 location: token.span(),
             })
@@ -354,7 +354,7 @@ impl<'arena> Parser<'arena> {
             Ok(token.span().with(value))
         } else {
             Err(CompileError::UnexpectedToken {
-                expected: "string".to_owned(),
+                expected: "string".into(),
                 got: token.describe(),
                 location: token.span(),
             })

@@ -1,5 +1,7 @@
 //! Tokenize the input string.
 
+use std::borrow::Cow;
+
 use crate::snek::CompileError;
 use crate::snek::span::{FileId, Span, Spanned};
 
@@ -48,27 +50,27 @@ pub enum Token<'arena> {
 
 impl Token<'_> {
     /// Return a human friendly description of the token
-    pub fn describe(&self) -> String {
+    pub fn describe(&self) -> Cow<'static, str> {
         match self {
-            Self::Ident(value) => format!("identifier ({value:?})"),
-            Self::String(value) => format!("{value:?}"),
-            Self::Numeric(value) => format!("{value:?}"),
-            Self::OpenParen => "(".to_owned(),
-            Self::ClosingParen => ")".to_owned(),
-            Self::OpenBracket => "{".to_owned(),
-            Self::ClosingBracket => "}".to_owned(),
-            Self::SemiColon => ";".to_owned(),
-            Self::Pipe => ">".to_owned(),
-            Self::Comma => ",".to_owned(),
-            Self::Eq => "=".to_owned(),
-            Self::Wait => "!".to_owned(),
-            Self::Path => "::".to_owned(),
-            Self::Return => "return".to_owned(),
-            Self::Def => "def".to_owned(),
-            Self::Import => "import".to_owned(),
-            Self::Export => "export".to_owned(),
-            Self::As => "as".to_owned(),
-            Self::Eof => "end of file".to_owned(),
+            Self::Ident(value) => Cow::Owned(format!("identifier ({value:?})")),
+            Self::String(value) => Cow::Owned(format!("{value:?}")),
+            Self::Numeric(value) => Cow::Owned(format!("{value:?}")),
+            Self::OpenParen => Cow::Borrowed("("),
+            Self::ClosingParen => Cow::Borrowed(")"),
+            Self::OpenBracket => Cow::Borrowed("{"),
+            Self::ClosingBracket => Cow::Borrowed("}"),
+            Self::SemiColon => Cow::Borrowed(";"),
+            Self::Pipe => Cow::Borrowed(">"),
+            Self::Comma => Cow::Borrowed(","),
+            Self::Eq => Cow::Borrowed("="),
+            Self::Wait => Cow::Borrowed("!"),
+            Self::Path => Cow::Borrowed("::"),
+            Self::Return => Cow::Borrowed("return"),
+            Self::Def => Cow::Borrowed("def"),
+            Self::Import => Cow::Borrowed("import"),
+            Self::Export => Cow::Borrowed("export"),
+            Self::As => Cow::Borrowed("as"),
+            Self::Eof => Cow::Borrowed("end of file"),
         }
     }
 }

@@ -21,6 +21,7 @@ mod resolver;
 pub mod span;
 mod tokenizer;
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 pub use compiler::CompileResult;
@@ -67,9 +68,9 @@ pub enum CompileError {
     #[diagnostic(code(parsing::unexpected_token))]
     UnexpectedToken {
         /// The token that was expected
-        expected: String,
+        expected: Cow<'static, str>,
         /// The token that was encountered instead
-        got: String,
+        got: Cow<'static, str>,
         /// The location of the offending token
         #[label("Got `{got}`")]
         location: Span,
@@ -80,9 +81,9 @@ pub enum CompileError {
     #[diagnostic(code(compiler::type_mismatch))]
     TypeMismatch {
         /// The expected type
-        expected: String,
+        expected: &'static str,
         /// The type we got
-        got: String,
+        got: &'static str,
         /// The location of the offending type in the source code
         #[label("Has type `{got}`")]
         location: Span,

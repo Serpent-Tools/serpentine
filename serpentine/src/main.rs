@@ -237,7 +237,7 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
 
         log::info!("Executing pipeline");
         let total_nodes = result.graph.len();
-        let pipeline = command.pipeline.display().to_string();
+        let pipeline = command.pipeline.display().to_string().into_boxed_str();
         let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes, pipeline));
         let result = engine::run(result, reporter.clone(), command);
 

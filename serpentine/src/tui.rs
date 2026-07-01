@@ -103,7 +103,7 @@ struct UiState {
     /// When the run started, driving the timer and spinner.
     start: Instant,
     /// The pipeline file being run.
-    pipeline: String,
+    pipeline: Box<str>,
     /// Total number of nodes in the pipeline.
     total_nodes: usize,
     /// Nodes scheduled but not yet running.
@@ -128,7 +128,7 @@ struct UiState {
 
 impl UiState {
     /// Create a new ui state for a run of `total_nodes` nodes.
-    fn new(total_nodes: usize, pipeline: String) -> Self {
+    fn new(total_nodes: usize, pipeline: Box<str>) -> Self {
         Self {
             start: Instant::now(),
             pipeline,
@@ -219,6 +219,7 @@ impl UiState {
                 value: format!("{entries} entries").into(),
             }),
             Lifecycle::ShuttingDown => self.shutting_down = true,
+            // Stop is intercepted in the event loop before update() is called; never reaches here.
             Lifecycle::Stop => {}
         }
     }
@@ -298,7 +299,7 @@ impl UiState {
         ];
         if self.shutting_down {
             right.push(Span::styled(
-                "shutting down  ".to_owned(),
+                "shutting down  ",
                 Style::default().fg(Color::Red),
             ));
         }
@@ -318,7 +319,12 @@ impl UiState {
     fn task_line(&self, task: &LiveTask, width: usize) -> Line<'static> {
         match task.kind {
             TaskKind::Exec => {
-                let right = format!("{} ", format_short(task.started.elapsed()));
+                let elapsed = task.started.elapsed().as_secs();
+                let right = format!(
+                    "{}:{:02} ",
+                    elapsed.checked_div(60).unwrap_or(0),
+                    elapsed.checked_rem(60).unwrap_or(0),
+                );
                 let prefix_width = 3 + NAME_WIDTH + 1;
                 let detail_room = width
                     .saturating_sub(prefix_width)
@@ -403,11 +409,11 @@ fn bar_spans(filled: usize, total_width: usize, color: Color) -> Vec<Span<'stati
     let empty = total_width.saturating_sub(filled);
     vec![
         Span::styled(
-            BAR_FILLED.to_string().repeat(filled),
+            std::iter::repeat_n(BAR_FILLED, filled).collect::<String>(),
             Style::default().fg(color),
         ),
         Span::styled(
-            BAR_EMPTY.to_string().repeat(empty),
+            std::iter::repeat_n(BAR_EMPTY, empty).collect::<String>(),
             Style::default().fg(Color::DarkGray),
         ),
     ]
@@ -450,20 +456,6 @@ fn scaled(part: usize, whole: usize, width: usize) -> usize {
         .min(width)
 }
 
-/// Pad `text` with spaces, or truncate it with an ellipsis, to exactly `width` cells.
-fn pad_truncate(text: &str, width: usize) -> String {
-    let count = text.chars().count();
-    if count > width {
-        let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    } else {
-        let mut out = text.to_owned();
-        out.push_str(&" ".repeat(width.saturating_sub(count)));
-        out
-    }
-}
-
 /// Truncate `text` to at most `width` cells, appending an ellipsis when shortened.
 fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() > width {
@@ -472,6 +464,19 @@ fn truncate(text: &str, width: usize) -> String {
         out
     } else {
         text.to_owned()
+    }
+}
+
+/// Pad `text` with spaces, or truncate it with an ellipsis, to exactly `width` cells.
+fn pad_truncate(text: &str, width: usize) -> String {
+    let truncated = truncate(text, width);
+    let count = truncated.chars().count();
+    if count < width {
+        let mut out = truncated;
+        out.push_str(&" ".repeat(width.saturating_sub(count)));
+        out
+    } else {
+        truncated
     }
 }
 
@@ -488,14 +493,6 @@ fn format_rate(bytes_per_sec: f64) -> String {
     }
 }
 
-/// Format a duration as `m:ss`.
-fn format_short(duration: Duration) -> String {
-    let seconds = duration.as_secs();
-    let minutes = seconds.checked_div(60).unwrap_or(0);
-    let remainder = seconds.checked_rem(60).unwrap_or(0);
-    format!("{minutes}:{remainder:02}")
-}
-
 /// Format a duration as `mm:ss`.
 fn format_timer(duration: Duration) -> String {
     let seconds = duration.as_secs();
@@ -509,7 +506,7 @@ fn format_timer(duration: Duration) -> String {
     clippy::needless_pass_by_value,
     reason = "Receiver is deliberately owned by the consumer thread"
 )]
-pub fn start_tui(events: Receiver<SerpentineEvent>, total_nodes: usize, pipeline: String) {
+pub fn start_tui(events: Receiver<SerpentineEvent>, total_nodes: usize, pipeline: Box<str>) {
     log::info!("Starting TUI");
 
     std::panic::set_hook(Box::new(|info| {
