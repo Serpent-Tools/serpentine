@@ -7,6 +7,7 @@ use bollard::API_DEFAULT_VERSION;
 use futures_util::StreamExt;
 
 use crate::engine::{RuntimeError, sidecar_client};
+use crate::events::{Reporter, TaskKind};
 
 /// The name of the containerd daemon serpentine spawns.
 const CONTAINER_NAME: &str = "serpent-tools.containerd";
@@ -15,7 +16,7 @@ const CONTAINER_NAME: &str = "serpent-tools.containerd";
 const CONTAINER_VOLUME: &str = "serpent-tools.containerd-data";
 
 /// The containerd tag version to use
-const CONTAINERD_IMAGE_TAG: &str =
+pub(crate) const CONTAINERD_IMAGE_TAG: &str =
     if cfg!(debug_assertions) || cfg!(test) || cfg!(feature = "_bench") {
         "dev"
     } else {
@@ -27,10 +28,14 @@ const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
 
 /// Create a new containerd client, by either connecting to an existing container or spinning up a
 /// new one.
-pub async fn connect() -> Result<sidecar_client::Client, RuntimeError> {
-    let docker = connect_docker().await?;
-    let containerd_addr = spin_up_containerd(docker).await?;
-    Ok(sidecar_client::Client::new(containerd_addr))
+///
+/// Returns the name of the runtime that answered alongside the client.
+pub async fn connect(
+    reporter: &Reporter,
+) -> Result<(&'static str, sidecar_client::Client), RuntimeError> {
+    let (runtime, docker) = connect_docker().await?;
+    let containerd_addr = spin_up_containerd(docker, reporter).await?;
+    Ok((runtime, sidecar_client::Client::new(containerd_addr)))
 }
 
 /// A named strategy for connecting to a Docker-compatible daemon.
@@ -44,7 +49,9 @@ const STRATEGIES: &[ConnectionStrategy] = &[
 ];
 
 /// Attempt to connect to docker or podman, trying each strategy in order.
-async fn connect_docker() -> Result<bollard::Docker, RuntimeError> {
+///
+/// Returns the name of the strategy that succeeded alongside the client.
+async fn connect_docker() -> Result<(&'static str, bollard::Docker), RuntimeError> {
     log::info!("Connecting to Docker daemon");
     log::debug!("DOCKER_HOST={:?}", std::env::var("DOCKER_HOST"));
 
@@ -57,7 +64,7 @@ async fn connect_docker() -> Result<bollard::Docker, RuntimeError> {
         match client.ping().await {
             Ok(_) => {
                 log::info!("{name}: connected");
-                return Ok(client);
+                return Ok((name, client));
             }
             Err(err) => {
                 log::warn!("{name}: ping failed: {err}");
@@ -116,9 +123,12 @@ fn try_podman() -> Option<bollard::Docker> {
 /// Spin up a containerd instance using the given docker client.
 ///
 /// Returns the URI to connect to
-async fn spin_up_containerd(docker: bollard::Docker) -> Result<std::net::SocketAddr, RuntimeError> {
+async fn spin_up_containerd(
+    docker: bollard::Docker,
+    reporter: &Reporter,
+) -> Result<std::net::SocketAddr, RuntimeError> {
     let volume = create_containerd_volume(&docker).await?;
-    let image = ensure_containerd_image(&docker).await?;
+    let image = ensure_containerd_image(&docker, reporter).await?;
 
     if docker
         .inspect_container(
@@ -242,11 +252,16 @@ async fn create_containerd_volume(docker: &bollard::Docker) -> Result<&'static s
 }
 
 /// Ensure the `containerd` image is downloaded
-async fn ensure_containerd_image(docker: &bollard::Docker) -> Result<Box<str>, RuntimeError> {
+async fn ensure_containerd_image(
+    docker: &bollard::Docker,
+    reporter: &Reporter,
+) -> Result<Box<str>, RuntimeError> {
     let image_name = format!("{CONTAINERD_IMAGE}:{CONTAINERD_IMAGE_TAG}").into_boxed_str();
 
     if docker.inspect_image(&image_name).await.is_err() {
         log::info!("Pulling image {image_name}");
+        let task = reporter.start_task(TaskKind::Pull, format!("engine {CONTAINERD_IMAGE_TAG}"));
+        let mut layer_state: HashMap<String, bool> = HashMap::new();
         docker
             .create_image(
                 Some(
@@ -258,7 +273,34 @@ async fn ensure_containerd_image(docker: &bollard::Docker) -> Result<Box<str>, R
                 None,
                 None,
             )
-            .for_each(|_| async {})
+            .for_each(|update| {
+                if let Ok(ref info) = update {
+                    if let (Some(id), Some(status)) = (info.id.as_deref(), info.status.as_deref())
+                        && !id.is_empty()
+                    {
+                        let is_done = matches!(
+                            status,
+                            "Pull complete" | "Already exists" | "Download complete"
+                        );
+                        *layer_state.entry(id.to_owned()).or_insert(false) |= is_done;
+                    }
+                    if let Some(detail) = &info.progress_detail
+                        && let (Some(current), Some(total)) = (detail.current, detail.total)
+                        && total > 0
+                    {
+                        reporter.task_bytes(
+                            task.id(),
+                            current.cast_unsigned(),
+                            total.cast_unsigned(),
+                        );
+                    }
+                    if !layer_state.is_empty() {
+                        let done_count = layer_state.values().copied().filter(|&done| done).count();
+                        reporter.task_layer_progress(task.id(), done_count, layer_state.len());
+                    }
+                }
+                async {}
+            })
             .await;
     }
 

@@ -13,6 +13,7 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 mod engine;
+mod events;
 mod snek;
 mod tui;
 
@@ -129,7 +130,7 @@ enum SerpentineError {
 /// Logs to file in `~/.local/share/serpentine/logs` (or equivalent on other platforms), at TRACE level.
 /// If `non_tui` is false sends logs at DEBUG level to `tui`.
 /// If `non_tui` is true sends logs at TRACE level to stdout.
-fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
+fn setup_logging(reporter: events::Reporter, non_tui: bool) -> miette::Result<()> {
     let project_dirs = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
         .ok_or_else(|| miette::miette!("Failed to determine log directory"))?;
 
@@ -192,7 +193,7 @@ fn setup_logging(tui: tui::TuiSender, non_tui: bool) -> miette::Result<()> {
                 .level(log::LevelFilter::Debug)
                 .chain(fern::Output::call(move |record| {
                     let message = record.args().to_string();
-                    tui.send(tui::TuiMessage::Log(message.into_boxed_str()));
+                    reporter.log(message.into_boxed_str());
                 }))
         }))
         .apply()
@@ -212,7 +213,7 @@ fn main() -> miette::Result<()> {
     match command.command {
         Command::Run(run) => handle_run(&run),
         Command::Clean { cache } => {
-            setup_logging(tui::TuiSender(None), true)?;
+            setup_logging(events::Reporter::none(), true)?;
             engine::clear_cache(&cache.unwrap_or_else(get_default_cache_file))?;
             println!("Cleaned out the cache.");
             Ok(())
@@ -225,8 +226,8 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
     println!("Storing cache in {}", command.get_cache().display());
 
     if command.use_tui() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let res = setup_logging(tui::TuiSender(Some(sender.clone())), false);
+        let (reporter, receiver) = events::Reporter::channel();
+        let res = setup_logging(reporter.clone(), false);
         if let Err(error) = res {
             eprintln!("Failed to initialize logging: {error}");
         }
@@ -236,17 +237,18 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
 
         log::info!("Executing pipeline");
         let total_nodes = result.graph.len();
-        let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes));
-        let result = engine::run(result, tui::TuiSender(Some(sender.clone())), command);
+        let pipeline = command.pipeline.display().to_string();
+        let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes, pipeline));
+        let result = engine::run(result, reporter.clone(), command);
 
         log::info!("Executor returned, waiting for TUI to exit");
-        let _ = sender.send(tui::TuiMessage::Shutdown);
+        reporter.lifecycle(events::Lifecycle::Stop);
         let _ = tui.join();
         ratatui::restore();
 
         result.map_err(Into::into)
     } else {
-        let res = setup_logging(tui::TuiSender(None), true);
+        let res = setup_logging(events::Reporter::none(), true);
         if let Err(error) = res {
             eprintln!("Failed to initialize logging: {error}");
         }
@@ -255,7 +257,7 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
         let result = snek::compile_graph(&command.pipeline, &command.entry_point)?;
 
         log::info!("Executing pipeline");
-        let result = engine::run(result, tui::TuiSender(None), command);
+        let result = engine::run(result, events::Reporter::none(), command);
 
         result.map_err(Into::into)
     }
@@ -295,7 +297,7 @@ mod tests {
             entry_point: "DEFAULT".into(),
             jobs: 1,
         };
-        if let Err(err) = crate::engine::run(graph, crate::tui::TuiSender(None), &cli) {
+        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
             let err = miette::Report::new(err);
             let err = format!("{err:?}");
             panic!("Failed to run {path:?}\n{err}")
@@ -340,7 +342,7 @@ mod tests {
             entry_point: "DEFAULT".into(),
             jobs: 1,
         };
-        if let Err(err) = crate::engine::run(graph, crate::tui::TuiSender(None), &cli) {
+        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
             let _ = miette::set_hook(Box::new(|_| {
                 let config = miette::GraphicalReportHandler::default();
                 let config = config

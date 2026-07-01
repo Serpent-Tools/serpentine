@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Duration;
 
 use containerd_client::services::v1 as containerd_services;
@@ -17,7 +16,7 @@ use typed_path::{UnixPath, UnixPathBuf};
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
 use crate::engine::{RuntimeError, sidecar_client, userdb};
-use crate::tui::{TuiMessage, TuiSender};
+use crate::events::{Lifecycle, Reporter, TaskHandle, TaskId, TaskKind};
 
 /// The snapshotter to use for containers.
 // WARN: While most of the code is snapshotter agnostic, the ExternalCache implementation uses
@@ -663,6 +662,8 @@ struct ContainerHandle {
     snapshot: String,
     /// The original node that spawned this container
     node: ContainerTopologyNode,
+    /// Tracks this container's output as a task; finished when the handle is dropped.
+    exec_task: TaskHandle,
 }
 
 /// A docker client wrapper
@@ -673,8 +674,8 @@ pub struct Client {
     sidecar: sidecar_client::Client,
     /// Container registry client
     oci: oci_client::Client,
-    /// Sender to the TUI
-    tui: TuiSender,
+    /// Channel run events are reported through
+    reporter: Reporter,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
     /// Lock to serialize image pulls (avoids race conditions with content/snapshot stores)
@@ -711,14 +712,14 @@ impl Client {
     }
 
     /// Create a new containerd client
-    pub async fn new(tui: TuiSender, exec_permits: usize) -> Result<Self, RuntimeError> {
+    pub async fn new(reporter: Reporter, exec_permits: usize) -> Result<Self, RuntimeError> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
             user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
             platform_resolver: Some(Box::new(platform_resolver)),
             ..Default::default()
         });
 
-        let sidecar = crate::engine::docker::connect().await?;
+        let (runtime, sidecar) = crate::engine::docker::connect(&reporter).await?;
         let containerd =
             containerd_client::tonic::transport::Endpoint::from_static("http://[::]:0")
                 .connect_with_connector(tower::service_fn(move |_| async move {
@@ -732,12 +733,16 @@ impl Client {
         let containerd = containerd_client::Client::from(containerd);
 
         Self::wait_for_containerd_ready(&containerd).await?;
+        reporter.lifecycle(Lifecycle::EngineReady {
+            runtime: runtime.into(),
+            image_tag: crate::engine::docker::CONTAINERD_IMAGE_TAG.into(),
+        });
 
         Ok(Self {
             sidecar,
             containerd: ContainerdRootClient(containerd),
             oci,
-            tui,
+            reporter,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
             pull_lock: Mutex::new(()),
             dangling: Mutex::new(Vec::new()),
@@ -876,6 +881,9 @@ impl Client {
         let mut parent = String::new();
         let layer_count = manifest.layers.len();
 
+        let task = self.reporter.start_task(TaskKind::Pull, image_name);
+        self.reporter.task_layer_progress(task.id(), 0, layer_count);
+
         let mut layer_stack_hash = blake3::Hasher::new();
         let mut snapshot_name = String::new();
 
@@ -903,7 +911,7 @@ impl Client {
                         .await?;
                 }
             } else {
-                self.pull_layer(image, &layer, lease).await?;
+                self.pull_layer(image, &layer, lease, task.id()).await?;
 
                 let key = uuid::Uuid::new_v4().to_string();
                 log::debug!("Applying layer {} to {key}", layer.digest);
@@ -961,6 +969,8 @@ impl Client {
                     .await?;
             }
 
+            self.reporter
+                .task_layer_progress(task.id(), index.saturating_add(1), layer_count);
             parent = snapshot_name.clone();
         }
 
@@ -1005,6 +1015,7 @@ impl Client {
         image: &oci_client::Reference,
         layer: &oci_client::manifest::OciDescriptor,
         lease: &str,
+        task_id: TaskId,
     ) -> Result<(), RuntimeError> {
         if self
             .containerd
@@ -1033,18 +1044,9 @@ impl Client {
         let digest = layer.digest.clone();
         let digest_clone = digest.clone();
 
-        let task_id = format!("pull-{digest}").into();
-        let task_id_cloned = Arc::clone(&task_id);
-        let task_title = "pulling layer".into();
-        self.tui.send(TuiMessage::UpdateTask(crate::tui::Task {
-            identifier: Arc::clone(&task_id),
-            title: Arc::clone(&task_title),
-            progress: crate::tui::TaskProgress::Measurable {
-                completed: 0,
-                total: total_size.cast_unsigned(),
-            },
-        }));
-        let tui = self.tui.clone();
+        self.reporter
+            .task_bytes(task_id, 0, total_size.cast_unsigned());
+        let reporter = self.reporter.clone();
 
         self.containerd
             .content()
@@ -1062,14 +1064,11 @@ impl Client {
                             labels: HashMap::new(),
                         };
                         *current_offset = current_offset.saturating_add(layer_data.len());
-                        tui.send(TuiMessage::UpdateTask(crate::tui::Task {
-                            identifier: Arc::clone(&task_id),
-                            title: Arc::clone(&task_title),
-                            progress: crate::tui::TaskProgress::Measurable {
-                                completed: *current_offset as u64,
-                                total: total_size.cast_unsigned(),
-                            },
-                        }));
+                        reporter.task_bytes(
+                            task_id,
+                            *current_offset as u64,
+                            total_size.cast_unsigned(),
+                        );
                         futures_util::future::ready(Some(write))
                     })
                     .with_lease(lease),
@@ -1100,8 +1099,6 @@ impl Client {
             .into_inner()
             .try_for_each(async |_| Ok(()))
             .await?;
-
-        self.tui.send(TuiMessage::FinishTask(task_id_cloned));
 
         Ok::<_, RuntimeError>(())
     }
@@ -1262,15 +1259,14 @@ impl Client {
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
 
         let log_id = node.get_cmd().to_owned();
-        let task_id = format!("exec-{container}").into();
-        let task_title = log_id.clone().into();
+        let exec_task = self.reporter.start_task(TaskKind::Exec, log_id.clone());
+        let task_id = exec_task.id();
 
         let stdout = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(Self::read_stdout(
             stdout,
             log_id,
-            Arc::clone(&task_id),
-            task_title,
-            self.tui.clone(),
+            task_id,
+            self.reporter.clone(),
         )));
 
         log::debug!("Creating task in {container}");
@@ -1321,6 +1317,7 @@ impl Client {
                 stdout,
                 node,
                 snapshot: mutable_snapshot,
+                exec_task,
             },
             service_handles,
         ))
@@ -1342,7 +1339,9 @@ impl Client {
             command.to_string(),
         ]));
 
-        let task_id = format!("healthcheck-{container_id}").into();
+        let task = self
+            .reporter
+            .start_task(TaskKind::Exec, format!("[healthcheck] {command}"));
 
         let start_time = std::time::Instant::now();
         loop {
@@ -1359,9 +1358,8 @@ impl Client {
             tokio::spawn(Self::read_stdout(
                 stdout,
                 format!("[healthcheck] {command}"),
-                Arc::clone(&task_id),
-                format!("[healthcheck] {command}").into(),
-                self.tui.clone(),
+                task.id(),
+                self.reporter.clone(),
             ));
 
             log::debug!("Running healthcheck command {command} in {container_id}");
@@ -1405,7 +1403,6 @@ impl Client {
 
             log::debug!("Healthcheck command exited with code {exit_code}");
             if exit_code == 0 {
-                self.tui.send(TuiMessage::FinishTask(task_id));
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1559,18 +1556,12 @@ impl Client {
     async fn read_stdout(
         stdout: impl AsyncRead + Unpin + Send + 'static,
         log_id: String,
-        task_id: Arc<str>,
-        task_title: Arc<str>,
-        tui: TuiSender,
+        task_id: TaskId,
+        reporter: Reporter,
     ) -> Result<String, String> {
         let mut stdout = tokio::io::BufReader::new(stdout).lines();
         let mut result = String::new();
         let mut success = true;
-        tui.send(TuiMessage::UpdateTask(crate::tui::Task {
-            identifier: Arc::clone(&task_id),
-            title: Arc::clone(&task_title),
-            progress: crate::tui::TaskProgress::Log(Box::default()),
-        }));
 
         loop {
             match stdout.next_line().await {
@@ -1579,11 +1570,7 @@ impl Client {
                     let line = strip_ansi_escapes::strip_str(line);
 
                     log::trace!("{log_id}: {line}");
-                    tui.send(TuiMessage::UpdateTask(crate::tui::Task {
-                        identifier: Arc::clone(&task_id),
-                        title: Arc::clone(&task_title),
-                        progress: crate::tui::TaskProgress::Log(line.clone().into()),
-                    }));
+                    reporter.task_line(task_id, line.clone().into());
 
                     if !result.is_empty() {
                         result.push('\n');
@@ -1751,8 +1738,7 @@ impl Client {
             }
         };
 
-        self.tui
-            .send(TuiMessage::FinishTask(format!("exec-{}", handle.id).into()));
+        drop(handle.exec_task);
 
         let final_snapshot = uuid::Uuid::new_v4().to_string();
         self.containerd
@@ -2316,7 +2302,7 @@ mod tests {
 
     #[fixture]
     async fn containerd_client() -> Client {
-        Client::new(TuiSender(None), 1)
+        Client::new(Reporter::none(), 1)
             .await
             .expect("Failed to create Docker client")
     }

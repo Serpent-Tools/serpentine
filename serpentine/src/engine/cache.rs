@@ -463,6 +463,11 @@ impl Cache {
         }
     }
 
+    /// The number of entries currently held across the loaded and freshly generated caches.
+    pub fn entry_count(&self) -> usize {
+        self.old_cache.len().saturating_add(self.new_cache.len())
+    }
+
     /// Load the cache from the given path.
     pub async fn load_cache(
         file: &mut (impl AsyncRead + Unpin + Send),

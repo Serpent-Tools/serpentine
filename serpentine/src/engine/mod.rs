@@ -16,8 +16,8 @@ use std::rc::Rc;
 use miette::Diagnostic;
 use thiserror::Error;
 
+use crate::events::{Lifecycle, Reporter};
 use crate::snek::CompileResult;
-use crate::tui::{TuiMessage, TuiSender};
 
 /// An error encountered while running the source code
 #[derive(Debug, Error, Diagnostic)]
@@ -161,8 +161,8 @@ impl From<containerd_client::tonic::Status> for RuntimeError {
 pub struct RuntimeContext {
     /// The docker client
     containerd: containerd::Client,
-    /// The update channel for the TUI
-    tui: TuiSender,
+    /// The channel run events are reported through
+    reporter: Reporter,
     /// Caching of values
     cache: tokio::sync::Mutex<cache::Cache>,
 }
@@ -178,13 +178,16 @@ async fn load_cache_from_cli(
 
 impl RuntimeContext {
     /// Create a new runtime context
-    async fn new(tui: TuiSender, cli: &crate::Run) -> Result<Self, RuntimeError> {
+    async fn new(reporter: Reporter, cli: &crate::Run) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
 
-        let containerd = containerd::Client::new(tui.clone(), cli.jobs).await?;
+        let containerd = containerd::Client::new(reporter.clone(), cli.jobs).await?;
         let cache = match load_cache_from_cli(cli, &containerd).await {
             Ok(cache) => {
                 log::info!("Cache loaded, deleting cache file");
+                reporter.lifecycle(Lifecycle::CacheLoaded {
+                    entries: cache.entry_count(),
+                });
                 let _ = tokio::fs::remove_file(cli.get_cache()).await;
                 cache
             }
@@ -197,7 +200,7 @@ impl RuntimeContext {
 
         Ok(Self {
             containerd,
-            tui,
+            reporter,
             cache: tokio::sync::Mutex::new(cache),
         })
     }
@@ -208,10 +211,10 @@ impl RuntimeContext {
 
         let Self {
             containerd,
-            tui,
+            reporter,
             cache,
         } = self;
-        tui.send(TuiMessage::ShuttingDown);
+        reporter.lifecycle(Lifecycle::ShuttingDown);
         let _ = tokio::fs::create_dir_all(cli.get_cache().parent().unwrap_or(Path::new(""))).await;
         match tokio::fs::File::create(cli.get_cache()).await {
             Ok(cache_file) => {
@@ -240,7 +243,7 @@ impl RuntimeContext {
 /// Run the given compilation result
 pub fn run(
     compile_result: CompileResult,
-    tui: TuiSender,
+    reporter: Reporter,
     cli: &crate::Run,
 ) -> Result<(), crate::SerpentineError> {
     let start_node = compile_result.start_node;
@@ -260,7 +263,7 @@ pub fn run(
 
     runtime
         .block_on(async {
-            let context = Rc::new(RuntimeContext::new(tui, cli).await?);
+            let context = Rc::new(RuntimeContext::new(reporter, cli).await?);
             let scheduler = scheduler::Scheduler::new(
                 compile_result.nodes,
                 compile_result.graph,
@@ -312,7 +315,7 @@ mod benchmarks {
             entry_point: "DEFAULT".into(),
             jobs: 2,
         };
-        super::run(graph, crate::tui::TuiSender(None), &cli).unwrap();
+        super::run(graph, crate::events::Reporter::none(), &cli).unwrap();
     }
 
     /// Benchmark a cold pipeline run (no cache).
@@ -360,7 +363,7 @@ pub fn clear_cache(file_path: &Path) -> Result<(), RuntimeError> {
         .block_on(async move {
             let cache_file_read = tokio::fs::File::open(file_path).await?;
 
-            let docker = containerd::Client::new(TuiSender(None), 1).await?;
+            let docker = containerd::Client::new(Reporter::none(), 1).await?;
             let cache =
                 cache::Cache::load_cache(&mut tokio::io::BufReader::new(cache_file_read), &docker)
                     .await?;

@@ -56,40 +56,51 @@ pub trait NodeImpl {
 
             scheduler
                 .context()
-                .tui
-                .send(crate::tui::TuiMessage::RunningNode);
+                .reporter
+                .node(crate::events::NodeTransition::Started);
 
-            if self.should_be_cached() {
-                let key = CacheKey {
-                    node: kind,
-                    inputs: &inputs,
-                };
-                let key = key.content_hash().await?;
-                log::debug!("Checking cache with {key:?}");
-                if let Some(cached_value) = scheduler.context().cache.lock().await.get(key).cloned()
-                {
-                    log::debug!("Cache hit on {}", self.describe());
-                    if cached_value.healthcheck(scheduler.context()).await {
-                        return Ok(cached_value);
+            let outcome: Result<(Data, crate::events::NodeTransition), RuntimeError> = async move {
+                if self.should_be_cached() {
+                    let key = CacheKey {
+                        node: kind,
+                        inputs: &inputs,
+                    };
+                    let key = key.content_hash().await?;
+                    log::debug!("Checking cache with {key:?}");
+                    if let Some(cached_value) =
+                        scheduler.context().cache.lock().await.get(key).cloned()
+                    {
+                        log::debug!("Cache hit on {}", self.describe());
+                        if cached_value.healthcheck(scheduler.context()).await {
+                            return Ok((cached_value, crate::events::NodeTransition::Cached));
+                        }
+                        log::warn!("value {cached_value:?} failed health-check, not using cache.");
                     }
-                    log::warn!("value {cached_value:?} failed health-check, not using cache.");
+
+                    log::debug!("Executing {}", self.describe());
+                    let result = self.execute(scheduler.context(), inputs).await?;
+
+                    scheduler
+                        .context()
+                        .cache
+                        .lock()
+                        .await
+                        .insert(key, result.clone());
+
+                    Ok((result, crate::events::NodeTransition::Ran))
+                } else {
+                    log::debug!("Cache not enabled for node, executing directly.");
+                    let result = self.execute(scheduler.context(), inputs).await?;
+                    Ok((result, crate::events::NodeTransition::Ran))
                 }
-
-                log::debug!("Executing {}", self.describe());
-                let result = self.execute(scheduler.context(), inputs).await?;
-
-                scheduler
-                    .context()
-                    .cache
-                    .lock()
-                    .await
-                    .insert(key, result.clone());
-
-                Ok(result)
-            } else {
-                log::debug!("Cache not enabled for node, executing directly.");
-                self.execute(scheduler.context(), inputs).await
             }
+            .await;
+
+            let transition = outcome
+                .as_ref()
+                .map_or(crate::events::NodeTransition::Ran, |(_, picked)| *picked);
+            scheduler.context().reporter.node(transition);
+            outcome.map(|(data, _)| data)
         })
     }
 
