@@ -47,7 +47,7 @@ fn main() -> ! {
 
     spawn_containerd();
 
-    tokio::runtime::Builder::new_current_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("Failed to start tokio")
@@ -165,7 +165,10 @@ async fn setup_fifo(mut remote_socket: BufWriter<net::TcpStream>) -> Result<(), 
     tokio::fs::create_dir_all(&parent).await?;
     let file = parent.join(uuid::Uuid::new_v4().to_string());
 
-    nix::unistd::mkfifo(&file, Mode::S_IRWXU | Mode::S_IRWXO)?;
+    let file = tokio::task::spawn_blocking(move || {
+        nix::unistd::mkfifo(&file, Mode::S_IRWXU | Mode::S_IRWXO).map(|()| file)
+    })
+    .await??;
 
     // Open the FIFO for reading with O_NONBLOCK so it succeeds immediately without waiting
     // for a writer. This guarantees the reader is registered in the kernel before we send
@@ -203,7 +206,10 @@ async fn create_network(
 ) -> Result<(), Box<dyn Error>> {
     let topology = serpentine_internal::network::AbstractTopology::read(&mut remote_socket).await?;
     log::debug!("Creating topology: {topology:?}");
-    let topology = realize_topology(topology, None)?;
+    let topology = tokio::task::spawn_blocking(move || {
+        realize_topology(topology, None).map_err(|err| err.to_string())
+    })
+    .await??;
     topology.write(&mut remote_socket).await?;
     remote_socket.flush().await?;
 
@@ -455,8 +461,12 @@ async fn delete_network(
     let network = serpentine_internal::network::ConcreteTopology::read(&mut remote_socket).await?;
 
     for namespace in network {
-        delete_namespace(&namespace)
-            .map_err(|err| format!("Failed to delete namespace {}: {err}", namespace.path))?;
+        let path = namespace.path.clone();
+        tokio::task::spawn_blocking(move || {
+            delete_namespace(&namespace).map_err(|err| err.to_string())
+        })
+        .await?
+        .map_err(|err| format!("Failed to delete namespace {path}: {err}"))?;
     }
 
     Ok(())
@@ -609,10 +619,10 @@ fn unix_to_std(path: &UnixPath) -> PathBuf {
 /// Mount the provided containerd mount at the given location
 async fn mount_containerd(mount: &Mount, target: &UnixPath) -> Result<(), Box<dyn Error>> {
     let (flags, data) = parse_containerd_mount_options(&mount.options);
-    let fstype = if &*mount.type_ == "bind" {
+    let fstype: Option<String> = if &*mount.type_ == "bind" {
         None
     } else {
-        Some(&*mount.type_)
+        Some(mount.type_.to_string())
     };
 
     let relative_target = mount
@@ -624,7 +634,16 @@ async fn mount_containerd(mount: &Mount, target: &UnixPath) -> Result<(), Box<dy
     tokio::fs::create_dir_all(&target).await?;
 
     let source = unix_to_std(&mount.source);
-    nix::mount::mount(Some(&source), &target, fstype, flags, Some(&*data))?;
+    tokio::task::spawn_blocking(move || {
+        nix::mount::mount(
+            Some(&source),
+            &target,
+            fstype.as_deref(),
+            flags,
+            Some(&*data),
+        )
+    })
+    .await??;
 
     Ok(())
 }
