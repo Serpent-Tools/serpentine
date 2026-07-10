@@ -15,7 +15,7 @@ serpentine_internal.workspace = true
 # Runtime
 shell-words = "1.1.0"
 uuid.workspace = true
-tokio = { workspace = true, features = ["rt", "fs", "signal"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "fs", "signal", "time"] }
 futures-util = { version = "0.3", default-features = false }
 bollard = { version = "0.20.2", default-features = false, features = ["http", "pipe"] }
 containerd-client = { version = "0.9.0", default-features = false }
@@ -28,7 +28,7 @@ tokio-util = { version = "0.7.18", default-features = false, features = ["rt"] }
 tower = { version = "0.5.3", default-features = false }
 blake3 = { version = "1.8.3", default-features = false }
 typed-path.workspace = true
-im-rc = { version = "15.1.0", default-features = false }
+im = { version = "15.1.0", default-features = false }
 ignore = { version = "0.4.25", default-features = false }
 
 # Compiler
@@ -58,7 +58,7 @@ proptest-derive.workspace = true
 rstest.workspace = true
 test-log = { version = "0.2.18", default-features = false }
 tokio = { workspace = true, features = ["macros", "test-util"] }
-im-rc = { version = "15.1.0", features = ["proptest"] }
+im = { version = "15.1.0", features = ["proptest"] }
 
 [features]
 default = []

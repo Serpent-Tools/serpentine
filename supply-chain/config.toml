@@ -183,6 +183,10 @@ criteria = "safe-to-run"
 version = "0.9.1"
 criteria = "safe-to-run"
 
+[[exemptions.im]]
+version = "15.1.0"
+criteria = "safe-to-run"
+
 [[exemptions.insta]]
 version = "1.47.2"
 criteria = "safe-to-run"

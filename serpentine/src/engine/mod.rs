@@ -11,7 +11,8 @@ mod sidecar_client;
 mod userdb;
 
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
 use miette::Diagnostic;
 use thiserror::Error;
@@ -278,11 +279,8 @@ impl RuntimeContext {
         log::debug!("Shutting down runtime context");
 
         let Self {
-            containerd,
-            reporter,
-            cache,
+            containerd, cache, ..
         } = self;
-        reporter.lifecycle(Lifecycle::ShuttingDown);
         let _ = tokio::fs::create_dir_all(cli.get_cache().parent().unwrap_or(Path::new(""))).await;
         match tokio::fs::File::create(cli.get_cache()).await {
             Ok(cache_file) => {
@@ -319,7 +317,7 @@ pub fn run(
     log::debug!("Nodes: {}", compile_result.graph.len());
     log::debug!("Starting execution at node {start_node:?}");
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build();
     let Ok(runtime) = runtime else {
@@ -331,28 +329,46 @@ pub fn run(
 
     runtime
         .block_on(async {
-            let context = Rc::new(RuntimeContext::new(reporter, cli).await?);
-            let scheduler = scheduler::Scheduler::new(
+            let context = Arc::new(RuntimeContext::new(reporter, cli).await?);
+            let scheduler = Arc::new(scheduler::Scheduler::new(
                 compile_result.nodes,
                 compile_result.graph,
-                Rc::clone(&context),
-            );
+                Arc::clone(&context),
+            ));
             let result = tokio::select!(
-                res = scheduler.get_output(start_node) => res.map(|_| ()),
+                res = Arc::clone(&scheduler).get_output(start_node) => res.map(|_| ()),
                 _ = tokio::signal::ctrl_c() => {
                     log::warn!("Execution interrupted by user");
                     Err(RuntimeError::CtrlC)
                 }
             );
 
-            // Ensure the scheduler context rc is dropped.
-            drop(scheduler);
+            context.reporter.lifecycle(Lifecycle::ShuttingDown);
 
-            if let Some(context) = Rc::into_inner(context) {
-                context.shutdown(cli).await;
-            } else {
-                debug_assert!(false, "Context still referenced at shutdown");
-                log::warn!("Context still referenced, cant run shutdown");
+            // On a clean finish every spawned node task was awaited to completion, so dropping our
+            // handle leaves us the sole owner and the first attempt succeeds. On Ctrl-C the run
+            // future drops and aborts the in-flight tasks; give them a bounded window to release
+            // their scheduler references before reclaiming the context by value for shutdown.
+            drop(scheduler);
+            let reclaimed = tokio::time::timeout(Duration::from_secs(5), async move {
+                let mut context = context;
+                loop {
+                    match Arc::try_unwrap(context) {
+                        Ok(context) => break context,
+                        Err(returned) => {
+                            context = returned;
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    }
+                }
+            })
+            .await;
+
+            match reclaimed {
+                Ok(runtime_context) => runtime_context.shutdown(cli).await,
+                Err(_) => {
+                    log::warn!("Tasks still in flight after timeout, skipping clean shutdown");
+                }
             }
 
             result

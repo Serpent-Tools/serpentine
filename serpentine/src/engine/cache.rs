@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -67,7 +67,7 @@ impl nohash::IsEnabled for CacheHash {}
 pub struct CacheWriter<T> {
     /// The file to write to
     file: T,
-    /// The map of Rc pointers to ids
+    /// The map of Arc pointers to ids
     rcs: HashMap<*const u8, u64>,
     /// The next id to use for a rc
     next_rc_id: u64,
@@ -118,22 +118,22 @@ impl<T: AsyncWrite + Unpin + Send> CacheWriter<T> {
     /// If the rc hasnt been written yet calls `writer`
     pub async fn write_rc<Value, Func>(
         &mut self,
-        rc: &Rc<Value>,
+        rc: &Arc<Value>,
         writer: Func,
     ) -> Result<(), RuntimeError>
     where
         Func: for<'value> FnOnce(
             &'value mut Self,
-            &'value Rc<Value>,
+            &'value Arc<Value>,
         ) -> std::pin::Pin<
             Box<dyn Future<Output = Result<(), RuntimeError>> + 'value>,
         >,
         Value: ?Sized + 'static,
     {
-        let pointer = Rc::as_ptr(rc).cast::<u8>();
+        let pointer = Arc::as_ptr(rc).cast::<u8>();
         log::debug!(
             "Rc pointer: {pointer:?} for type {:?}",
-            std::any::TypeId::of::<Rc<Value>>()
+            std::any::TypeId::of::<Arc<Value>>()
         );
         if let Some(id) = self.rcs.get(&pointer) {
             log::debug!("Pointing to existing rc, {id}");
@@ -171,8 +171,8 @@ pub struct CacheReader<T> {
     /// The file to read from
     file: T,
     /// The map from ids to rcs, the trait object is the `Rc`.
-    /// This is because we can not convert `Rc<str>` to `Rc<dyn Any>` since string isnt sized.
-    /// So instead we convert `Box<Rc<str>>` into `Box<dyn Any>`
+    /// This is because we can not convert `Arc<str>` to `Arc<dyn Any>` since string isnt sized.
+    /// So instead we convert `Box<Arc<str>>` into `Box<dyn Any>`
     ///
     /// Ids are expected to be sequential
     rcs: Vec<Box<dyn Any>>,
@@ -230,24 +230,24 @@ impl<T: AsyncRead + Unpin + Send> CacheReader<T> {
     /// the same data.
     ///
     /// If the rc hasnt been parsed yet calls `reader`
-    pub async fn read_rc<Func, Res>(&mut self, reader: Func) -> Result<Rc<Res>, RuntimeError>
+    pub async fn read_rc<Func, Res>(&mut self, reader: Func) -> Result<Arc<Res>, RuntimeError>
     where
         Func: for<'this> FnOnce(
             &'this mut Self,
         ) -> std::pin::Pin<
-            Box<dyn Future<Output = Result<Rc<Res>, RuntimeError>> + 'this>,
+            Box<dyn Future<Output = Result<Arc<Res>, RuntimeError>> + 'this>,
         >,
         Res: Any + ?Sized + 'static,
     {
         let id = serpentine_internal::read_u64_length_encoded(&mut self.file).await?;
         log::debug!(
             "Reading {:?} with id {id}",
-            std::any::TypeId::of::<Rc<Res>>()
+            std::any::TypeId::of::<Arc<Res>>()
         );
 
         if id == 0 {
             let value = reader(self).await?;
-            self.rcs.push(Box::new(Rc::clone(&value)));
+            self.rcs.push(Box::new(Arc::clone(&value)));
             log::debug!("New rc, reading to id {}", self.rcs.len());
 
             Ok(value)
@@ -263,12 +263,12 @@ impl<T: AsyncRead + Unpin + Send> CacheReader<T> {
             let Some(rc) = rc.downcast_ref() else {
                 return Err(RuntimeError::internal(format!(
                     "Rc type mismatch, expected {:?} got {:?}",
-                    std::any::TypeId::of::<Rc<Res>>(),
+                    std::any::TypeId::of::<Arc<Res>>(),
                     (**rc).type_id()
                 )));
             };
 
-            Ok(Rc::clone(rc))
+            Ok(Arc::clone(rc))
         }
     }
 }
@@ -305,7 +305,7 @@ pub trait CacheData: Sized {
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError>;
 }
 
-impl CacheData for Rc<[u8]> {
+impl CacheData for Arc<[u8]> {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
@@ -340,7 +340,7 @@ impl CacheData for Rc<[u8]> {
         Ok(())
     }
 }
-impl CacheData for Rc<str> {
+impl CacheData for Arc<str> {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
@@ -379,12 +379,12 @@ impl CacheData for Rc<str> {
     }
 }
 
-impl<T: CacheData + Clone + 'static> CacheData for Rc<T> {
+impl<T: CacheData + Clone + 'static> CacheData for Arc<T> {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
         reader
-            .read_rc(|reader| Box::pin(async move { Ok(Rc::new(T::read(reader).await?)) }))
+            .read_rc(|reader| Box::pin(async move { Ok(Arc::new(T::read(reader).await?)) }))
             .await
     }
     async fn write(
@@ -407,7 +407,7 @@ pub struct CacheKey<'caller> {
     /// The kind of node
     pub node: NodeKindId,
     /// The inputs to the node
-    pub inputs: &'caller [&'caller Data],
+    pub inputs: &'caller [Data],
 }
 
 impl CacheKey<'_> {
@@ -594,13 +594,11 @@ mod tests {
         #[ignore] data1: Vec<Data>,
         #[ignore] data2: Vec<Data>,
     ) {
-        let data1 = data1.iter().collect::<Vec<_>>();
         let key1 = CacheKey {
             node,
             inputs: &data1,
         };
 
-        let data2 = data2.iter().collect::<Vec<_>>();
         let key2 = CacheKey {
             node,
             inputs: &data2,
@@ -621,7 +619,6 @@ mod tests {
     #[proptest::property_test]
     #[test_log::test]
     async fn same_entry_hashes_equal(#[ignore] node: NodeKindId, #[ignore] data: Vec<Data>) {
-        let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
             inputs: &data,
@@ -643,7 +640,6 @@ mod tests {
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
             inputs: &data,
@@ -706,7 +702,7 @@ mod tests {
     async fn save_and_load_duplicate_rc_is_deduplicated(external: impl ExternalCache) {
         let mut cache = Cache::new();
 
-        let value = Data::String(Rc::from("foo"));
+        let value = Data::String(Arc::from("foo"));
 
         let key1 = CacheHash(blake3::hash(&[0]).into());
         let key2 = CacheHash(blake3::hash(&[1]).into());
@@ -733,7 +729,7 @@ mod tests {
         };
 
         assert!(
-            Rc::ptr_eq(&value1, &value2),
+            Arc::ptr_eq(&value1, &value2),
             "Rcs point to different allocations despite being serialized from the same rc allocation."
         );
     }
@@ -748,10 +744,9 @@ mod tests {
     ) {
         let mut cache = Cache::new();
         for (node, data, value) in &values {
-            let data = data.iter().collect::<Vec<_>>();
             let key = CacheKey {
                 node: *node,
-                inputs: &data,
+                inputs: data,
             };
 
             cache.insert(key.content_hash().await.unwrap(), value.clone());
@@ -767,10 +762,9 @@ mod tests {
         let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
 
         for (node, data, _) in &values {
-            let data = data.iter().collect::<Vec<_>>();
             let key = CacheKey {
                 node: *node,
-                inputs: &data,
+                inputs: data,
             };
 
             let _ = loaded_cache
@@ -793,7 +787,6 @@ mod tests {
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
             inputs: &data,
@@ -840,7 +833,6 @@ mod tests {
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
             inputs: &data,
@@ -881,7 +873,6 @@ mod tests {
         #[ignore] data: Vec<Data>,
         #[ignore] value: Data,
     ) {
-        let data = data.iter().collect::<Vec<_>>();
         let key = CacheKey {
             node,
             inputs: &data,
