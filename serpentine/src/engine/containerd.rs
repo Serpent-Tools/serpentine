@@ -15,7 +15,7 @@ use typed_path::{UnixPath, UnixPathBuf};
 
 use crate::engine::cache::{CacheData, CacheReader, CacheWriter, ExternalCache};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
-use crate::engine::{RuntimeError, sidecar_client, userdb};
+use crate::engine::{RuntimeError, acquire_file_lock, sidecar_client, userdb};
 use crate::events::{Lifecycle, Reporter, TaskHandle, TaskId, TaskKind};
 
 /// The snapshotter to use for containers.
@@ -678,8 +678,6 @@ pub struct Client {
     reporter: Reporter,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
-    /// Lock to serialize image pulls (avoids race conditions with content/snapshot stores)
-    pull_lock: Mutex<()>,
     /// Dangling resources
     dangling: Mutex<Vec<DanglingResource>>,
     /// Networks that arent currently in use.
@@ -744,7 +742,6 @@ impl Client {
             oci,
             reporter,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
-            pull_lock: Mutex::new(()),
             dangling: Mutex::new(Vec::new()),
             free_networks: Mutex::new(HashMap::new()),
         })
@@ -842,6 +839,15 @@ impl Client {
         })
     }
 
+    /// Whether a containerd error is a benign "created concurrently by another pull" outcome.
+    ///
+    /// Every object serpentine writes is content addressed, so an `AlreadyExists` returned from a
+    /// racing pull means some other process produced byte identical content. That is safe to treat
+    /// as success rather than an error.
+    fn is_already_exists(status: &containerd_client::tonic::Status) -> bool {
+        status.code() == containerd_client::tonic::Code::AlreadyExists
+    }
+
     /// Pull the given image from the registry and return both the snapshot name and config.
     async fn fetch_image(
         &self,
@@ -851,8 +857,9 @@ impl Client {
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
 
         log::debug!("Pulling image {image} manifest");
-        let (manifest, _, config) = self.oci.pull_manifest_and_config(&image, &auth).await?;
-        let pull_guard = self.pull_lock.lock().await;
+        let (manifest, manifest_digest, config) =
+            self.oci.pull_manifest_and_config(&image, &auth).await?;
+        let pull_guard = acquire_file_lock(&manifest_digest).await?;
         let lease = self.new_lease().await?;
 
         log::debug!("Pulling image {image}");
@@ -861,7 +868,7 @@ impl Client {
             .await?;
         self.drop_lease(lease).await?;
 
-        drop(pull_guard);
+        pull_guard.unlock();
 
         let config: oci_client::config::ConfigFile =
             serde_json::from_str(&config).map_err(|err| RuntimeError::internal(err.to_string()))?;
@@ -955,7 +962,8 @@ impl Client {
                 } else {
                     HashMap::new()
                 };
-                self.containerd
+                let commit = self
+                    .containerd
                     .snapshot()
                     .commit(
                         containerd_services::snapshots::CommitSnapshotRequest {
@@ -966,7 +974,12 @@ impl Client {
                         }
                         .with_lease(lease),
                     )
-                    .await?;
+                    .await;
+                if let Err(status) = commit
+                    && !Self::is_already_exists(&status)
+                {
+                    return Err(status.into());
+                }
             }
 
             self.reporter
@@ -1079,7 +1092,8 @@ impl Client {
             .await?;
 
         log::debug!("Finished pulling {digest_clone}.");
-        self.containerd
+        let commit = self
+            .containerd
             .content()
             .write(
                 futures_util::stream::iter(std::iter::once(
@@ -1098,7 +1112,12 @@ impl Client {
             .await?
             .into_inner()
             .try_for_each(async |_| Ok(()))
-            .await?;
+            .await;
+        if let Err(status) = commit
+            && !Self::is_already_exists(&status)
+        {
+            return Err(status.into());
+        }
 
         Ok::<_, RuntimeError>(())
     }

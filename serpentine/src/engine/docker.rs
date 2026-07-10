@@ -6,7 +6,7 @@ use std::process::Command;
 use bollard::API_DEFAULT_VERSION;
 use futures_util::StreamExt;
 
-use crate::engine::{RuntimeError, sidecar_client};
+use crate::engine::{RuntimeError, acquire_file_lock, sidecar_client};
 use crate::events::{Reporter, TaskKind};
 
 /// The name of the containerd daemon serpentine spawns.
@@ -120,6 +120,18 @@ fn try_podman() -> Option<bollard::Docker> {
     bollard::Docker::connect_with_socket(&socket_path, 120, API_DEFAULT_VERSION).ok()
 }
 
+/// Whether a docker error carries the given HTTP status code.
+///
+/// Used to treat a benign create or start race, where another serpentine process already brought
+/// the shared containerd container up, as success rather than an error.
+fn is_docker_status(err: &bollard::errors::Error, status: u16) -> bool {
+    matches!(
+        err,
+        bollard::errors::Error::DockerResponseServerError { status_code, .. }
+            if *status_code == status
+    )
+}
+
 /// Spin up a containerd instance using the given docker client.
 ///
 /// Returns the URI to connect to
@@ -127,6 +139,7 @@ async fn spin_up_containerd(
     docker: bollard::Docker,
     reporter: &Reporter,
 ) -> Result<std::net::SocketAddr, RuntimeError> {
+    let _setup_guard = acquire_file_lock(CONTAINER_NAME).await?;
     let volume = create_containerd_volume(&docker).await?;
     let image = ensure_containerd_image(&docker, reporter).await?;
 
@@ -140,7 +153,7 @@ async fn spin_up_containerd(
     {
         log::info!("Creating containerd container with name {CONTAINER_NAME}");
 
-        docker
+        let created = docker
             .create_container(
                 Some(
                     bollard::query_parameters::CreateContainerOptionsBuilder::new()
@@ -172,14 +185,24 @@ async fn spin_up_containerd(
                     ..Default::default()
                 },
             )
-            .await?;
+            .await;
+        if let Err(err) = created
+            && !is_docker_status(&err, 409)
+        {
+            return Err(err.into());
+        }
 
-        docker
+        let started = docker
             .start_container(
                 CONTAINER_NAME,
                 Some(bollard::query_parameters::StartContainerOptionsBuilder::new().build()),
             )
-            .await?;
+            .await;
+        if let Err(err) = started
+            && !is_docker_status(&err, 304)
+        {
+            return Err(err.into());
+        }
     }
 
     let serpentine_port = wait_for_host_port(&docker).await?;
