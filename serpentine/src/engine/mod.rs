@@ -157,6 +157,74 @@ impl From<containerd_client::tonic::Status> for RuntimeError {
     }
 }
 
+/// Handle to a held cross-process advisory lock. Dropping it releases the lock.
+pub(crate) struct FileLockGuard {
+    /// The locked file; its handle is unlocked on drop, then closed as the file itself drops.
+    file: std::fs::File,
+}
+
+impl Drop for FileLockGuard {
+    fn drop(&mut self) {
+        // Closing the handle would release the lock on its own, but unlock explicitly so the
+        // release is a deliberate step rather than an implicit side effect of the descriptor
+        // closing. A failure here still leaves the lock to be freed when the handle closes.
+        if let Err(err) = self.file.unlock() {
+            log::warn!("Failed to release advisory lock: {err}");
+        }
+    }
+}
+
+impl FileLockGuard {
+    /// Release the lock now rather than waiting for the guard to fall out of scope.
+    pub(crate) fn unlock(self) {
+        // Consuming `self` runs the `Drop` impl above, which releases the lock.
+        drop(self);
+    }
+}
+
+/// Sanitize a lock key into a portable file name.
+///
+/// Keys such as image digests contain characters like `:` that are legal on Unix but rejected by
+/// Windows file systems. Mapping anything outside a conservative set to `_` keeps a stable, unique
+/// name on every platform.
+fn lock_file_name(key: &str) -> String {
+    let sanitized: String = key
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{sanitized}.lock")
+}
+
+/// Acquire a cross-process advisory lock identified by `key`.
+///
+/// Serpentine processes share host level state such as the containerd container and its content
+/// and snapshot stores. Locking on a stable key lets the first process do a create or fetch while
+/// the others wait and then reuse the result, avoiding duplicated work and races on that shared
+/// state. The lock is released when the returned guard is dropped.
+pub(crate) async fn acquire_file_lock(key: &str) -> Result<FileLockGuard, RuntimeError> {
+    let file_name = lock_file_name(key);
+    let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
+        let dir = std::env::temp_dir().join("serpent-tools").join("locks");
+        std::fs::create_dir_all(&dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join(file_name))?;
+        file.lock()?;
+        Ok(file)
+    })
+    .await
+    .map_err(std::io::Error::other)??;
+    Ok(FileLockGuard { file })
+}
+
 /// The various providers and interfaces used by the runtime
 pub struct RuntimeContext {
     /// The docker client
