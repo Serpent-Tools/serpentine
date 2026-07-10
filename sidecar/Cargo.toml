@@ -10,7 +10,7 @@ serpentine_internal.workspace = true
 
 log.workspace = true
 simple_logger = { version = "5.2.0", default-features = false }
-tokio = { workspace = true, features = ["rt", "net", "io-util", "fs"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "fs"] }
 nix = { workspace = true, features = ["fs", "mount"] }
 uuid.workspace = true
 rust-cni = { version = "0.1.2", default-features = false }
