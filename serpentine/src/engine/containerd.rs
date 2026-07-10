@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use containerd_client::services::v1 as containerd_services;
@@ -33,10 +33,10 @@ pub struct ContainerConfig {
     #[cfg_attr(
         test,
         proptest(
-            strategy = "im_rc::proptest::hash_map(proptest::arbitrary::any::<Rc<str>>(), proptest::arbitrary::any::<Rc<str>>(), 0..10)"
+            strategy = "im::proptest::hash_map(proptest::arbitrary::any::<Arc<str>>(), proptest::arbitrary::any::<Arc<str>>(), 0..10)"
         )
     )]
-    env: im_rc::HashMap<Rc<str>, Rc<str>>,
+    env: im::HashMap<Arc<str>, Arc<str>>,
     /// The working directory
     #[cfg_attr(
         test,
@@ -49,15 +49,15 @@ pub struct ContainerConfig {
     ///
     /// This is stored in the same format as the oci image spec for linux.
     /// > `user`, `uid`, `user:group`, `uid:gid`, `uid:group`, `user:gid`
-    user: Option<Rc<str>>,
+    user: Option<Arc<str>>,
     /// The services to attach to this container.
-    #[cfg_attr(test, proptest(value = "im_rc::HashMap::new()"))]
-    services: im_rc::HashMap<Rc<str>, ServiceState>,
+    #[cfg_attr(test, proptest(value = "im::HashMap::new()"))]
+    services: im::HashMap<Arc<str>, ServiceState>,
 }
 
 impl ContainerConfig {
     /// Get an environment variable in the container
-    pub fn get_env_var(&self, env: &str) -> Option<&Rc<str>> {
+    pub fn get_env_var(&self, env: &str) -> Option<&Arc<str>> {
         self.env.get(env)
     }
 
@@ -67,17 +67,17 @@ impl ContainerConfig {
     }
 
     /// Set an environment variable in the container
-    pub fn set_env_var(&mut self, env: Rc<str>, value: Rc<str>) {
+    pub fn set_env_var(&mut self, env: Arc<str>, value: Arc<str>) {
         self.env.insert(env, value);
     }
 
     /// Update the user config for the container
-    pub fn set_user(&mut self, user: Rc<str>) {
+    pub fn set_user(&mut self, user: Arc<str>) {
         self.user = Some(user);
     }
 
     /// Attach service to this container
-    pub fn with_service(&mut self, service: ServiceState, hostname: Rc<str>) {
+    pub fn with_service(&mut self, service: ServiceState, hostname: Arc<str>) {
         self.services.insert(hostname, service);
     }
 }
@@ -90,7 +90,7 @@ impl From<oci_client::config::Config> for ContainerConfig {
             .into_iter()
             .filter_map(|env| {
                 env.split_once('=')
-                    .map(|(key, value)| (Rc::from(key), Rc::from(value)))
+                    .map(|(key, value)| (Arc::from(key), Arc::from(value)))
             })
             .collect();
 
@@ -100,8 +100,8 @@ impl From<oci_client::config::Config> for ContainerConfig {
                 || UnixPath::new("/").to_path_buf(),
                 |dir| UnixPath::new(&dir).to_path_buf(),
             ),
-            user: config.user.map(Rc::from),
-            services: im_rc::HashMap::new(),
+            user: config.user.map(Arc::from),
+            services: im::HashMap::new(),
         }
     }
 }
@@ -141,11 +141,11 @@ impl CacheData for ContainerConfig {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
-        let mut env = im_rc::HashMap::new();
+        let mut env = im::HashMap::new();
         let items = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
         for _ in 0..items {
-            let key = Rc::<str>::read(reader).await?;
-            let value = Rc::<str>::read(reader).await?;
+            let key = Arc::<str>::read(reader).await?;
+            let value = Arc::<str>::read(reader).await?;
             env.insert(key, value);
         }
 
@@ -154,15 +154,15 @@ impl CacheData for ContainerConfig {
                 .to_path_buf();
 
         let user = if reader.read_u8().await? == 1 {
-            Some(Rc::<str>::read(reader).await?)
+            Some(Arc::<str>::read(reader).await?)
         } else {
             None
         };
 
-        let mut services = im_rc::HashMap::new();
+        let mut services = im::HashMap::new();
         let service_count = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
         for _ in 0..service_count {
-            let hostname = Rc::<str>::read(reader).await?;
+            let hostname = Arc::<str>::read(reader).await?;
             let service = Box::pin(ServiceState::read(reader)).await?;
             services.insert(hostname, service);
         }
@@ -213,20 +213,20 @@ impl CacheData for ContainerConfig {
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ServiceConfig {
     /// The service entry point
-    entrypoint: Rc<str>,
+    entrypoint: Arc<str>,
     /// Command to run in the same container as the service and which should return a 0 exit code
     /// before spawning parents.
     #[cfg_attr(test, proptest(value = "(\"exit 0\".into(), Duration::from_secs(1))"))]
-    healthcheck: (Rc<str>, Duration),
+    healthcheck: (Arc<str>, Duration),
 }
 
 impl CacheData for ServiceConfig {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
-        let entrypoint = Rc::<str>::read(reader).await?;
+        let entrypoint = Arc::<str>::read(reader).await?;
 
-        let healthcheck = Rc::<str>::read(reader).await?;
+        let healthcheck = Arc::<str>::read(reader).await?;
         let timeout = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
 
         Ok(Self {
@@ -284,7 +284,7 @@ impl Default for ServiceConfig {
 
 impl ServiceConfig {
     /// Set the healthcheck command and timeout for this service.
-    pub fn set_healthcheck(&mut self, command: Rc<str>, timeout: Duration) {
+    pub fn set_healthcheck(&mut self, command: Arc<str>, timeout: Duration) {
         self.healthcheck = (command, timeout);
     }
 }
@@ -348,12 +348,12 @@ impl ServiceState {
     }
 
     /// Convert this service into a container topology
-    fn into_topology(mut self, hostname: Rc<str>) -> network::Topology<ContainerTopologyNode> {
+    fn into_topology(mut self, hostname: Arc<str>) -> network::Topology<ContainerTopologyNode> {
         let mut services = Vec::with_capacity(self.container.config.services.len());
 
         self.container = self.container.update_config(|config| {
             for (service_hostname, service) in config.services.iter() {
-                services.push(service.clone().into_topology(Rc::clone(service_hostname)));
+                services.push(service.clone().into_topology(Arc::clone(service_hostname)));
             }
         });
 
@@ -388,14 +388,14 @@ struct ContainerTopologyNode {
     /// The service state
     state: ContainerLike,
     /// The hostname of this service.
-    hostname: Option<Rc<str>>,
+    hostname: Option<Arc<str>>,
     /// The command provided to the root node.
     cmd: Option<Box<str>>,
 }
 
 impl ContainerTopologyNode {
     /// Get the hostname to use for this container.
-    fn get_hostname(&self) -> Rc<str> {
+    fn get_hostname(&self) -> Arc<str> {
         self.hostname.clone().unwrap_or_else(|| "step".into())
     }
 
@@ -421,7 +421,7 @@ impl ContainerTopologyNode {
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct ContainerState {
     /// The snapshot to use for the container
-    snapshot: Rc<str>,
+    snapshot: Arc<str>,
     /// The container config
     config: ContainerConfig,
 }
@@ -439,13 +439,13 @@ impl ContainerState {
         let mut config = self.config.clone();
         update(&mut config);
         ContainerState {
-            snapshot: Rc::clone(&self.snapshot),
+            snapshot: Arc::clone(&self.snapshot),
             config,
         }
     }
 
     /// Convert this container into a service
-    pub fn into_service(self, entrypoint: Rc<str>) -> ServiceState {
+    pub fn into_service(self, entrypoint: Arc<str>) -> ServiceState {
         ServiceState {
             container: self,
             service_config: ServiceConfig {
@@ -461,7 +461,7 @@ impl ContainerState {
 
         self = self.update_config(|config| {
             for (service_hostname, service) in config.services.iter() {
-                services.push(service.clone().into_topology(Rc::clone(service_hostname)));
+                services.push(service.clone().into_topology(Arc::clone(service_hostname)));
             }
         });
 
@@ -488,7 +488,7 @@ impl CacheData for ContainerState {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
-        let snapshot = Rc::<str>::read(reader).await?;
+        let snapshot = Arc::<str>::read(reader).await?;
         let config = ContainerConfig::read(reader).await?;
         Ok(Self { snapshot, config })
     }
@@ -1232,7 +1232,7 @@ impl Client {
             let hostname = child.get_data().0.get_hostname();
             let ip = child.get_data().1.ip;
 
-            hosts.push((Rc::clone(&hostname), ip));
+            hosts.push((Arc::clone(&hostname), ip));
         }
 
         let service_handles = futures_util::future::try_join_all(
@@ -1323,7 +1323,7 @@ impl Client {
             self.wait_for_command_success(
                 container.clone(),
                 process_spec,
-                Rc::clone(healthcheck),
+                Arc::clone(healthcheck),
                 *timeout,
                 lease,
             )
@@ -1348,7 +1348,7 @@ impl Client {
         &self,
         container_id: String,
         mut base_process: oci_spec::runtime::Process,
-        command: Rc<str>,
+        command: Arc<str>,
         timeout: std::time::Duration,
         lease: &str,
     ) -> Result<(), RuntimeError> {
@@ -1436,7 +1436,7 @@ impl Client {
         state: &ContainerState,
         cmd: String,
         network_namespace: &str,
-        hosts: Vec<(Rc<str>, std::net::Ipv4Addr)>,
+        hosts: Vec<(Arc<str>, std::net::Ipv4Addr)>,
         mounts: &[containerd_client::types::Mount],
         lease: &str,
     ) -> Result<(String, oci_spec::runtime::Process), RuntimeError> {
@@ -1675,7 +1675,7 @@ impl Client {
     /// Write the hosts file to the sidecar and return a appropriate bind mount for it.
     async fn write_hosts_file(
         &self,
-        hosts: Vec<(Rc<str>, std::net::Ipv4Addr)>,
+        hosts: Vec<(Arc<str>, std::net::Ipv4Addr)>,
     ) -> Result<oci_spec::runtime::Mount, RuntimeError> {
         let hosts_content = hosts
             .into_iter()
@@ -1792,14 +1792,14 @@ impl Client {
             }
         }
 
-        let mut services = im_rc::HashMap::new();
+        let mut services = im::HashMap::new();
         for child in children {
             let Some(hostname) = &child.get_data().node.hostname else {
                 return Err(RuntimeError::internal(
                     "Child container missing hostname".to_owned(),
                 ));
             };
-            let hostname = Rc::clone(hostname);
+            let hostname = Arc::clone(hostname);
 
             let (child_container, _) = Box::pin(self.spindown_topology(child)).await?;
 
@@ -2280,7 +2280,7 @@ struct ContainerFileExport {
     /// The sidecar client to use
     sidecar: sidecar_client::Client,
     /// The mounts to use
-    mounts: Rc<[containerd_client::types::Mount]>,
+    mounts: Arc<[containerd_client::types::Mount]>,
     /// The path to export
     path: UnixPathBuf,
 }
@@ -2291,6 +2291,7 @@ impl FileSystemProvider for ContainerFileExport {
     ) -> std::pin::Pin<
         Box<
             dyn Future<Output = Result<crate::engine::filesystem::Reader<'this>, RuntimeError>>
+                + Send
                 + 'this,
         >,
     > {

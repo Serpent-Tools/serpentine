@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use typed_path::{PlatformPathBuf, UnixPath};
 
@@ -16,7 +16,10 @@ use crate::snek::CompileError;
 use crate::snek::span::{Span, Spanned};
 
 /// A node implementation
-pub trait NodeImpl {
+///
+/// `Send + Sync` because node implementations live in the shared `Arc<Scheduler>` and their futures
+/// run on spawned tasks across worker threads.
+pub trait NodeImpl: Send + Sync {
     /// Should this node be cached?
     /// In general quick to execute pure nodes should not be cached.
     /// As well as nodes that read external resources should not be cached.
@@ -43,19 +46,14 @@ pub trait NodeImpl {
     fn execute_raw<'scheduler>(
         &'scheduler self,
         kind: NodeKindId,
-        scheduler: &'scheduler Scheduler,
+        scheduler: Arc<Scheduler>,
         inputs: &'scheduler [NodeInstanceId],
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
         Box::pin(async move {
-            let inputs = futures_util::future::try_join_all(
-                inputs
-                    .iter()
-                    .map(async |input| scheduler.get_output(*input).await),
-            )
-            .await?;
+            let inputs = scheduler.resolve_all(inputs).await?;
 
-            scheduler
-                .context()
+            let context = scheduler.context();
+            context
                 .reporter
                 .node(crate::events::NodeTransition::Started);
 
@@ -67,30 +65,23 @@ pub trait NodeImpl {
                     };
                     let key = key.content_hash().await?;
                     log::debug!("Checking cache with {key:?}");
-                    if let Some(cached_value) =
-                        scheduler.context().cache.lock().await.get(key).cloned()
-                    {
+                    if let Some(cached_value) = context.cache.lock().await.get(key).cloned() {
                         log::debug!("Cache hit on {}", self.describe());
-                        if cached_value.healthcheck(scheduler.context()).await {
+                        if cached_value.healthcheck(context).await {
                             return Ok((cached_value, crate::events::NodeTransition::Cached));
                         }
                         log::warn!("value {cached_value:?} failed health-check, not using cache.");
                     }
 
                     log::debug!("Executing {}", self.describe());
-                    let result = self.execute(scheduler.context(), inputs).await?;
+                    let result = self.execute(context, inputs).await?;
 
-                    scheduler
-                        .context()
-                        .cache
-                        .lock()
-                        .await
-                        .insert(key, result.clone());
+                    context.cache.lock().await.insert(key, result.clone());
 
                     Ok((result, crate::events::NodeTransition::Ran))
                 } else {
                     log::debug!("Cache not enabled for node, executing directly.");
-                    let result = self.execute(scheduler.context(), inputs).await?;
+                    let result = self.execute(context, inputs).await?;
                     Ok((result, crate::events::NodeTransition::Ran))
                 }
             }
@@ -99,7 +90,7 @@ pub trait NodeImpl {
             let transition = outcome
                 .as_ref()
                 .map_or(crate::events::NodeTransition::Ran, |(_, picked)| *picked);
-            scheduler.context().reporter.node(transition);
+            context.reporter.node(transition);
             outcome.map(|(data, _)| data)
         })
     }
@@ -108,9 +99,9 @@ pub trait NodeImpl {
     /// This is called by `execute_raw` and can be set to empty if overwriting it.
     fn execute<'scheduler>(
         &'scheduler self,
-        context: &'scheduler Rc<RuntimeContext>,
-        inputs: Vec<&'scheduler Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>>;
+        context: &'scheduler Arc<RuntimeContext>,
+        inputs: Vec<Data>,
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>>;
 }
 
 /// Trait implemented on the raw types in `Data`
@@ -154,12 +145,12 @@ impl RawData for i128 {
     }
 }
 
-impl RawData for Rc<str> {
+impl RawData for Arc<str> {
     const KIND: DataType = DataType::String;
 
     fn from_data(data: &Data) -> Option<Self> {
         if let Data::String(value) = data {
-            Some(Rc::clone(value))
+            Some(Arc::clone(value))
         } else {
             None
         }
@@ -249,7 +240,10 @@ struct Wrap<F, P> {
     passthrough_return: bool,
     /// The argument types needs to exist as a generic on this type for rust trait resolution to be
     /// happy.
-    phantom: PhantomData<P>,
+    ///
+    /// Uses `fn() -> P` so `Wrap` is unconditionally `Send + Sync` regardless of `P` (it never
+    /// actually owns a `P`).
+    phantom: PhantomData<fn() -> P>,
 }
 
 impl<F, P> Wrap<F, P> {
@@ -280,8 +274,8 @@ macro_rules! impl_node_impl {
         #[expect(clippy::allow_attributes, reason="auto generated")]
         #[allow(warnings, reason="auto generated")]
         impl< F, R, Fut, $($arg),*> NodeImpl for Wrap<F, ($($arg),*)>
-        where F: Fn(Rc<RuntimeContext>, $($arg),*) -> Fut,
-              Fut: Future<Output=Result<R, RuntimeError>>,
+        where F: Fn(Arc<RuntimeContext>, $($arg),*) -> Fut + Send + Sync,
+              Fut: Future<Output=Result<R, RuntimeError>> + Send,
               R: RawData,
               $($arg: RawData),*
         {
@@ -340,9 +334,9 @@ macro_rules! impl_node_impl {
 
             fn execute<'scheduler>(
                 &'scheduler self,
-                context: &'scheduler Rc<RuntimeContext>,
-                inputs: Vec<&'scheduler Data>,
-            ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+                context: &'scheduler Arc<RuntimeContext>,
+                inputs: Vec<Data>,
+            ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
                 Box::pin(async move {
                     let mut inputs = inputs.into_iter();
                     let ($($arg),*,) = (
@@ -355,11 +349,11 @@ macro_rules! impl_node_impl {
                     );
 
                     $(
-                        let $arg = $arg::from_data($arg).ok_or_else(|| RuntimeError::internal("Type mismatch at runtime"))?;
+                        let $arg = $arg::from_data(&$arg).ok_or_else(|| RuntimeError::internal("Type mismatch at runtime"))?;
                     )*
 
                     log::debug!("Executing {}", std::any::type_name::<F>());
-                    Ok((self.function)(Rc::clone(context), $($arg),*).await?.into_data())
+                    Ok((self.function)(Arc::clone(context), $($arg),*).await?.into_data())
                 })
             }
         }
@@ -402,15 +396,14 @@ impl NodeImpl for Noop {
 
     fn execute<'scheduler>(
         &'scheduler self,
-        _context: &'scheduler Rc<RuntimeContext>,
-        inputs: Vec<&'scheduler Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+        _context: &'scheduler Arc<RuntimeContext>,
+        inputs: Vec<Data>,
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
         Box::pin(async move {
             inputs
                 .into_iter()
                 .next()
                 .ok_or_else(|| RuntimeError::internal("Argument count mismatch at runtime"))
-                .cloned()
         })
     }
 }
@@ -438,9 +431,9 @@ impl NodeImpl for LiteralNode {
 
     fn execute<'scheduler>(
         &'scheduler self,
-        _context: &'scheduler Rc<RuntimeContext>,
-        _inputs: Vec<&'scheduler Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+        _context: &'scheduler Arc<RuntimeContext>,
+        _inputs: Vec<Data>,
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -451,25 +444,25 @@ pub const NOOP_NAME: &str = "Noop";
 
 /// Create a container state from a remote image
 async fn image(
-    context: Rc<RuntimeContext>,
-    image: Rc<str>,
+    context: Arc<RuntimeContext>,
+    image: Arc<str>,
 ) -> Result<containerd::ContainerState, RuntimeError> {
     context.containerd.pull_image(&image).await
 }
 
 /// Create a service state from a remote image
 async fn image_service(
-    context: Rc<RuntimeContext>,
-    image: Rc<str>,
+    context: Arc<RuntimeContext>,
+    image: Arc<str>,
 ) -> Result<containerd::ServiceState, RuntimeError> {
     context.containerd.pull_service(&image).await
 }
 
 /// Run a command in a container
 async fn exec(
-    context: Rc<RuntimeContext>,
+    context: Arc<RuntimeContext>,
     mut container: containerd::ContainerLike,
-    command: Rc<str>,
+    command: Arc<str>,
 ) -> Result<containerd::ContainerLike, RuntimeError> {
     *container = context
         .containerd
@@ -481,10 +474,10 @@ async fn exec(
 
 /// Run a command in a container, getting its output
 async fn exec_output(
-    context: Rc<RuntimeContext>,
+    context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
-    command: Rc<str>,
-) -> Result<Rc<str>, RuntimeError> {
+    command: Arc<str>,
+) -> Result<Arc<str>, RuntimeError> {
     context
         .containerd
         .exec_get_output(&container, command.to_string())
@@ -493,17 +486,20 @@ async fn exec_output(
 }
 
 /// Read a file/folder into a tar from the host system.
-async fn from_host(_context: Rc<RuntimeContext>, src: Rc<str>) -> Result<FileSystem, RuntimeError> {
+async fn from_host(
+    _context: Arc<RuntimeContext>,
+    src: Arc<str>,
+) -> Result<FileSystem, RuntimeError> {
     let src: PlatformPathBuf = UnixPath::new(src.as_bytes()).with_encoding();
     Ok(filesystem::LocalFiles(src).into())
 }
 
 /// Extract a `FileSystem` from a container at the given path
 async fn export(
-    context: Rc<RuntimeContext>,
+    context: Arc<RuntimeContext>,
 
     container: containerd::ContainerLike,
-    path: Rc<str>,
+    path: Arc<str>,
 ) -> Result<FileSystem, RuntimeError> {
     context
         .containerd
@@ -513,9 +509,9 @@ async fn export(
 
 /// Write the given file to the host
 async fn to_host(
-    _context: Rc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     fs: FileSystem,
-    path: Rc<str>,
+    path: Arc<str>,
 ) -> Result<i128, RuntimeError> {
     let mut reader = fs.get_reader().await?;
 
@@ -527,11 +523,11 @@ async fn to_host(
 
 /// Copy a `FileSystem` into a container at the given path
 async fn with(
-    context: Rc<RuntimeContext>,
+    context: Arc<RuntimeContext>,
 
     mut container: containerd::ContainerLike,
     fs: FileSystem,
-    path: Rc<str>,
+    path: Arc<str>,
 ) -> Result<containerd::ContainerLike, RuntimeError> {
     *container = context
         .containerd
@@ -543,41 +539,41 @@ async fn with(
 
 /// Modify the working directory of the container
 async fn with_working_dir(
-    _context: Rc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
-    dir: Rc<str>,
+    dir: Arc<str>,
 ) -> Result<containerd::ContainerLike, RuntimeError> {
     Ok(container.update_config(|config| config.set_working_dir(UnixPath::new(dir.as_bytes()))))
 }
 
 /// Set a environment variable.
 async fn env(
-    _context: Rc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
-    env: Rc<str>,
-    value: Rc<str>,
+    env: Arc<str>,
+    value: Arc<str>,
 ) -> Result<containerd::ContainerLike, RuntimeError> {
     Ok(container.update_config(|config| config.set_env_var(env, value)))
 }
 
 /// Get an environment variable.
 async fn get_env(
-    _context: Rc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
-    env: Rc<str>,
-) -> Result<Rc<str>, RuntimeError> {
+    env: Arc<str>,
+) -> Result<Arc<str>, RuntimeError> {
     Ok(container
         .get_config()
         .get_env_var(&env)
-        .map(Rc::clone)
+        .map(Arc::clone)
         .unwrap_or_default())
 }
 
 /// Set container user.
 async fn set_user(
-    _context: Rc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
-    user: Rc<str>,
+    user: Arc<str>,
 ) -> Result<containerd::ContainerLike, RuntimeError> {
     Ok(container.update_config(|config| config.set_user(user)))
 }
@@ -615,9 +611,9 @@ impl NodeImpl for Join {
 
     fn execute<'scheduler>(
         &'scheduler self,
-        _context: &Rc<RuntimeContext>,
-        inputs: Vec<&'scheduler Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + 'scheduler>> {
+        _context: &'scheduler Arc<RuntimeContext>,
+        inputs: Vec<Data>,
+    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
         Box::pin(async move {
             inputs
                 .into_iter()
@@ -629,7 +625,7 @@ impl NodeImpl for Join {
                     }
                 })
                 .try_fold(String::new(), |mut result, data| {
-                    result.push_str(data?);
+                    result.push_str(&data?);
                     Ok(result)
                 })
                 .map(|result| Data::String(result.into()))
@@ -639,28 +635,28 @@ impl NodeImpl for Join {
 
 /// Convert a container layer to a service definition.
 async fn to_service(
-    _context: Rc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     container: containerd::ContainerState,
-    entrypoint: Rc<str>,
+    entrypoint: Arc<str>,
 ) -> Result<containerd::ServiceState, RuntimeError> {
     Ok(container.into_service(entrypoint))
 }
 
 /// Attach a service to a container
 async fn with_service(
-    _content: Rc<RuntimeContext>,
+    _content: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
     service: containerd::ServiceState,
-    hostname: Rc<str>,
+    hostname: Arc<str>,
 ) -> Result<containerd::ContainerLike, RuntimeError> {
     Ok(container.update_config(|config| config.with_service(service, hostname)))
 }
 
 /// Set the healthcheck to run for a service
 async fn healthcheck(
-    _content: Rc<RuntimeContext>,
+    _content: Arc<RuntimeContext>,
     service: containerd::ServiceState,
-    command: Rc<str>,
+    command: Arc<str>,
     timeout_seconds: i128,
 ) -> Result<containerd::ServiceState, RuntimeError> {
     let timeout = std::time::Duration::from_secs(
@@ -675,40 +671,40 @@ async fn healthcheck(
 pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
     vec![
         (NOOP_NAME, Box::new(Noop) as Box<dyn NodeImpl>),
-        ("Image", Box::new(Wrap::<_, Rc<str>>::new(image, true))),
+        ("Image", Box::new(Wrap::<_, Arc<str>>::new(image, true))),
         (
             "ImageService",
-            Box::new(Wrap::<_, Rc<str>>::new(image_service, true)),
+            Box::new(Wrap::<_, Arc<str>>::new(image_service, true)),
         ),
         (
             "Exec",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::passthrough(exec, true)),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(exec, true)),
         ),
         (
             "ExecOutput",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
                 exec_output,
                 true,
             )),
         ),
         (
             "FromHost",
-            Box::new(Wrap::<_, Rc<str>>::new(from_host, false)),
+            Box::new(Wrap::<_, Arc<str>>::new(from_host, false)),
         ),
         (
             "Export",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
                 export, false,
             )),
         ),
         (
             "ToHost",
-            Box::new(Wrap::<_, (FileSystem, Rc<str>)>::new(to_host, false)),
+            Box::new(Wrap::<_, (FileSystem, Arc<str>)>::new(to_host, false)),
         ),
         (
             "With",
             Box::new(
-                Wrap::<_, (containerd::ContainerLike, FileSystem, Rc<str>)>::passthrough(
+                Wrap::<_, (containerd::ContainerLike, FileSystem, Arc<str>)>::passthrough(
                     with, true,
                 ),
             ),
@@ -716,7 +712,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         (
             "WorkingDir",
             Box::new(
-                Wrap::<_, (containerd::ContainerLike, Rc<str>)>::passthrough(
+                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(
                     with_working_dir,
                     false,
                 ),
@@ -725,23 +721,25 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         (
             "Env",
             Box::new(
-                Wrap::<_, (containerd::ContainerLike, Rc<str>, Rc<str>)>::passthrough(env, false),
+                Wrap::<_, (containerd::ContainerLike, Arc<str>, Arc<str>)>::passthrough(env, false),
             ),
         ),
         (
             "GetEnv",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
                 get_env, false,
             )),
         ),
         (
             "User",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Rc<str>)>::passthrough(set_user, false)),
+            Box::new(
+                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(set_user, false),
+            ),
         ),
         ("Join", Box::new(Join)),
         (
             "ToService",
-            Box::new(Wrap::<_, (containerd::ContainerState, Rc<str>)>::new(
+            Box::new(Wrap::<_, (containerd::ContainerState, Arc<str>)>::new(
                 to_service, false,
             )),
         ),
@@ -749,12 +747,16 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             "WithService",
             Box::new(Wrap::<
                 _,
-                (containerd::ContainerLike, containerd::ServiceState, Rc<str>),
+                (
+                    containerd::ContainerLike,
+                    containerd::ServiceState,
+                    Arc<str>,
+                ),
             >::passthrough(with_service, false)),
         ),
         (
             "HealthCheck",
-            Box::new(Wrap::<_, (containerd::ServiceState, Rc<str>, i128)>::new(
+            Box::new(Wrap::<_, (containerd::ServiceState, Arc<str>, i128)>::new(
                 healthcheck,
                 false,
             )),

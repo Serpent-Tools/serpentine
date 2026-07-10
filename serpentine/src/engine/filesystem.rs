@@ -4,7 +4,7 @@
 use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serpentine_internal::{FileSystemEntryHeader, WireFormat};
@@ -19,12 +19,15 @@ use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
 pub type Reader<'this> = Box<dyn AsyncRead + Send + Unpin + 'this>;
 
 /// Trait for a object that can provide file system data.
-pub trait FileSystemProvider {
+///
+/// `Send + Sync` because a `FileSystem` (which holds one) lives in `Data`, which is shared across
+/// worker threads through the scheduler.
+pub trait FileSystemProvider: Send + Sync {
     /// Get a reader matching the format specified in `serpentine_internal` from this file system
     /// source.
     fn get_reader<'this>(
         &'this self,
-    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + 'this>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>>;
 
     /// Hash this content.
     ///
@@ -32,7 +35,7 @@ pub trait FileSystemProvider {
     fn hash_data<'this>(
         &'this self,
         hasher: &'this mut blake3::Hasher,
-    ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + 'this>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'this>> {
         Box::pin(async move {
             let mut reader = self.get_reader().await?;
             let mut buffer = [0_u8; 4048];
@@ -65,19 +68,19 @@ pub struct FileSystem {
     /// The inner filesystem provider
     provider: Box<dyn FileSystemProvider>,
     /// The cached hash of the data.
-    hash: Rc<OnceCell<blake3::Hash>>,
+    hash: Arc<OnceCell<blake3::Hash>>,
 }
 
 impl PartialEq for FileSystem {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.hash, &other.hash)
+        Arc::ptr_eq(&self.hash, &other.hash)
     }
 }
 impl Eq for FileSystem {}
 
 impl std::hash::Hash for FileSystem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.hash).hash(state);
+        Arc::as_ptr(&self.hash).hash(state);
     }
 }
 
@@ -93,7 +96,7 @@ impl<T: FileSystemProvider + 'static> From<T> for FileSystem {
     fn from(value: T) -> Self {
         Self {
             provider: Box::new(value),
-            hash: Rc::new(OnceCell::new()),
+            hash: Arc::new(OnceCell::new()),
         }
     }
 }
@@ -102,7 +105,7 @@ impl Clone for FileSystem {
     fn clone(&self) -> Self {
         Self {
             provider: self.provider.dyn_clone(),
-            hash: Rc::clone(&self.hash),
+            hash: Arc::clone(&self.hash),
         }
     }
 }
@@ -117,19 +120,19 @@ impl std::fmt::Debug for FileSystem {
 ///
 /// Should be avoided when possible, used when a filesystem is restored from cache.
 #[derive(Clone)]
-struct InMemoryFile(Rc<[u8]>);
+struct InMemoryFile(Arc<[u8]>);
 
 impl FileSystemProvider for InMemoryFile {
     fn get_reader<'this>(
         &'this self,
-    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + 'this>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>> {
         let reader: Reader<'this> = Box::new(self.0.as_ref());
         Box::pin(std::future::ready(Ok(reader)))
     }
     fn hash_data<'this>(
         &'this self,
         hasher: &'this mut blake3::Hasher,
-    ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + 'this>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'this>> {
         hasher.update(&self.0);
         Box::pin(std::future::ready(Ok(())))
     }
@@ -213,7 +216,7 @@ pub struct LocalFiles(pub PlatformPathBuf);
 impl FileSystemProvider for LocalFiles {
     fn get_reader<'this>(
         &'this self,
-    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + 'this>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>> {
         Box::pin(async move {
             let (mut writer, reader) = tokio::io::duplex(4096);
             let path = self.0.clone();

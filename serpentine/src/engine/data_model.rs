@@ -1,7 +1,7 @@
 //! contains the definitions of the various core node types and structures.
 
 use std::hash::Hash;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -20,7 +20,7 @@ pub enum Data {
     Int(i128),
     /// A string, usually a short literal
     #[cfg_attr(test, proptest(weight = 6))]
-    String(Rc<str>),
+    String(Arc<str>),
     /// A docker container
     #[cfg_attr(test, proptest(weight = 2))]
     Container(containerd::ContainerState),
@@ -98,7 +98,7 @@ impl CacheData for Data {
                 Ok(Self::Int(data))
             }
             1 => {
-                let data = Rc::<str>::read(reader).await?;
+                let data = Arc::<str>::read(reader).await?;
                 Ok(Self::String(data))
             }
             2 => {
