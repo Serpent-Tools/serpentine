@@ -1,14 +1,16 @@
 //! Code for working with the files, defines traits for abstracting over file providers and
 //! ensuring they can be cached if needed.
 
+use std::io;
 use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serpentine_internal::{FileSystemEntryHeader, WireFormat};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, DuplexStream, ReadBuf};
 use tokio::sync::OnceCell;
 use typed_path::{PlatformPath, PlatformPathBuf};
 
@@ -210,6 +212,75 @@ pub async fn copy_filesystem_stream(
     Ok(())
 }
 
+/// The size of the in-process pipe buffer bridging a producer to its reader.
+const PIPE_BUFFER: usize = 64 * 1024;
+
+/// An [`AsyncRead`] that owns its producer future and drives it inline on every `poll_read`,
+/// using a [`DuplexStream`] purely as the byte buffer. This keeps producer and consumer on a
+/// single task (no spawn), so the producer needs no `'static` bound and may borrow from its
+/// surroundings.
+///
+/// The future is boxed because `Reader` requires `Unpin` (its consumers go through
+/// `AsyncReadExt`/`tokio::io::copy`) and an inline async future is not.
+struct InlineReader<Fut> {
+    /// The read half of the duplex; the producer owns the write half.
+    reader: DuplexStream,
+    /// The producer feeding the write half, or `None` once it has finished (which closes the
+    /// write half and lets the reader reach EOF).
+    producer: Option<Pin<Box<Fut>>>,
+    /// A producer error, surfaced once the buffered bytes ahead of it have been drained.
+    error: Option<io::Error>,
+}
+
+impl<Fut: Future<Output = io::Result<()>>> InlineReader<Fut> {
+    /// Wrap `producer`, a future handed the write half of a pipe to write its content into.
+    fn new(producer: impl FnOnce(DuplexStream) -> Fut) -> Self {
+        let (writer, reader) = tokio::io::duplex(PIPE_BUFFER);
+        Self {
+            reader,
+            producer: Some(Box::pin(producer(writer))),
+            error: None,
+        }
+    }
+
+    /// Drive the producer once so it can push more bytes into the buffer, recording its result
+    /// and releasing the write half once it finishes.
+    fn poll_producer(&mut self, cx: &mut Context<'_>) {
+        let Some(producer) = &mut self.producer else {
+            return;
+        };
+        let Poll::Ready(result) = producer.as_mut().poll(cx) else {
+            return;
+        };
+        self.producer = None;
+        self.error = result.err();
+    }
+}
+
+impl<Fut: Future<Output = io::Result<()>>> AsyncRead for InlineReader<Fut> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.poll_producer(cx);
+
+        let filled = buf.filled().len();
+        let poll = Pin::new(&mut this.reader).poll_read(cx, buf);
+
+        // Surface a stored producer error only once the bytes buffered ahead of it have drained.
+        let reached_eof = matches!(poll, Poll::Ready(Ok(())))
+            && this.producer.is_none()
+            && buf.filled().len() == filled;
+        if reached_eof && let Some(error) = this.error.take() {
+            return Poll::Ready(Err(error));
+        }
+
+        poll
+    }
+}
+
 /// A `FileSystemProvider` that reads from the given path on the current system
 pub struct LocalFiles(pub PlatformPathBuf);
 
@@ -218,13 +289,11 @@ impl FileSystemProvider for LocalFiles {
         &'this self,
     ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>> {
         Box::pin(async move {
-            let (mut writer, reader) = tokio::io::duplex(4096);
-            let path = self.0.clone();
             let ignore = discover_gitignore(&serpentine_internal::platform_to_std(&self.0)?);
 
-            tokio::spawn(async move {
-                let res = serpentine_internal::read_disk_to_filesystem_stream(
-                    &path,
+            let reader: Reader<'_> = Box::new(InlineReader::new(move |mut writer| async move {
+                serpentine_internal::read_disk_to_filesystem_stream(
+                    &self.0,
                     PlatformPath::new(""),
                     &mut writer,
                     |path, is_dir| {
@@ -235,14 +304,10 @@ impl FileSystemProvider for LocalFiles {
                         }
                     },
                 )
-                .await;
+                .await
+            }));
 
-                if let Err(res) = res {
-                    log::error!("{res}");
-                }
-            });
-
-            Ok(Reader::from(Box::new(reader)))
+            Ok(reader)
         })
     }
 
