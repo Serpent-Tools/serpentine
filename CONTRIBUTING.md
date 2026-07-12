@@ -41,10 +41,3 @@ Serpentine's integration tests and linting can be run locally:
 * `just run FULL` — run the full linting stage.
 * `just check` — closely matches CI (tests + full lint), with the exception of only testing on the current platform.
 
-## `cargo-vet`
-When updating/adding a dependency you might run into a `cargo-vet` error. When this happens we have a few options in order of preference:
-
-* Downgrade to an audited version.
-* Audit the diff yourself if it's small enough and reasonable.
-* Trust the crate. This should rarely be done, but is generally accepted if there are no other options and the crate is popular.
-
