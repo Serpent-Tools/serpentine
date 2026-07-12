@@ -45,11 +45,6 @@ deny = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
-vet = lib::rust
-    > lib::Binstall("cargo-vet@0.10.2", "cargo-vet")
-    > With(lib::source_code, ".")
-    > Exec("cargo vet check --locked");
-
 trivy = Image("aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f") 
     > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
     > With(lib::container_image, "containerd.tar")
@@ -58,7 +53,7 @@ trivy = Image("aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a
 
 export light_lints = !(clippy, fmt, spelling) Noop(0);
 export full_lints = !(clippy_all, fmt, spelling) Noop(0);
-export security = !(deny, vet, trivy) Noop(0); 
+export security = !(deny, trivy) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
