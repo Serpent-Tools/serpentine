@@ -1,0 +1,16 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: parsing::integer_overflow
+
+  x Integer literal overflow
+  `-> number too large to fit in target type
+   ,-[<redacted-path>:1:18]
+ 1 | export DEFAULT = 222222222222222222222222222222222222222;
+   :                  ^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^
+   :                                     `-- Integer literal too large
+   `----
+  help: Integer literals must be below 2^127 - 1

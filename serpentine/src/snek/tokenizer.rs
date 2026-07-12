@@ -163,9 +163,13 @@ impl<'arena> Tokenizer<'arena> {
                 let consumed = self.advance_while(|digit: char| digit.is_ascii_digit())?;
                 let span = self.span(consumed.saturating_add(character.len_utf8()));
                 let number = span.index_str(self.code)?;
-                let number = number
-                    .parse::<i128>()
-                    .map_err(|err| CompileError::internal(err.to_string()))?;
+                let number =
+                    number
+                        .parse::<i128>()
+                        .map_err(|inner| CompileError::IntegerOverflow {
+                            location: span,
+                            inner,
+                        })?;
                 span.with(Token::Numeric(number))
             }
             character if character.is_alphabetic() => {
@@ -337,6 +341,7 @@ mod tests {
     #[case::unterminated_string(r#""hello"#)]
     #[case::single_colon(":")]
     #[case::double_colon_with_whitespace(": :")]
+    #[case::overflow_digit("222222222222222222222222222222222222222")]
     fn edge_case_fails(#[case] code: String) {
         let arena = bumpalo::Bump::new();
         let res = Tokenizer::tokenize(&arena, FileId(0), &code);
