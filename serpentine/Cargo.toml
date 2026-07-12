@@ -53,6 +53,7 @@ divan = { version = "0.1", default-features = false, optional = true }
 tempfile = { version = "3.27.0", default-features = false, optional = true }
 
 [dev-dependencies]
+bolero.workspace = true
 insta = { version = "1.46.3", default-features = false, features = ["filters"] }
 proptest.workspace = true
 proptest-derive.workspace = true

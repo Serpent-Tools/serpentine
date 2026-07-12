@@ -3,8 +3,9 @@ import "./ci/lints.snek" as lints;
 import "./ci/tests.snek" as tests;
 
 export DEFAULT = lib::Chain(tests::simple, lints::light_lints);
-export FULL = lib::Chain(lints::security, lints::full_lints);
+export FULL = lib::Chain(lints::security, lib::Chain(lints::full_lints, tests::fuzz));
 export LINTS = lints::full_lints;
 export SECURITY = lints::security;
+export FUZZ = tests::fuzz;
 
 export FIX = lints::fix;

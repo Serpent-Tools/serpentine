@@ -22,7 +22,6 @@ pub const MAGIC_NUMBER: &str = "danger noodle";
 pub const PORT: u16 = 8000;
 
 /// The kind of events the sidecar supports.
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
 pub enum RequestKind {
@@ -110,11 +109,13 @@ impl WireFormat for Mount {
 mod tests {
     use super::*;
 
-    #[proptest::property_test]
-    fn request_kind_round_trip(kind: RequestKind) {
-        let parsed_kind = RequestKind::try_from(kind as u8);
-
-        assert_eq!(parsed_kind, Ok(kind));
+    #[test]
+    fn request_kind_round_trip() {
+        bolero::check!().with_type().cloned().for_each(|byte: u8| {
+            if let Ok(kind) = RequestKind::try_from(byte) {
+                assert_eq!(kind as u8, byte, "failed for {byte}");
+            }
+        });
     }
 
     #[test]

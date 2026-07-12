@@ -39,5 +39,6 @@ Serpentine's integration tests and linting can be run locally:
 * `just test [filter]` — run integration tests, optionally with a filter argument.
 * `just run` — run a small linting stage.
 * `just run FULL` — run the full linting stage.
+* `just run FUZZ` — smoke-fuzz every [`bolero`](https://github.com/camshaft/bolero) property test under libfuzzer for a bounded time (also part of `FULL`).
 * `just check` — closely matches CI (tests + full lint), with the exception of only testing on the current platform.
 

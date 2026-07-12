@@ -15,10 +15,8 @@ log.workspace = true
 typed-path.workspace = true
 
 [dev-dependencies]
-proptest.workspace = true
-proptest-derive.workspace = true
-tokio = { workspace = true, features = ["macros", "test-util"] }
-rstest.workspace = true
+bolero.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
