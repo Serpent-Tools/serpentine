@@ -394,3 +394,94 @@ impl<'arena> Parser<'arena> {
         }
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod tests {
+    use strum::IntoEnumIterator;
+
+    use super::*;
+    use crate::snek::span::FileId;
+    use crate::snek::tokenizer::{TokenDiscriminants, Tokenizer};
+
+    /// Source containing every payload-free token, tokenized to build the fuzz alphabet.
+    const UNIT_TOKEN_SOURCE: &str = "( ) { } ; > , = ! :: return def import export as";
+
+    /// Tokenize [`UNIT_TOKEN_SOURCE`] into the payload-free token alphabet (plus EOF).
+    fn unit_tokens(arena: &bumpalo::Bump) -> Vec<Token<'_>> {
+        Tokenizer::tokenize(arena, FileId(0), UNIT_TOKEN_SOURCE)
+            .expect("the alphabet source must tokenize")
+            .iter()
+            .map(|token| token.0)
+            .collect()
+    }
+
+    /// Generator-friendly [`Token`], carrying payloads only where [`Token`] does.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum FuzzToken {
+        /// [`Token::Ident`]
+        Ident(String),
+        /// [`Token::String`]
+        String(String),
+        /// [`Token::Numeric`]
+        Numeric(i128),
+        /// A payload-free [`Token`], as an index into the alphabet.
+        Unit(u8),
+    }
+
+    impl FuzzToken {
+        /// Convert into a [`Token`], allocating string payloads in the given arena.
+        fn to_token<'arena>(
+            &self,
+            arena: &'arena bumpalo::Bump,
+            alphabet: &[Token<'arena>],
+        ) -> Token<'arena> {
+            match self {
+                Self::Ident(value) => Token::Ident(arena.alloc_str(value)),
+                Self::String(value) => Token::String(arena.alloc_str(value)),
+                Self::Numeric(value) => Token::Numeric(*value),
+                Self::Unit(index) => alphabet
+                    .iter()
+                    .cycle()
+                    .nth(usize::from(*index))
+                    .copied()
+                    .unwrap_or(Token::Eof),
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_alphabet_is_complete() {
+        let arena = bumpalo::Bump::new();
+        let alphabet = unit_tokens(&arena);
+        for variant in TokenDiscriminants::iter() {
+            let generated = matches!(
+                variant,
+                TokenDiscriminants::Ident
+                    | TokenDiscriminants::String
+                    | TokenDiscriminants::Numeric
+            ) || alphabet
+                .iter()
+                .any(|token| TokenDiscriminants::from(token) == variant);
+            assert!(generated, "the fuzzer cannot produce {variant:?}");
+        }
+    }
+
+    #[test]
+    fn doesnt_panic() {
+        let alphabet_arena = bumpalo::Bump::new();
+        let alphabet = unit_tokens(&alphabet_arena);
+        bolero::check!()
+            .with_type()
+            .for_each(|stream: &Vec<FuzzToken>| {
+                let arena = bumpalo::Bump::new();
+                let tokens = stream
+                    .iter()
+                    .map(|token| token.to_token(&arena, &alphabet))
+                    .chain(std::iter::once(Token::Eof))
+                    .map(|token| Span::dummy().with(token))
+                    .collect();
+                let _ = Parser::parse_file(tokens);
+            });
+    }
+}

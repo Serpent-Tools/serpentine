@@ -7,6 +7,11 @@ use crate::snek::span::{FileId, Span, Spanned};
 
 /// a token is a small unit of the input stream.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(
+    test,
+    derive(strum::EnumDiscriminants),
+    strum_discriminants(derive(strum::EnumIter))
+)]
 pub enum Token<'arena> {
     /// A identifier
     Ident(&'arena str),
