@@ -63,6 +63,19 @@ pub enum CompileError {
         location: Span,
     },
 
+    /// A literal overflowing the maximum size of an i128 was found
+    #[error("Integer literal overflow")]
+    #[diagnostic(help("Integer literals must be below 2^127 - 1"))]
+    #[diagnostic(code(parsing::integer_overflow))]
+    IntegerOverflow {
+        /// The location of the literal
+        #[label("Integer literal too large")]
+        location: Span,
+        /// The inner error that caused the overflow
+        #[source]
+        inner: std::num::ParseIntError,
+    },
+
     /// The parser encountered something different from what it expected.
     #[error("Expected `{expected}`")]
     #[diagnostic(code(parsing::unexpected_token))]
