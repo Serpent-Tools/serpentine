@@ -361,59 +361,80 @@ pub async fn read_filesystem_stream_to_disk(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    #[rstest::rstest]
-    #[proptest::property_test]
-    async fn variable_length_encoding_roundtrips(#[ignore] value: u64) {
-        let mut buf = std::io::Cursor::new(Vec::new());
-        write_u64_variable_length(&mut buf, value).await.unwrap();
-
-        buf.set_position(0);
-        let decoded = read_u64_length_encoded(&mut buf).await.unwrap();
-
-        assert_eq!(decoded, value, "failed for {value}");
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
     }
 
-    #[tokio::test]
-    #[rstest::rstest]
-    #[proptest::property_test]
-    async fn length_prefixed_roundtrips(#[ignore] value: Vec<u8>) {
-        let mut buf = std::io::Cursor::new(Vec::new());
-        write_length_prefixed(&mut buf, &value).await.unwrap();
+    #[test]
+    fn variable_length_encoding_roundtrips() {
+        let rt = runtime();
+        bolero::check!()
+            .with_type()
+            .cloned()
+            .for_each(|value: u64| {
+                rt.block_on(async {
+                    let mut buf = std::io::Cursor::new(Vec::new());
+                    write_u64_variable_length(&mut buf, value).await.unwrap();
 
-        buf.set_position(0);
-        let decoded = read_length_prefixed(&mut buf).await.unwrap();
+                    buf.set_position(0);
+                    let decoded = read_u64_length_encoded(&mut buf).await.unwrap();
 
-        assert_eq!(decoded, value, "failed for {value:?}");
+                    assert_eq!(decoded, value, "failed for {value}");
+                });
+            });
     }
 
-    #[tokio::test]
-    #[rstest::rstest]
-    #[proptest::property_test]
-    async fn length_prefixed_str_roundtrips(#[ignore] value: String) {
-        let mut buf = std::io::Cursor::new(Vec::new());
-        write_length_prefixed(&mut buf, value.as_bytes())
-            .await
-            .unwrap();
+    #[test]
+    fn length_prefixed_roundtrips() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(|value: &Vec<u8>| {
+            rt.block_on(async {
+                let mut buf = std::io::Cursor::new(Vec::new());
+                write_length_prefixed(&mut buf, value).await.unwrap();
 
-        buf.set_position(0);
-        let decoded = read_length_prefixed_string(&mut buf).await.unwrap();
+                buf.set_position(0);
+                let decoded = read_length_prefixed(&mut buf).await.unwrap();
 
-        assert_eq!(decoded, value, "failed for {value:?}");
+                assert_eq!(&decoded, value, "failed for {value:?}");
+            });
+        });
     }
 
-    #[tokio::test]
-    #[rstest::rstest]
-    #[proptest::property_test]
-    async fn unix_path_roundtrips(#[ignore] value: Vec<u8>) {
-        let path = UnixPath::new(&value).to_path_buf();
+    #[test]
+    fn length_prefixed_str_roundtrips() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(|value: &String| {
+            rt.block_on(async {
+                let mut buf = std::io::Cursor::new(Vec::new());
+                write_length_prefixed(&mut buf, value.as_bytes())
+                    .await
+                    .unwrap();
 
-        let mut buf = std::io::Cursor::new(Vec::new());
-        path.clone().write(&mut buf).await.unwrap();
+                buf.set_position(0);
+                let decoded = read_length_prefixed_string(&mut buf).await.unwrap();
 
-        buf.set_position(0);
-        let decoded = UnixPathBuf::read(&mut buf).await.unwrap();
+                assert_eq!(&decoded, value, "failed for {value:?}");
+            });
+        });
+    }
 
-        assert_eq!(decoded, path, "failed for {value:?}");
+    #[test]
+    fn unix_path_roundtrips() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(|value: &Vec<u8>| {
+            rt.block_on(async {
+                let path = UnixPath::new(value).to_path_buf();
+
+                let mut buf = std::io::Cursor::new(Vec::new());
+                path.clone().write(&mut buf).await.unwrap();
+
+                buf.set_position(0);
+                let decoded = UnixPathBuf::read(&mut buf).await.unwrap();
+
+                assert_eq!(decoded, path, "failed for {value:?}");
+            });
+        });
     }
 }

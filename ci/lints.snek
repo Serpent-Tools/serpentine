@@ -1,9 +1,10 @@
 import "./lib.snek" as lib;
 
+// cargo-hack resolves features per package, so warm with hack itself instead of a unified cook.
 clippy_hack = lib::rust
     > Exec("rustup component add clippy")
-    > lib::Cooked("--clippy --all-targets")
     > lib::Binstall("cargo-hack@=0.6.45", "cargo-hack")
+    > lib::CookedCustom("cargo hack --locked --all clippy --all-targets || true")
     > Exec("cargo hack --locked --all clippy --all-targets -- -Dwarnings");
 
 def ClippyOnTarget(base, target) {

@@ -282,15 +282,16 @@ impl<'arena> Tokenizer<'arena> {
 #[cfg(test)]
 #[expect(clippy::expect_used, clippy::panic, reason = "tests")]
 mod tests {
-    use proptest::property_test;
     use rstest::rstest;
 
     use super::*;
     use crate::snek::span::FileId;
 
-    #[property_test]
-    fn doesnt_panic(code: String) {
-        let _ = Tokenizer::tokenize(&bumpalo::Bump::new(), FileId(0), &code);
+    #[test]
+    fn doesnt_panic() {
+        bolero::check!().with_type().for_each(|code: &String| {
+            let _ = Tokenizer::tokenize(&bumpalo::Bump::new(), FileId(0), code);
+        });
     }
 
     #[rstest]

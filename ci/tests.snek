@@ -5,3 +5,10 @@ export simple = lib::rust
     > lib::Binstall("cargo-nextest@=0.9.140", "cargo-nextest")
     > lib::Cooked("--tests")
     > Exec("cargo nextest run");
+
+// `cargo bolero list` and `test` use separate build trees, so the warmup builds both.
+export fuzz = lib::rust
+    > Exec("apt-get update && apt-get install -y jq")
+    > Exec("cargo install cargo-bolero@=0.13.4 --no-default-features --locked")
+    > lib::CookedCustom("cargo bolero list || true; cargo bolero test --workspace -s NONE -r 1 cache_warmup || true")
+    > Exec("cargo bolero list | jq -r '[.package, .test] | @tsv' | xargs -r -P $(nproc) -n 2 sh -c 'cargo bolero test -p $0 -s NONE -T 30s $1 || exit 255'");

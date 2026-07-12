@@ -24,17 +24,27 @@ export def Binstall(container, crate, bin_name) {
 
 export source_code = FromHost(".");
 
-export def Cooked(container, build_kind) {
-    recipe = rust
-        > Binstall("cargo-chef@=0.1.77", "cargo-chef")
-        > With(source_code, ".")
-        > Exec("cargo chef prepare --recipe-path recipe.json")
-        > Export("recipe.json");
+recipe = rust
+    > Binstall("cargo-chef@=0.1.77", "cargo-chef")
+    > With(source_code, ".")
+    > Exec("cargo chef prepare --recipe-path recipe.json")
+    > Export("recipe.json");
 
-    return container 
+export def Cooked(container, build_kind) {
+    return container
         > Binstall("cargo-chef@=0.1.77", "cargo-chef")
         > With(recipe, "recipe.json")
         > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
+        > With(source_code, ".");
+}
+
+// Like Cooked, but warms the cache with the real build command for flags chef can't replicate.
+export def CookedCustom(container, warm_command) {
+    return container
+        > Binstall("cargo-chef@=0.1.77", "cargo-chef")
+        > With(recipe, "recipe.json")
+        > Exec("cargo chef cook --no-build --recipe-path recipe.json")
+        > Exec(warm_command)
         > With(source_code, ".");
 }
 
