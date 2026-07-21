@@ -61,7 +61,7 @@ jobs:
       # --- Protobuf (platform-specific) ---
       - name: Install protobuf (Linux)
         if: matrix.platform == 'linux'
-        run: sudo apt-get install -y protobuf-compiler=3.21.12-8.2ubuntu0.3
+        run: sudo apt-get install -y protobuf-compiler
       - name: Install protobuf (macOS)
         if: matrix.platform == 'macos'
         run: brew install protobuf@33
@@ -169,7 +169,7 @@ jobs:
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
       - name: Install protobuf
-        run: sudo apt-get install -y protobuf-compiler=3.21.12-8.2ubuntu0.3
+        run: sudo apt-get install -y protobuf-compiler
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: containerd-image
@@ -216,7 +216,7 @@ jobs:
           key: security_cache-${{ github.sha }}
           restore-keys: security_cache-
       - name: Install protobuf
-        run: sudo apt-get install -y protobuf-compiler=3.21.12-8.2ubuntu0.3
+        run: sudo apt-get install -y protobuf-compiler
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: containerd-image
