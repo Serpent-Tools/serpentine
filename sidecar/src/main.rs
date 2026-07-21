@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
-use rand::TryRngCore;
+use rand::TryRng;
 use rust_cni::libcni as cni;
 use serpentine_internal::WireFormat;
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, PORT, RequestKind};
@@ -430,7 +430,7 @@ fn pick_random_subnet() -> Result<(String, Ipv4Addr, Ipv4Addr), Box<dyn Error>> 
     let random_mask = target_mask ^ prefix_mask;
 
     let subnet = loop {
-        let random_ip: u32 = rand::rngs::OsRng.try_next_u32()?;
+        let random_ip: u32 = rand::rngs::SysRng.try_next_u32()?;
         let candidate = SUBNET_PREFIX.to_bits() | (random_ip & random_mask);
         let was_new = USED_SUBNETS.with_borrow_mut(|used_subnets| used_subnets.insert(candidate));
         if was_new {
