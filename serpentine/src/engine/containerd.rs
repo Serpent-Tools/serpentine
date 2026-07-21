@@ -25,33 +25,65 @@ use crate::events::{Lifecycle, Reporter, TaskHandle, TaskId, TaskKind};
 // service).
 const SNAPSHOTTER: &str = "overlayfs";
 
+/// Field generators for fuzzing the container config types.
+#[cfg(test)]
+mod fuzz {
+    use bolero::ValueGenerator as _;
+
+    use super::*;
+    pub(super) use crate::engine::data_model::fuzz::arc_str;
+
+    /// Generator for an optional user string.
+    pub(super) fn opt_arc_str() -> impl bolero::ValueGenerator<Output = Option<Arc<str>>> {
+        bolero::produce::<Option<String>>().map_gen(|value| value.map(Arc::from))
+    }
+
+    /// Generator for small environment maps.
+    pub(super) fn env_map() -> impl bolero::ValueGenerator<Output = im::HashMap<Arc<str>, Arc<str>>>
+    {
+        bolero::produce::<Vec<(String, String)>>()
+            .with()
+            .len(0..10_usize)
+            .map_gen(|entries| {
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (Arc::from(key), Arc::from(value)))
+                    .collect()
+            })
+    }
+
+    /// Generator for arbitrary unix paths.
+    pub(super) fn unix_path() -> impl bolero::ValueGenerator<Output = UnixPathBuf> {
+        bolero::produce::<Vec<u8>>().map_gen(|bytes| UnixPath::new(&bytes).to_path_buf())
+    }
+
+    /// Generator for healthchecks, using whole seconds so the cache roundtrip is lossless.
+    pub(super) fn healthcheck() -> impl bolero::ValueGenerator<Output = (Arc<str>, Duration)> {
+        (
+            arc_str(),
+            bolero::produce::<u64>().map_gen(Duration::from_secs),
+        )
+    }
+}
+
 /// Configuration for the container
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub struct ContainerConfig {
     /// Environment
-    #[cfg_attr(
-        test,
-        proptest(
-            strategy = "im::proptest::hash_map(proptest::arbitrary::any::<Arc<str>>(), proptest::arbitrary::any::<Arc<str>>(), 0..10)"
-        )
-    )]
+    #[cfg_attr(test, generator(fuzz::env_map()))]
     env: im::HashMap<Arc<str>, Arc<str>>,
     /// The working directory
-    #[cfg_attr(
-        test,
-        proptest(
-            strategy = "proptest::strategy::Strategy::prop_map(proptest::arbitrary::any::<Vec<u8>>(), |bytes| typed_path::UnixPath::new(&bytes).to_path_buf())"
-        )
-    )]
+    #[cfg_attr(test, generator(fuzz::unix_path()))]
     working_dir: UnixPathBuf,
     /// The user to spawn the process as.
     ///
     /// This is stored in the same format as the oci image spec for linux.
     /// > `user`, `uid`, `user:group`, `uid:gid`, `uid:group`, `user:gid`
+    #[cfg_attr(test, generator(fuzz::opt_arc_str()))]
     user: Option<Arc<str>>,
     /// The services to attach to this container.
-    #[cfg_attr(test, proptest(value = "im::HashMap::new()"))]
+    #[cfg_attr(test, generator(bolero::constant(im::HashMap::new())))]
     services: im::HashMap<Arc<str>, ServiceState>,
 }
 
@@ -210,13 +242,14 @@ impl CacheData for ContainerConfig {
 
 /// Extra config values for services
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub struct ServiceConfig {
     /// The service entry point
+    #[cfg_attr(test, generator(fuzz::arc_str()))]
     entrypoint: Arc<str>,
     /// Command to run in the same container as the service and which should return a 0 exit code
     /// before spawning parents.
-    #[cfg_attr(test, proptest(value = "(\"exit 0\".into(), Duration::from_secs(1))"))]
+    #[cfg_attr(test, generator(fuzz::healthcheck()))]
     healthcheck: (Arc<str>, Duration),
 }
 
@@ -291,12 +324,19 @@ impl ServiceConfig {
 
 /// A services state
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub struct ServiceState {
     /// The underlying container
     container: ContainerState,
     /// The service-specific config.
     service_config: ServiceConfig,
+}
+
+impl ServiceState {
+    /// Collect the snapshot keys referenced by this service's container.
+    pub(crate) fn collect_snapshots(&self, out: &mut Vec<Arc<str>>) {
+        self.container.collect_snapshots(out);
+    }
 }
 
 impl CacheData for ServiceState {
@@ -418,9 +458,10 @@ impl ContainerTopologyNode {
 
 /// A reference to a specific state of a container.
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub struct ContainerState {
     /// The snapshot to use for the container
+    #[cfg_attr(test, generator(fuzz::arc_str()))]
     snapshot: Arc<str>,
     /// The container config
     config: ContainerConfig,
@@ -430,6 +471,14 @@ impl ContainerState {
     /// Get a reference to the config.
     pub fn get_config(&self) -> &ContainerConfig {
         &self.config
+    }
+
+    /// Collect the snapshot keys referenced by this container, including its attached services.
+    pub(crate) fn collect_snapshots(&self, out: &mut Vec<Arc<str>>) {
+        out.push(Arc::clone(&self.snapshot));
+        for service in self.config.services.values() {
+            service.collect_snapshots(out);
+        }
     }
 
     /// Update this states config using a closure.
@@ -2067,60 +2116,70 @@ impl Client {
 }
 
 impl ExternalCache for Client {
-    async fn cleanup(&self, data: super::data_model::Data) {
-        if let super::data_model::Data::Container(container) = data {
-            log::debug!("Deleting {container:?}");
+    type ResourceKey = Arc<str>;
 
-            let delete_result = self
+    fn resource_keys(&self, data: &super::data_model::Data) -> Vec<Self::ResourceKey> {
+        let mut keys = Vec::new();
+        match data {
+            super::data_model::Data::Container(container) => container.collect_snapshots(&mut keys),
+            super::data_model::Data::Service(service) => service.collect_snapshots(&mut keys),
+            _ => {}
+        }
+        keys
+    }
+
+    async fn cleanup(&self, snapshot: Self::ResourceKey) {
+        log::debug!("Deleting snapshot {snapshot}");
+
+        let delete_result = self
+            .containerd
+            .snapshot()
+            .remove(containerd_services::snapshots::RemoveSnapshotRequest {
+                snapshotter: SNAPSHOTTER.into(),
+                key: snapshot.to_string(),
+            })
+            .await;
+        if let Err(delete_error) = delete_result {
+            log::error!("Error deleting snapshot, {delete_error}, marking as free instead.");
+
+            let Ok(info) = self
                 .containerd
                 .snapshot()
-                .remove(containerd_services::snapshots::RemoveSnapshotRequest {
+                .stat(containerd_services::snapshots::StatSnapshotRequest {
                     snapshotter: SNAPSHOTTER.into(),
-                    key: container.snapshot.to_string(),
+                    key: snapshot.to_string(),
+                })
+                .await
+            else {
+                log::error!("Failed to get labels");
+                return;
+            };
+
+            let mut labels = info
+                .into_inner()
+                .info
+                .map(|info| info.labels)
+                .unwrap_or_default();
+            labels.remove("containerd.io/gc.root");
+
+            let update_result = self
+                .containerd
+                .snapshot()
+                .update(containerd_services::snapshots::UpdateSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.into(),
+                    update_mask: Some(prost_types::FieldMask {
+                        paths: vec!["labels".to_owned()],
+                    }),
+                    info: Some(containerd_services::snapshots::Info {
+                        labels,
+                        name: snapshot.to_string(),
+                        ..Default::default()
+                    }),
                 })
                 .await;
-            if let Err(delete_error) = delete_result {
-                log::error!("Error deleting snapshot, {delete_error}, marking as free instead.");
 
-                let Ok(info) = self
-                    .containerd
-                    .snapshot()
-                    .stat(containerd_services::snapshots::StatSnapshotRequest {
-                        snapshotter: SNAPSHOTTER.into(),
-                        key: container.snapshot.to_string(),
-                    })
-                    .await
-                else {
-                    log::error!("Failed to get labels");
-                    return;
-                };
-
-                let mut labels = info
-                    .into_inner()
-                    .info
-                    .map(|info| info.labels)
-                    .unwrap_or_default();
-                labels.remove("containerd.io/gc.root");
-
-                let update_result = self
-                    .containerd
-                    .snapshot()
-                    .update(containerd_services::snapshots::UpdateSnapshotRequest {
-                        snapshotter: SNAPSHOTTER.into(),
-                        update_mask: Some(prost_types::FieldMask {
-                            paths: vec!["labels".to_owned()],
-                        }),
-                        info: Some(containerd_services::snapshots::Info {
-                            labels,
-                            name: container.snapshot.to_string(),
-                            ..Default::default()
-                        }),
-                    })
-                    .await;
-
-                if let Err(update_error) = update_result {
-                    log::error!("Failed to remove labels from snapshot {update_error}");
-                }
+            if let Err(update_error) = update_result {
+                log::error!("Failed to remove labels from snapshot {update_error}");
             }
         }
     }
@@ -2298,9 +2357,55 @@ impl FileSystemProvider for ContainerFileExport {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config-only change must keep referencing the same snapshot keys, so the cache cleanup
+    /// does not delete a snapshot still in use.
+    #[test]
+    fn config_edit_keeps_snapshot_keys() {
+        bolero::check!()
+            .with_type()
+            .for_each(|container: &ContainerState| {
+                let edited = container.update_config(|config| {
+                    config.set_env_var("SERPENTINE_TEST".into(), "1".into());
+                });
+
+                let mut original = Vec::new();
+                container.collect_snapshots(&mut original);
+                let mut edited_keys = Vec::new();
+                edited.collect_snapshots(&mut edited_keys);
+
+                assert_eq!(original, edited_keys);
+            });
+    }
+
+    /// Attached services contribute their snapshot keys, so their snapshots are cleaned up once
+    /// orphaned instead of leaking.
+    #[test]
+    fn service_snapshots_are_collected() {
+        bolero::check!().with_type().for_each(
+            |(container, service): &(ContainerState, ContainerState)| {
+                let with_service = container.update_config(|config| {
+                    config.with_service(service.clone().into_service("entry".into()), "db".into());
+                });
+
+                let mut keys = Vec::new();
+                with_service.collect_snapshots(&mut keys);
+                let mut expected = Vec::new();
+                container.collect_snapshots(&mut expected);
+                service.collect_snapshots(&mut expected);
+
+                assert_eq!(keys, expected);
+            },
+        );
+    }
+}
+
+#[cfg(test)]
 #[cfg(feature = "_test_docker")]
 #[expect(clippy::expect_used, reason = "Tests")]
-mod tests {
+mod integration_tests {
     use rstest::{fixture, rstest};
 
     use super::*;

@@ -7,8 +7,6 @@ serpentine_internal = { version = "=0.1.0", path = "serpentine_internal" }
 tokio = { version = "1.50.0", default-features = false }
 log = { version = "0.4.29", default-features = false }
 uuid = { version = "1.22.0", default-features = false, features = ["v4"] }
-proptest = { version = "1.11.0", default-features = false, features = ["attr-macro", "std"] }
-proptest-derive = { version = "0.7.0", default-features = false }
 rstest = { version = "0.26.1", default-features = false }
 bolero = { version = "0.13.4", default-features = false, features = ["std", "alloc"] }
 typed-path = { version = "0.12.3", default-features = false }

@@ -408,7 +408,7 @@ impl<T: CacheData + Clone + 'static> CacheData for Arc<T> {
 }
 
 /// A key into the cache
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct CacheKey<'caller> {
     /// The kind of node
     pub node: NodeKindId,
@@ -434,6 +434,9 @@ impl CacheKey<'_> {
 /// A external cache is data stored in another service like a docker volume that our cache system
 /// needs to take into account.
 pub trait ExternalCache {
+    /// Identity of an external resource referenced by cached data.
+    type ResourceKey: std::hash::Hash + Eq;
+
     /// Export data from the external cache to this file
     async fn export(
         &self,
@@ -444,8 +447,11 @@ pub trait ExternalCache {
     /// Import data from the given file to this external cache
     async fn import(&self, file: &mut (impl AsyncRead + Unpin + Send)) -> Result<(), RuntimeError>;
 
-    /// Delete the given data from this external cache
-    async fn cleanup(&self, data: Data);
+    /// The external resources the given data references.
+    fn resource_keys(&self, data: &Data) -> Vec<Self::ResourceKey>;
+
+    /// Delete the given resource from this external cache
+    async fn cleanup(&self, key: Self::ResourceKey);
 }
 
 /// A hashmap storing the cache data
@@ -511,21 +517,22 @@ impl Cache {
                 .write_map(cache, external, export_standalone)
                 .await?;
         } else {
-            #[expect(
-                clippy::mutable_key_type,
-                reason = "Value of the interior mutable data will not change in the course of this loop"
-            )]
-            let in_use: HashSet<Data> = cache.values().cloned().collect();
+            let in_use: HashSet<_> = cache
+                .values()
+                .flat_map(|value| external.resource_keys(value))
+                .collect();
 
             CacheWriter::new(file)
                 .write_map(cache, external, export_standalone)
                 .await?;
 
-            for value in old_cache
+            let orphaned: HashSet<_> = old_cache
                 .into_values()
-                .filter(|value| !in_use.contains(value))
-            {
-                external.cleanup(value).await;
+                .flat_map(|value| external.resource_keys(&value))
+                .filter(|key| !in_use.contains(key))
+                .collect();
+            for key in orphaned {
+                external.cleanup(key).await;
             }
         }
 
@@ -569,6 +576,8 @@ mod tests {
     // async-to-`std::future::ready` needs a named lifetime on `_values`, which the trait elides
     #[expect(clippy::unused_async_trait_impl, reason = "tests")]
     impl ExternalCache for DummyExternal {
+        type ResourceKey = ();
+
         async fn export(
             &self,
             _values: impl IntoIterator<Item = &Data>,
@@ -584,7 +593,11 @@ mod tests {
             Ok(())
         }
 
-        async fn cleanup(&self, _data: Data) {}
+        fn resource_keys(&self, _data: &Data) -> Vec<Self::ResourceKey> {
+            Vec::new()
+        }
+
+        async fn cleanup(&self, _key: Self::ResourceKey) {}
     }
 
     #[fixture]
@@ -592,115 +605,150 @@ mod tests {
         DummyExternal
     }
 
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 100, ..Default::default()})]
-    #[test_log::test]
-
-    async fn different_entries_hash_differently(
-        #[ignore] node: NodeKindId,
-        #[ignore] data1: Vec<Data>,
-        #[ignore] data2: Vec<Data>,
-    ) {
-        let key1 = CacheKey {
-            node,
-            inputs: &data1,
-        };
-
-        let key2 = CacheKey {
-            node,
-            inputs: &data2,
-        };
-
-        let hash_1 = key1.content_hash().await.unwrap();
-        let hash_2 = key2.content_hash().await.unwrap();
-
-        if key1 == key2 {
-            assert_eq!(hash_1, hash_2, "Keys equal expected same hash.");
-        } else {
-            assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
-        }
+    /// Serialize a value with a fresh writer, giving a structural fingerprint to compare against.
+    async fn data_bytes(data: &Data) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        data.write(&mut CacheWriter::new(&mut out))
+            .await
+            .expect("in-memory serialization cannot fail");
+        out.into_inner()
     }
 
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test]
-    #[test_log::test]
-    async fn same_entry_hashes_equal(#[ignore] node: NodeKindId, #[ignore] data: Vec<Data>) {
-        let key = CacheKey {
-            node,
-            inputs: &data,
-        };
+    /// Content hash of a data value, used to compare cache roundtrips.
+    async fn data_hash(data: &Data) -> CacheHash {
+        let mut hasher = blake3::Hasher::new();
+        data.content_hash(&mut hasher)
+            .await
+            .expect("hashing in-memory data cannot fail");
+        CacheHash(hasher.finalize().into())
+    }
 
-        assert_eq!(
-            key.content_hash().await.unwrap(),
-            key.content_hash().await.unwrap()
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("failed to build runtime")
+    }
+
+    #[test]
+    fn different_entries_hash_differently() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data1, data2): &(NodeKindId, Vec<Data>, Vec<Data>)| {
+                rt.block_on(async {
+                    let key1 = CacheKey {
+                        node: *node,
+                        inputs: data1,
+                    };
+
+                    let key2 = CacheKey {
+                        node: *node,
+                        inputs: data2,
+                    };
+
+                    let hash_1 = key1.content_hash().await.unwrap();
+                    let hash_2 = key2.content_hash().await.unwrap();
+
+                    let mut equal = data1.len() == data2.len();
+                    for (value1, value2) in data1.iter().zip(data2) {
+                        equal &= data_bytes(value1).await == data_bytes(value2).await;
+                    }
+
+                    if equal {
+                        assert_eq!(hash_1, hash_2, "Keys equal expected same hash.");
+                    } else {
+                        assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
+                    }
+                });
+            },
         );
     }
 
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test]
-    #[test_log::test]
-    async fn save_and_load_one_entry(
-        external: impl ExternalCache,
-        #[ignore] node: NodeKindId,
-        #[ignore] data: Vec<Data>,
-        #[ignore] value: Data,
-    ) {
-        let key = CacheKey {
-            node,
-            inputs: &data,
-        };
+    #[test]
+    fn same_entry_hashes_equal() {
+        let rt = runtime();
+        bolero::check!()
+            .with_type()
+            .for_each(|(node, data): &(NodeKindId, Vec<Data>)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
 
-        let mut cache = Cache::new();
-        cache.insert(key.content_hash().await.unwrap(), value.clone());
-
-        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-        cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
-
-        cache_file.set_position(0);
-        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        let loaded_value = loaded_cache
-            .get(key.content_hash().await.unwrap())
-            .expect("Value not found");
-
-        assert_eq!(*loaded_value, value);
+                    assert_eq!(
+                        key.content_hash().await.unwrap(),
+                        key.content_hash().await.unwrap()
+                    );
+                });
+            });
     }
 
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test]
-    #[test_log::test]
-    async fn save_and_load_duplicate(external: impl ExternalCache, #[ignore] value: Data) {
-        let mut cache = Cache::new();
+    #[test]
+    fn save_and_load_one_entry() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
 
-        let key1 = CacheHash(blake3::hash(&[0]).into());
-        let key2 = CacheHash(blake3::hash(&[1]).into());
-        let key3 = CacheHash(blake3::hash(&[2]).into());
+                    let mut cache = Cache::new();
+                    cache.insert(key.content_hash().await.unwrap(), value.clone());
 
-        cache.insert(key1, value.clone());
-        cache.insert(key2, value.clone());
-        cache.insert(key3, value.clone());
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache
+                        .save_cache(&mut cache_file, &DummyExternal, false, false)
+                        .await
+                        .unwrap();
 
-        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-        cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
+                    cache_file.set_position(0);
+                    let mut loaded_cache = Cache::load_cache(&mut cache_file, &DummyExternal)
+                        .await
+                        .unwrap();
+                    let loaded_value = loaded_cache
+                        .get(key.content_hash().await.unwrap())
+                        .expect("Value not found");
 
-        cache_file.set_position(0);
-        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        let loaded_value1 = loaded_cache.get(key1).expect("Value not found").clone();
-        let loaded_value2 = loaded_cache.get(key1).expect("Value not found").clone();
-        let loaded_value3 = loaded_cache.get(key1).expect("Value not found").clone();
+                    assert_eq!(data_hash(loaded_value).await, data_hash(value).await);
+                });
+            },
+        );
+    }
 
-        assert_eq!(loaded_value1, value);
-        assert_eq!(loaded_value2, value);
-        assert_eq!(loaded_value3, value);
+    #[test]
+    fn save_and_load_duplicate() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(|value: &Data| {
+            rt.block_on(async {
+                let mut cache = Cache::new();
+
+                let key1 = CacheHash(blake3::hash(&[0]).into());
+                let key2 = CacheHash(blake3::hash(&[1]).into());
+                let key3 = CacheHash(blake3::hash(&[2]).into());
+
+                cache.insert(key1, value.clone());
+                cache.insert(key2, value.clone());
+                cache.insert(key3, value.clone());
+
+                let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                cache
+                    .save_cache(&mut cache_file, &DummyExternal, false, false)
+                    .await
+                    .unwrap();
+
+                cache_file.set_position(0);
+                let mut loaded_cache = Cache::load_cache(&mut cache_file, &DummyExternal)
+                    .await
+                    .unwrap();
+                let expected = data_hash(value).await;
+                for key in [key1, key2, key3] {
+                    let loaded_value = loaded_cache.get(key).expect("Value not found");
+                    assert_eq!(data_hash(loaded_value).await, expected);
+                }
+            });
+        });
     }
 
     #[tokio::test]
@@ -742,173 +790,192 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test(config = proptest::prelude::ProptestConfig {cases: 5, ..Default::default()})]
-    #[test_log::test]
-    async fn save_and_load_multiple_entries(
-        external: impl ExternalCache,
-        #[ignore] values: Vec<(NodeKindId, Vec<Data>, Data)>,
-    ) {
-        let mut cache = Cache::new();
-        for (node, data, value) in &values {
-            let key = CacheKey {
-                node: *node,
-                inputs: data,
-            };
+    #[test]
+    fn save_and_load_multiple_entries() {
+        let rt = runtime();
+        bolero::check!()
+            .with_generator(
+                bolero::produce::<Vec<(NodeKindId, Vec<Data>, Data)>>()
+                    .with()
+                    .len(0..4_usize),
+            )
+            .for_each(|values: &Vec<(NodeKindId, Vec<Data>, Data)>| {
+                rt.block_on(async {
+                    let mut cache = Cache::new();
+                    for (node, data, value) in values {
+                        let key = CacheKey {
+                            node: *node,
+                            inputs: data,
+                        };
 
-            cache.insert(key.content_hash().await.unwrap(), value.clone());
-        }
+                        cache.insert(key.content_hash().await.unwrap(), value.clone());
+                    }
 
-        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-        cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache
+                        .save_cache(&mut cache_file, &DummyExternal, false, false)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
+                    cache_file.set_position(0);
+                    let mut loaded_cache = Cache::load_cache(&mut cache_file, &DummyExternal)
+                        .await
+                        .unwrap();
 
-        for (node, data, _) in &values {
-            let key = CacheKey {
-                node: *node,
-                inputs: data,
-            };
+                    for (node, data, _) in values {
+                        let key = CacheKey {
+                            node: *node,
+                            inputs: data,
+                        };
 
-            let _ = loaded_cache
-                .get(key.content_hash().await.unwrap())
-                .expect("Value not found");
-            // We do not check what the value is as proptest might (and likely will) generate
-            // duplicate keys.
-        }
+                        let _ = loaded_cache
+                            .get(key.content_hash().await.unwrap())
+                            .expect("Value not found");
+                        // We do not check what the value is as generation might (and likely will)
+                        // produce duplicate keys.
+                    }
+                });
+            });
     }
 
     /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
     /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test]
-    #[test_log::test]
-    async fn if_cache_used_should_always_be_kept(
-        external: impl ExternalCache,
-        #[ignore] node: NodeKindId,
-        #[ignore] data: Vec<Data>,
-        #[ignore] value: Data,
-    ) {
-        let key = CacheKey {
-            node,
-            inputs: &data,
-        };
+    #[test]
+    fn if_cache_used_should_always_be_kept() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
 
-        let mut cache = Cache::new();
-        cache.insert(key.content_hash().await.unwrap(), value.clone());
+                    let mut cache = Cache::new();
+                    cache.insert(key.content_hash().await.unwrap(), value.clone());
 
-        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-        cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache
+                        .save_cache(&mut cache_file, &DummyExternal, false, false)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        let mut loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        loaded_cache
-            .get(key.content_hash().await.unwrap())
-            .expect("Value not found");
+                    cache_file.set_position(0);
+                    let mut loaded_cache = Cache::load_cache(&mut cache_file, &DummyExternal)
+                        .await
+                        .unwrap();
+                    loaded_cache
+                        .get(key.content_hash().await.unwrap())
+                        .expect("Value not found");
 
-        // Even tho `keep_old_cache` is false it should still keep the entry in there since we used
-        // it.
-        cache_file.set_position(0);
-        cache_file.get_mut().clear();
-        loaded_cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
+                    // Even tho `keep_old_cache` is false it should still keep the entry in there
+                    // since we used it.
+                    cache_file.set_position(0);
+                    cache_file.get_mut().clear();
+                    loaded_cache
+                        .save_cache(&mut cache_file, &DummyExternal, false, false)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        second_loaded_cache
-            .get(key.content_hash().await.unwrap())
-            .expect("Value not found");
+                    cache_file.set_position(0);
+                    let mut second_loaded_cache =
+                        Cache::load_cache(&mut cache_file, &DummyExternal)
+                            .await
+                            .unwrap();
+                    second_loaded_cache
+                        .get(key.content_hash().await.unwrap())
+                        .expect("Value not found");
+                });
+            },
+        );
     }
 
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test]
-    #[test_log::test]
-    async fn old_entry_cleared_if_not_used(
-        external: impl ExternalCache,
-        #[ignore] node: NodeKindId,
-        #[ignore] data: Vec<Data>,
-        #[ignore] value: Data,
-    ) {
-        let key = CacheKey {
-            node,
-            inputs: &data,
-        };
+    #[test]
+    fn old_entry_cleared_if_not_used() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
 
-        let mut cache = Cache::new();
-        cache.insert(key.content_hash().await.unwrap(), value.clone());
+                    let mut cache = Cache::new();
+                    cache.insert(key.content_hash().await.unwrap(), value.clone());
 
-        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-        cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache
+                        .save_cache(&mut cache_file, &DummyExternal, false, false)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        let loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
+                    cache_file.set_position(0);
+                    let loaded_cache = Cache::load_cache(&mut cache_file, &DummyExternal)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        cache_file.get_mut().clear();
-        loaded_cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
+                    cache_file.set_position(0);
+                    cache_file.get_mut().clear();
+                    loaded_cache
+                        .save_cache(&mut cache_file, &DummyExternal, false, false)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        let result = second_loaded_cache.get(key.content_hash().await.unwrap());
-        assert!(result.is_none(), "unused old_cache value was saved.");
+                    cache_file.set_position(0);
+                    let mut second_loaded_cache =
+                        Cache::load_cache(&mut cache_file, &DummyExternal)
+                            .await
+                            .unwrap();
+                    let result = second_loaded_cache.get(key.content_hash().await.unwrap());
+                    assert!(result.is_none(), "unused old_cache value was saved.");
+                });
+            },
+        );
     }
 
-    #[tokio::test]
-    #[rstest]
-    #[proptest::property_test]
-    #[test_log::test]
-    async fn old_entry_kept_if_keep_old_true_even_if_not_used(
-        external: impl ExternalCache,
-        #[ignore] node: NodeKindId,
-        #[ignore] data: Vec<Data>,
-        #[ignore] value: Data,
-    ) {
-        let key = CacheKey {
-            node,
-            inputs: &data,
-        };
+    #[test]
+    fn old_entry_kept_if_keep_old_true_even_if_not_used() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
 
-        let mut cache = Cache::new();
-        cache.insert(key.content_hash().await.unwrap(), value.clone());
+                    let mut cache = Cache::new();
+                    cache.insert(key.content_hash().await.unwrap(), value.clone());
 
-        let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-        cache
-            .save_cache(&mut cache_file, &external, false, false)
-            .await
-            .unwrap();
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache
+                        .save_cache(&mut cache_file, &DummyExternal, false, false)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        let loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
+                    cache_file.set_position(0);
+                    let loaded_cache = Cache::load_cache(&mut cache_file, &DummyExternal)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        cache_file.get_mut().clear();
-        loaded_cache
-            .save_cache(&mut cache_file, &external, true, false)
-            .await
-            .unwrap();
+                    cache_file.set_position(0);
+                    cache_file.get_mut().clear();
+                    loaded_cache
+                        .save_cache(&mut cache_file, &DummyExternal, true, false)
+                        .await
+                        .unwrap();
 
-        cache_file.set_position(0);
-        let mut second_loaded_cache = Cache::load_cache(&mut cache_file, &external).await.unwrap();
-        second_loaded_cache
-            .get(key.content_hash().await.unwrap())
-            .expect("Value not found");
+                    cache_file.set_position(0);
+                    let mut second_loaded_cache =
+                        Cache::load_cache(&mut cache_file, &DummyExternal)
+                            .await
+                            .unwrap();
+                    second_loaded_cache
+                        .get(key.content_hash().await.unwrap())
+                        .expect("Value not found");
+                });
+            },
+        );
     }
 }
