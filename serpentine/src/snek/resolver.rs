@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use bumpalo::Bump;
 
@@ -241,6 +242,24 @@ impl<'arena> StatementContext<'arena, '_> {
     }
 }
 
+/// A literal value, used to deduplicate literal nodes.
+#[derive(Hash, PartialEq, Eq, Clone)]
+enum LiteralKey {
+    /// An integer literal
+    Int(i128),
+    /// A string literal
+    Str(Arc<str>),
+}
+
+impl From<LiteralKey> for Data {
+    fn from(key: LiteralKey) -> Self {
+        match key {
+            LiteralKey::Int(value) => Self::Int(value),
+            LiteralKey::Str(value) => Self::String(value),
+        }
+    }
+}
+
 /// Holds the state of the resolver
 struct Resolver<'arena> {
     /// Arena used for allocating the source code
@@ -261,7 +280,7 @@ struct Resolver<'arena> {
     /// The next symbol id to use
     next_symbol_id: usize,
     /// Cache of literal values
-    cached_literals: HashMap<Data, ir::Symbol>,
+    cached_literals: HashMap<LiteralKey, ir::Symbol>,
 }
 
 /// The result of a resolving a file
@@ -582,12 +601,14 @@ impl<'arena> Resolver<'arena> {
         expression: ast::Expression<'arena>,
     ) -> Result<ir::Symbol, CompileError> {
         match expression {
-            ast::Expression::Number(number) => {
-                Ok(self.resolve_literal(top_level_body, Data::Int(number.take()), number.span()))
-            }
+            ast::Expression::Number(number) => Ok(self.resolve_literal(
+                top_level_body,
+                LiteralKey::Int(number.take()),
+                number.span(),
+            )),
             ast::Expression::String(text) => {
                 let span = text.span();
-                Ok(self.resolve_literal(top_level_body, Data::String(text.take().into()), span))
+                Ok(self.resolve_literal(top_level_body, LiteralKey::Str(text.take().into()), span))
             }
             ast::Expression::Label(label) => {
                 let error_span = label.span();
@@ -684,14 +705,14 @@ impl<'arena> Resolver<'arena> {
     fn resolve_literal(
         &mut self,
         top_level_body: &mut Vec<ir::Node>,
-        literal: Data,
+        literal: LiteralKey,
         source_span: Span,
     ) -> ir::Symbol {
         if let Some(cached) = self.cached_literals.get(&literal) {
             return *cached;
         }
 
-        let node_impl = crate::engine::nodes::LiteralNode(literal.clone());
+        let node_impl = crate::engine::nodes::LiteralNode(literal.clone().into());
         let node_id = self.nodes.push(Box::new(node_impl));
         let function_id = self.functions.push(ir::Function::BuiltinFunction(node_id));
         let node_name = self.new_symbol();

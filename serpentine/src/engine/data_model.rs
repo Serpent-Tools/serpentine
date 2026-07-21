@@ -11,24 +11,32 @@ use crate::engine::nodes::NodeImpl;
 use crate::engine::{RuntimeContext, RuntimeError, containerd};
 use crate::snek::span::Spanned;
 
+/// Shared field generators for fuzzing.
+#[cfg(test)]
+pub(crate) mod fuzz {
+    use std::sync::Arc;
+
+    use bolero::ValueGenerator as _;
+
+    /// Generator for `Arc<str>` values, which bolero has no built-in generator for.
+    pub(crate) fn arc_str() -> impl bolero::ValueGenerator<Output = Arc<str>> {
+        bolero::produce::<String>().map_gen(Arc::from)
+    }
+}
+
 /// Holds the various forms of data that the node engine uses
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub enum Data {
     /// A numeric whole number value
-    #[cfg_attr(test, proptest(weight = 6))]
     Int(i128),
     /// A string, usually a short literal
-    #[cfg_attr(test, proptest(weight = 6))]
-    String(Arc<str>),
+    String(#[cfg_attr(test, generator(fuzz::arc_str()))] Arc<str>),
     /// A docker container
-    #[cfg_attr(test, proptest(weight = 2))]
     Container(containerd::ContainerState),
     /// A service
-    #[cfg_attr(test, proptest(weight = 1))]
     Service(containerd::ServiceState),
     /// A file/folder
-    #[cfg_attr(test, proptest(skip))]
     FileSystem(FileSystem),
 }
 
@@ -196,19 +204,12 @@ pub struct StoreId<T> {
 }
 
 #[cfg(test)]
-impl<T> proptest::arbitrary::Arbitrary for StoreId<T> {
-    type Parameters = ();
-    type Strategy = proptest::strategy::BoxedStrategy<Self>;
-
-    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
-        use proptest::prelude::Strategy;
-
-        proptest::arbitrary::any::<usize>()
-            .prop_map(|index| StoreId {
-                index,
-                _marker: std::marker::PhantomData,
-            })
-            .boxed()
+impl<T: 'static> bolero::TypeGenerator for StoreId<T> {
+    fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
+        Some(StoreId {
+            index: usize::generate(driver)?,
+            _marker: std::marker::PhantomData,
+        })
     }
 }
 

@@ -64,26 +64,13 @@ pub trait FileSystemProvider: Send + Sync {
     fn dyn_clone(&self) -> Box<dyn FileSystemProvider>;
 }
 
-/// New type wrapper around a `dyn FileSystemProvider` with identity-based `PartialEq` and `Hash`,
+/// New type wrapper around a `dyn FileSystemProvider` with a cached content hash,
 /// as well as an implementation of `CacheData`
 pub struct FileSystem {
     /// The inner filesystem provider
     provider: Box<dyn FileSystemProvider>,
     /// The cached hash of the data.
     hash: Arc<OnceCell<blake3::Hash>>,
-}
-
-impl PartialEq for FileSystem {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.hash, &other.hash)
-    }
-}
-impl Eq for FileSystem {}
-
-impl std::hash::Hash for FileSystem {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.hash).hash(state);
-    }
 }
 
 impl Deref for FileSystem {
@@ -338,4 +325,69 @@ fn discover_gitignore(within_dir: &Path) -> Option<Gitignore> {
     }
 
     builder.build().ok()
+}
+
+/// Generation of valid filesystem streams for fuzzing.
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod fuzz {
+    use futures_util::FutureExt as _;
+    use tokio::io::AsyncWriteExt as _;
+
+    use super::*;
+
+    /// A file tree, encodable into the filesystem stream format.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum Tree {
+        /// A file and its contents
+        File(Vec<u8>),
+        /// A folder of named entries
+        Folder(Vec<(String, Tree)>),
+    }
+
+    impl Tree {
+        /// Encode this tree under the given name via the real stream header writer.
+        async fn write(&self, name: &str, out: &mut std::io::Cursor<Vec<u8>>) -> io::Result<()> {
+            match self {
+                Self::File(contents) => {
+                    FileSystemEntryHeader::File {
+                        name: name.as_bytes().into(),
+                        length: contents.len() as u64,
+                    }
+                    .write(out)
+                    .await?;
+                    out.write_all(contents).await
+                }
+                Self::Folder(children) => {
+                    FileSystemEntryHeader::Folder {
+                        name: name.as_bytes().into(),
+                        entries: children.len() as u64,
+                    }
+                    .write(out)
+                    .await?;
+                    for (child_name, child) in children {
+                        Box::pin(child.write(child_name, out)).await?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        /// Encode this tree as a stream's root entry.
+        fn encode(&self) -> Vec<u8> {
+            let mut out = std::io::Cursor::new(Vec::new());
+            self.write("", &mut out)
+                .now_or_never()
+                .expect("in-memory writes never pend")
+                .expect("in-memory writes cannot fail");
+            out.into_inner()
+        }
+    }
+
+    impl bolero::TypeGenerator for FileSystem {
+        fn generate<D: bolero::Driver>(driver: &mut D) -> Option<Self> {
+            let tree = Tree::generate(driver)?;
+            Some(InMemoryFile(tree.encode().into()).into())
+        }
+    }
 }
