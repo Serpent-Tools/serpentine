@@ -9,7 +9,7 @@ export debian = Image("debian:bookworm@sha256:db7a4382d9bfc480ca4ef9542bd33cad05
 
 export rust = Image("rustlang/rust:nightly@sha256:0fc2f1427a3c0bef08395adfbf23b959872ce0225314ba2c483c3fd8c6d1fd0e")
     > WorkingDir("/app")
-    > Exec("apt-get update && apt-get install -y protobuf-compiler=3.21.12-11")
+    > Exec("apt-get update && apt-get install -y protobuf-compiler")
     > Env("RUST_LOG", "serpentine=trace");
 
 export def Binstall(container, crate, bin_name) {

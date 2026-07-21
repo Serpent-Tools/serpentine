@@ -18,7 +18,7 @@ def ClippyOnTarget(base, target) {
 // Trixie only ships the posix/win32 variants, exposed as x86_64-w64-mingw32-gcc-posix,
 // so point cc at it directly rather than relying on an update-alternatives default.
 windows_toolchain = lib::rust
-    > Exec("apt-get update && apt-get install -y gcc-mingw-w64-x86-64-posix=14.2.0-19+27+b1")
+    > Exec("apt-get update && apt-get install -y gcc-mingw-w64-x86-64-posix")
     > Env("CC_x86_64_pc_windows_gnu", "x86_64-w64-mingw32-gcc-posix");
 clippy_windows = ClippyOnTarget(windows_toolchain, "x86_64-pc-windows-gnu");
 
