@@ -14,8 +14,8 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util
 nix = { workspace = true, features = ["fs", "mount"] }
 uuid.workspace = true
 rust-cni = { version = "0.1.2", default-features = false }
-netns-rs = { version = "0.1.0", default-features = false }
-rand = { version = "0.9.2", default-features = false, features = ["os_rng", "std"] }
+netns-rs = { version = "0.2.0", default-features = false }
+rand = { version = "0.10.2", default-features = false, features = ["sys_rng", "std"] }
 typed-path.workspace = true
 
 [lints]

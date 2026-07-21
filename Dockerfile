@@ -58,8 +58,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# containerd v2.3.2
-ARG CONTAINERD_COMMIT=c2be8504d753b8e360526e405e27c4164595daf6
+# containerd v2.3.3
+ARG CONTAINERD_COMMIT=aad11006b869517fcd3009450b6f82da282e1a9b
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}

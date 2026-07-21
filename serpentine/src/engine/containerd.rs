@@ -547,29 +547,16 @@ impl std::ops::DerefMut for ContainerLike {
     }
 }
 
-/// Return the goarch of the current system.
-fn system_goarch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        "i686" | "i386" => "386",
-        "arm" => "arm",
-        "s390x" => "s390x",
-        "powerpc64" | "powerpc64le" => "ppc64le",
-        arch => {
-            log::warn!("Unknown arch {arch}");
-            arch
-        }
-    }
-}
-
 /// Return whether the given Oci platform object is compatible with the current system.
 fn platform_resolver(manifests: &[oci_client::manifest::ImageIndexEntry]) -> Option<String> {
     manifests
         .iter()
         .find(|manifest| match &manifest.platform {
             None => false,
-            Some(platform) => platform.os == "linux" && platform.architecture == system_goarch(),
+            Some(platform) => {
+                platform.os == oci_spec::image::Os::Linux
+                    && platform.architecture == oci_spec::image::Arch::default()
+            }
         })
         .map(|manifest| manifest.digest.clone())
 }
