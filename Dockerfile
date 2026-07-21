@@ -1,12 +1,14 @@
-FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709 as download
-RUN apk add tar=1.35-r2 curl=8.14.1-r2
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b as download
+RUN apk add tar=1.35-r5 curl=8.21.0-r0
 
 ARG TINI_VERSION=v0.19.0
 RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static" -o /tini && \
     echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum -c - && \
     chmod +x /tini
 
-FROM golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113 AS cni
+FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go_base
+
+FROM go_base AS cni
 
 ARG CNI_VERSION=v1.9.1
 ARG CNI_COMMIT=adc3e6b5b581638afbd194cf2e9319ecbb0151a1
@@ -31,28 +33,23 @@ RUN go build -o /cni/loopback -ldflags "$LDFLAGS" ./plugins/main/loopback && \
     go build -o /cni/static -ldflags "$LDFLAGS" ./plugins/ipam/static
 RUN strip --strip-all /cni/*
 
-FROM golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113 AS runc
+FROM go_base AS runc
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     libbtrfs-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# runc v1.4.3
-ARG RUNC_COMMIT=74199b9d198f6c61cd0c8971386337eea5d1c2ad
+# runc v1.5.1
+ARG RUNC_COMMIT=8f2685a471d3347a686ad3909783d8aafc6bb208
 
 RUN git clone https://github.com/opencontainers/runc.git /src/runc && \
     git -C /src/runc checkout ${RUNC_COMMIT}
 WORKDIR /src/runc
-# Bump golang.org/x/sys to a release that fixes CVE-2026-39824 (>= v0.44.0);
-# runc v1.4.3 still pins an older version.
-RUN GOFLAGS=-mod=mod go get golang.org/x/sys@v0.44.0 && \
-    GOFLAGS=-mod=mod go mod tidy && \
-    go mod vendor
 RUN make BUILDTAGS="" EXTRA_FLAGS="-a" EXTRA_LDFLAGS="-w -s" static
 RUN strip --strip-all runc
 
-FROM golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113 AS containerd
+FROM go_base AS containerd
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y gcc libseccomp-dev \
@@ -65,6 +62,12 @@ RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
 
 WORKDIR /src/containerd
+
+# Bump golang.org/x/net and golang.org/x/text to releases that fix
+# CVE-2026-46600 and CVE-2026-56852; no tagged containerd release pins them yet.
+RUN GOFLAGS=-mod=mod go get golang.org/x/net@v0.56.0 golang.org/x/text@v0.39.0 && \
+    GOFLAGS=-mod=mod go mod tidy && \
+    go mod vendor
 
 RUN sed -i \
     -e '/plugins\/imageverifier/d' \
@@ -96,7 +99,7 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM rust:1.94.1-bookworm@sha256:2ab796040c03a34d0f090f0d4da18f6ac0503124167c6898ed70a434f108e4ef as chef
+FROM rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa as chef
 RUN cargo install cargo-chef@0.1.77 --locked
 WORKDIR /app
 
@@ -111,10 +114,10 @@ RUN cargo chef cook --release -p sidecar --target x86_64-unknown-linux-gnu --rec
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
-FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 RUN apk add --no-cache zlib=1.3.2-r0
-RUN apk add --no-cache iptables=1.8.11-r1
-RUN apk add --no-cache libcrypto3=3.3.7-r0 libssl3=3.3.7-r0 musl=1.2.5-r11 musl-utils=1.2.5-r11
+RUN apk add --no-cache iptables=1.8.13-r0
+RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 musl=1.2.6-r2 musl-utils=1.2.6-r2
 
 COPY --from=containerd /src/containerd/bin /bin
 COPY --from=runc /src/runc/runc /bin/runc

@@ -65,12 +65,15 @@ pub trait WireFormat: Sized {
 }
 
 impl WireFormat for () {
-    async fn write(self, _writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        Ok(())
+    fn write(
+        self,
+        _writer: &mut (impl AsyncWrite + Unpin + Send),
+    ) -> impl Future<Output = Result<()>> {
+        std::future::ready(Ok(()))
     }
 
-    async fn read(_reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        Ok(())
+    fn read(_reader: &mut (impl AsyncRead + Unpin + Send)) -> impl Future<Output = Result<Self>> {
+        std::future::ready(Ok(()))
     }
 }
 

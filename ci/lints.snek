@@ -2,23 +2,23 @@ import "./lib.snek" as lib;
 
 clippy_hack = lib::rust
     > Exec("rustup component add clippy")
-    > lib::Cooked("--clippy")
-    > lib::Binstall("cargo-hack@0.6.44", "cargo-hack")
-    > Exec("cargo hack --locked --all clippy -- -Dwarnings");
+    > lib::Cooked("--clippy --all-targets")
+    > lib::Binstall("cargo-hack@0.6.45", "cargo-hack")
+    > Exec("cargo hack --locked --all clippy --all-targets -- -Dwarnings");
 
 def ClippyOnTarget(base, target) {
     return base
         > Exec("rustup component add clippy")
         > Exec(Join("rustup target add ", target))
-        > lib::Cooked(Join("--clippy -p serpentine --target ", target))
-        > Exec(Join("cargo clippy --locked --target ", target, " -p serpentine -- -Dwarnings"));
+        > lib::Cooked(Join("--clippy --all-targets -p serpentine --target ", target))
+        > Exec(Join("cargo clippy --locked --all-targets --target ", target, " -p serpentine -- -Dwarnings"));
 }
 
 // ring's build script cross-compiles C, so the windows-gnu toolchain must be present.
 // Trixie only ships the posix/win32 variants, exposed as x86_64-w64-mingw32-gcc-posix,
 // so point cc at it directly rather than relying on an update-alternatives default.
 windows_toolchain = lib::rust
-    > Exec("apt-get update && apt-get install -y gcc-mingw-w64-x86-64-posix")
+    > Exec("apt-get update && apt-get install -y gcc-mingw-w64-x86-64-posix=14.2.0-19+27+b1")
     > Env("CC_x86_64_pc_windows_gnu", "x86_64-w64-mingw32-gcc-posix");
 clippy_windows = ClippyOnTarget(windows_toolchain, "x86_64-pc-windows-gnu");
 
@@ -26,8 +26,8 @@ clippy_all = !(clippy_hack, clippy_windows) Noop(0);
 
 clippy = lib::rust 
     > Exec("rustup component add clippy")
-    > lib::Cooked("--clippy")
-    > Exec("cargo clippy --frozen -- -Dwarnings");
+    > lib::Cooked("--clippy --all-targets")
+    > Exec("cargo clippy --frozen --all-targets -- -Dwarnings");
 
 fmt = lib::rust
     > Exec("rustup component add rustfmt")
@@ -36,12 +36,12 @@ fmt = lib::rust
 
 export spelling = lib::debian 
     > WorkingDir("/app")
-    > lib::Binstall("typos-cli@1.45.0", "typos")
+    > lib::Binstall("typos-cli@1.48.0", "typos")
     > With(lib::source_code, ".")
     > Exec("typos");
 
 deny = lib::rust
-    > lib::Binstall("cargo-deny@0.19.0", "cargo-deny")
+    > lib::Binstall("cargo-deny@0.20.2", "cargo-deny")
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
@@ -50,7 +50,7 @@ vet = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo vet check --locked");
 
-trivy = Image("aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c") 
+trivy = Image("aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f") 
     > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
     > With(lib::container_image, "containerd.tar")
     > Exec("trivy image --input containerd.tar --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml");
@@ -62,7 +62,7 @@ export security = !(deny, vet, trivy) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
-    > lib::Binstall("typos-cli@1.45.0", "typos")
+    > lib::Binstall("typos-cli@1.48.0", "typos")
     > With(lib::source_code, ".")
     > Exec("cargo fmt")
     > Exec("typos -w")
