@@ -333,11 +333,14 @@ impl CacheData for Arc<[u8]> {
             .await
     }
 
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+    fn content_hash(
+        &self,
+        hasher: &mut blake3::Hasher,
+    ) -> impl Future<Output = Result<(), RuntimeError>> {
         hasher.update(&(self.len() as u64).to_le_bytes());
         hasher.update(self);
 
-        Ok(())
+        std::future::ready(Ok(()))
     }
 }
 impl CacheData for Arc<str> {
@@ -371,11 +374,14 @@ impl CacheData for Arc<str> {
             .await
     }
 
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+    fn content_hash(
+        &self,
+        hasher: &mut blake3::Hasher,
+    ) -> impl Future<Output = Result<(), RuntimeError>> {
         hasher.update(&(self.len() as u64).to_le_bytes());
         hasher.update(self.as_bytes());
 
-        Ok(())
+        std::future::ready(Ok(()))
     }
 }
 
@@ -560,6 +566,8 @@ mod tests {
 
     struct DummyExternal;
 
+    // async-to-`std::future::ready` needs a named lifetime on `_values`, which the trait elides
+    #[expect(clippy::unused_async_trait_impl, reason = "tests")]
     impl ExternalCache for DummyExternal {
         async fn export(
             &self,
