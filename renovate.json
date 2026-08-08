@@ -1,0 +1,158 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "ignorePresets": [
+    ":ignoreModulesAndTests"
+  ],
+  "ignorePaths": [
+    "book/**"
+  ],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "schedule": [
+    "before 9am on monday"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "**/*.snek"
+      ],
+      "matchStrings": [
+        "Image(?:Service)?\\(\"(?<depName>[^:\"]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)\"\\)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "**/*.rs"
+      ],
+      "matchStrings": [
+        "\"(?<depName>[a-z0-9.-]+\\.[a-z]{2,}/[a-zA-Z0-9._/-]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "**/*.snek",
+        "/(^|/)Dockerfile$/"
+      ],
+      "matchStrings": [
+        "Binstall\\(\"(?<depName>[a-zA-Z0-9_-]+)@=?(?<currentValue>[0-9][^\"]*)\"",
+        "cargo install (?<depName>[a-zA-Z0-9_-]+)@=?(?<currentValue>[0-9][^ \"]*)"
+      ],
+      "datasourceTemplate": "crate",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+ARG \\w+_VERSION=(?<currentValue>\\S+)\\s+ARG \\w+_COMMIT=(?<currentDigest>[a-f0-9]{40})"
+      ]
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "**/*.snek"
+      ],
+      "matchStrings": [
+        "// cargo-binstall (?<currentValue>v[0-9.]+)\\s+> Exec\\(\"[^\"]*cargo-bins/cargo-binstall/(?<currentDigest>[a-f0-9]{40})/"
+      ],
+      "depNameTemplate": "cargo-bins/cargo-binstall",
+      "datasourceTemplate": "github-tags"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        ".github/workflows/*.yml"
+      ],
+      "matchStrings": [
+        "tool: (?<depName>[a-z0-9_-]+)@=?(?<currentValue>[0-9][^\\s]*)"
+      ],
+      "datasourceTemplate": "crate",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        ".github/workflows/*.yml"
+      ],
+      "matchStrings": [
+        "toolchain: (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-tags"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/"
+      ],
+      "matchStringsStrategy": "recursive",
+      "matchStrings": [
+        "apk add[^\\n]*",
+        "(?<depName>[a-z0-9][a-z0-9._+-]*)=(?<currentValue>[0-9][^\\s]*)"
+      ],
+      "depNameTemplate": "alpine_3_24/{{{depName}}}",
+      "datasourceTemplate": "repology",
+      "versioningTemplate": "loose"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github actions"
+    },
+    {
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "cargo (minor/patch)"
+    },
+    {
+      "matchFileNames": [
+        "Dockerfile",
+        "ci/**"
+      ],
+      "groupName": "container base images"
+    },
+    {
+      "matchFileNames": [
+        "Dockerfile",
+        "ci/**",
+        ".github/workflows/**"
+      ],
+      "matchDatasources": [
+        "crate"
+      ],
+      "groupName": "ci tooling"
+    },
+    {
+      "matchFileNames": [
+        "test_cases/**",
+        "**/*.rs"
+      ],
+      "groupName": "test fixture images",
+      "schedule": [
+        "before 9am on the first day of the month"
+      ],
+      "prBodyNotes": [
+        "The `command_fail*` snapshots embed the image digest in rendered error output, so this needs `just update_snapshots`."
+      ]
+    }
+  ]
+}

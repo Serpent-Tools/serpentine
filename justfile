@@ -39,6 +39,17 @@ size_benchmark: build_container
     docker history localhost/serpent-tools/containerd:dev
     ls ./target/release/serpentine --size --human-readable
 
+# Check renovate.json for config errors.
+renovate_validate:
+    renovate-config-validator
+
+# Open dependency update PRs on GitHub. Needs RENOVATE_TOKEN.
+renovate_pr *args:
+    renovate --platform=github {{args}} Serpent-Tools/serpentine
+
+# Report what renovate_pr would open, without touching the repo.
+renovate_pr_dry: (renovate_pr "--dry-run=full")
+
 count_deps:
     cargo tree --depth 999 --prefix none -p serpentine --edges normal | sort -u | wc -l
     cargo tree --depth 999 --prefix none -p sidecar --edges normal | sort -u | wc -l

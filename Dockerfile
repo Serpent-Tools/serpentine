@@ -10,6 +10,7 @@ FROM docker.io/library/golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd
 
 FROM go_base AS cni
 
+# renovate: datasource=github-tags depName=containernetworking/plugins
 ARG CNI_VERSION=v1.9.1
 ARG CNI_COMMIT=adc3e6b5b581638afbd194cf2e9319ecbb0151a1
 
@@ -40,7 +41,8 @@ RUN apt-get update && apt-get install -y \
     libbtrfs-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# runc v1.5.1
+# renovate: datasource=github-tags depName=opencontainers/runc
+ARG RUNC_VERSION=v1.5.1
 ARG RUNC_COMMIT=8f2685a471d3347a686ad3909783d8aafc6bb208
 
 RUN git clone https://github.com/opencontainers/runc.git /src/runc && \
@@ -55,7 +57,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# containerd v2.3.3
+# renovate: datasource=github-tags depName=containerd/containerd
+ARG CONTAINERD_VERSION=v2.3.3
 ARG CONTAINERD_COMMIT=aad11006b869517fcd3009450b6f82da282e1a9b
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
@@ -100,7 +103,7 @@ RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
 FROM docker.io/library/rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa as chef
-RUN cargo install cargo-chef@0.1.77 --locked
+RUN cargo install cargo-chef@=0.1.77 --locked
 WORKDIR /app
 
 FROM chef as planner
