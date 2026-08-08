@@ -3,7 +3,7 @@ import "./lib.snek" as lib;
 clippy_hack = lib::rust
     > Exec("rustup component add clippy")
     > lib::Cooked("--clippy --all-targets")
-    > lib::Binstall("cargo-hack@0.6.45", "cargo-hack")
+    > lib::Binstall("cargo-hack@=0.6.45", "cargo-hack")
     > Exec("cargo hack --locked --all clippy --all-targets -- -Dwarnings");
 
 def ClippyOnTarget(base, target) {
@@ -36,12 +36,12 @@ fmt = lib::rust
 
 export spelling = lib::debian 
     > WorkingDir("/app")
-    > lib::Binstall("typos-cli@1.48.0", "typos")
+    > lib::Binstall("typos-cli@=1.48.0", "typos")
     > With(lib::source_code, ".")
     > Exec("typos");
 
 deny = lib::rust
-    > lib::Binstall("cargo-deny@0.20.2", "cargo-deny")
+    > lib::Binstall("cargo-deny@=0.20.2", "cargo-deny")
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
@@ -57,7 +57,7 @@ export security = !(deny, trivy) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
-    > lib::Binstall("typos-cli@1.48.0", "typos")
+    > lib::Binstall("typos-cli@=1.48.0", "typos")
     > With(lib::source_code, ".")
     > Exec("cargo fmt")
     > Exec("typos -w")

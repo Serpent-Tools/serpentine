@@ -26,13 +26,13 @@ export source_code = FromHost(".");
 
 export def Cooked(container, build_kind) {
     recipe = rust
-        > Binstall("cargo-chef@0.1.77", "cargo-chef")
+        > Binstall("cargo-chef@=0.1.77", "cargo-chef")
         > With(source_code, ".")
         > Exec("cargo chef prepare --recipe-path recipe.json")
         > Export("recipe.json");
 
     return container 
-        > Binstall("cargo-chef@0.1.77", "cargo-chef")
+        > Binstall("cargo-chef@=0.1.77", "cargo-chef")
         > With(recipe, "recipe.json")
         > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
         > With(source_code, ".");

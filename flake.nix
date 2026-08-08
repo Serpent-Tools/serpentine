@@ -65,6 +65,8 @@
 
             mdbook
             mdbook-mermaid
+
+            renovate
           ];
         };
       }
