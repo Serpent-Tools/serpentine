@@ -31,7 +31,7 @@ run_sidecar: build_container
     docker run --rm -it serpent-tools/containerd:dev
 
 pull_images:
-    grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | xargs -n1 docker pull || exit 0
+    grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | grep / | sort -u | xargs -n1 docker pull || exit 0
 
 size_benchmark: build_container
     cargo build --release -p serpentine
