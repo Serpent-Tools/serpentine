@@ -10,7 +10,7 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e # master
         with:
           toolchain: 1.97.1
@@ -19,9 +19,9 @@ jobs:
           cache-on-failure: true
       - name: Install protobuf
         run: sudo apt-get install -y protobuf-compiler
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Build container
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           load: true
@@ -47,7 +47,7 @@ jobs:
           echo "::error::Security scan failed: $(head -1 /tmp/serpentine_stderr.log)"
       - name: Create or update issue on failure
         if: failure()
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
