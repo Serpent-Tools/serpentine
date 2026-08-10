@@ -108,38 +108,7 @@
   ],
   "packageRules": [
     {
-      "matchManagers": [
-        "github-actions"
-      ],
-      "groupName": "github actions"
-    },
-    {
-      "matchManagers": [
-        "cargo"
-      ],
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
-      "groupName": "cargo (minor/patch)"
-    },
-    {
-      "matchFileNames": [
-        "Dockerfile",
-        "ci/**"
-      ],
-      "groupName": "container base images"
-    },
-    {
-      "matchFileNames": [
-        "Dockerfile",
-        "ci/**",
-        ".github/workflows/**"
-      ],
-      "matchDatasources": [
-        "crate"
-      ],
-      "groupName": "ci tooling"
+      "groupName": "dependencies"
     },
     {
       "matchFileNames": [
