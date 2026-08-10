@@ -108,6 +108,9 @@
   ],
   "packageRules": [
     {
+      "matchPackageNames": [
+        "*"
+      ],
       "groupName": "dependencies"
     },
     {
