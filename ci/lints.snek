@@ -37,7 +37,7 @@ fmt = lib::rust
 
 export spelling = lib::debian 
     > WorkingDir("/app")
-    > lib::Binstall("typos-cli@=1.48.0", "typos")
+    > lib::Binstall("typos-cli@=1.49.0", "typos")
     > With(lib::source_code, ".")
     > Exec("typos");
 
@@ -46,7 +46,7 @@ deny = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
-trivy = Image("aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f") 
+trivy = Image("aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c") 
     > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
     > With(lib::container_image, "containerd.tar")
     > Exec("trivy image --input containerd.tar --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml");
@@ -65,7 +65,7 @@ export security = !(deny, trivy) Noop(0);
 
 export fix = lib::rust
     > Exec("rustup component add rustfmt")
-    > lib::Binstall("typos-cli@=1.48.0", "typos")
+    > lib::Binstall("typos-cli@=1.49.0", "typos")
     > With(lib::source_code, ".")
     > Exec("cargo fmt")
     > Exec("typos -w")
