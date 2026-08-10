@@ -603,8 +603,8 @@ fn platform_resolver(manifests: &[oci_client::manifest::ImageIndexEntry]) -> Opt
         .find(|manifest| match &manifest.platform {
             None => false,
             Some(platform) => {
-                platform.os == oci_spec::image::Os::Linux
-                    && platform.architecture == oci_spec::image::Arch::default()
+                platform.os == oci_client::config::Os::Linux
+                    && platform.architecture == oci_client::config::Architecture::default()
             }
         })
         .map(|manifest| manifest.digest.clone())
