@@ -28,7 +28,7 @@ tokio-util = { version = "0.7.18", default-features = false, features = ["rt"] }
 tower = { version = "0.5.3", default-features = false }
 blake3 = { version = "1.8.3", default-features = false }
 typed-path.workspace = true
-im = { version = "15.1.0", default-features = false }
+imbl = { version = "7.0.1", default-features = false }
 ignore = { version = "0.4.25", default-features = false }
 
 # Compiler
