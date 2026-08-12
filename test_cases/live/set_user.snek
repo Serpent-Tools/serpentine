@@ -1,4 +1,4 @@
-image_with_user = Image("quay.io/prometheus/prometheus:v3.11.0@sha256:1361e7e2b9d85426bb9c1c9fa10d75bd4849ae9a0abfac689edea38fdd3afa54") 
+image_with_user = Image("quay.io/prometheus/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0")
     > Exec("test $(id -u) = 65534")
     > Exec("test $(id -g) = 65534")
     > Exec("test $(whoami) = nobody");
