@@ -66,9 +66,10 @@ RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
 
 WORKDIR /src/containerd
 
-# Bump golang.org/x/net and golang.org/x/text to releases that fix
-# CVE-2026-46600 and CVE-2026-56852; no tagged containerd release pins them yet.
-RUN GOFLAGS=-mod=mod go get golang.org/x/net@v0.56.0 golang.org/x/text@v0.39.0 && \
+# Bump golang.org/x/net, golang.org/x/text and google.golang.org/grpc to releases
+# that fix CVE-2026-46600, CVE-2026-56852 and GHSA-hrxh-6v49-42gf; no tagged
+# containerd release pins them yet.
+RUN GOFLAGS=-mod=mod go get golang.org/x/net@v0.56.0 golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.82.1 && \
     GOFLAGS=-mod=mod go mod tidy && \
     go mod vendor
 

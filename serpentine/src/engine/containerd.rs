@@ -39,8 +39,8 @@ mod fuzz {
     }
 
     /// Generator for small environment maps.
-    pub(super) fn env_map() -> impl bolero::ValueGenerator<Output = im::HashMap<Arc<str>, Arc<str>>>
-    {
+    pub(super) fn env_map()
+    -> impl bolero::ValueGenerator<Output = imbl::HashMap<Arc<str>, Arc<str>>> {
         bolero::produce::<Vec<(String, String)>>()
             .with()
             .len(0..10_usize)
@@ -67,12 +67,12 @@ mod fuzz {
 }
 
 /// Configuration for the container
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub struct ContainerConfig {
     /// Environment
     #[cfg_attr(test, generator(fuzz::env_map()))]
-    env: im::HashMap<Arc<str>, Arc<str>>,
+    env: imbl::HashMap<Arc<str>, Arc<str>>,
     /// The working directory
     #[cfg_attr(test, generator(fuzz::unix_path()))]
     working_dir: UnixPathBuf,
@@ -83,8 +83,8 @@ pub struct ContainerConfig {
     #[cfg_attr(test, generator(fuzz::opt_arc_str()))]
     user: Option<Arc<str>>,
     /// The services to attach to this container.
-    #[cfg_attr(test, generator(bolero::constant(im::HashMap::new())))]
-    services: im::HashMap<Arc<str>, ServiceState>,
+    #[cfg_attr(test, generator(bolero::constant(imbl::HashMap::new())))]
+    services: imbl::HashMap<Arc<str>, ServiceState>,
 }
 
 impl ContainerConfig {
@@ -133,7 +133,7 @@ impl From<oci_client::config::Config> for ContainerConfig {
                 |dir| UnixPath::new(&dir).to_path_buf(),
             ),
             user: config.user.map(Arc::from),
-            services: im::HashMap::new(),
+            services: imbl::HashMap::new(),
         }
     }
 }
@@ -173,7 +173,7 @@ impl CacheData for ContainerConfig {
     async fn read(
         reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Self, RuntimeError> {
-        let mut env = im::HashMap::new();
+        let mut env = imbl::HashMap::new();
         let items = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
         for _ in 0..items {
             let key = Arc::<str>::read(reader).await?;
@@ -191,7 +191,7 @@ impl CacheData for ContainerConfig {
             None
         };
 
-        let mut services = im::HashMap::new();
+        let mut services = imbl::HashMap::new();
         let service_count = serpentine_internal::read_u64_length_encoded(&mut **reader).await?;
         for _ in 0..service_count {
             let hostname = Arc::<str>::read(reader).await?;
@@ -323,7 +323,7 @@ impl ServiceConfig {
 }
 
 /// A services state
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 #[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub struct ServiceState {
     /// The underlying container
@@ -392,7 +392,7 @@ impl ServiceState {
         let mut services = Vec::with_capacity(self.container.config.services.len());
 
         self.container = self.container.update_config(|config| {
-            for (service_hostname, service) in config.services.iter() {
+            for (service_hostname, service) in &config.services {
                 services.push(service.clone().into_topology(Arc::clone(service_hostname)));
             }
         });
@@ -457,7 +457,7 @@ impl ContainerTopologyNode {
 }
 
 /// A reference to a specific state of a container.
-#[derive(Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 #[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub struct ContainerState {
     /// The snapshot to use for the container
@@ -509,7 +509,7 @@ impl ContainerState {
         let mut services = Vec::with_capacity(self.config.services.len());
 
         self = self.update_config(|config| {
-            for (service_hostname, service) in config.services.iter() {
+            for (service_hostname, service) in &config.services {
                 services.push(service.clone().into_topology(Arc::clone(service_hostname)));
             }
         });
@@ -554,7 +554,7 @@ impl CacheData for ContainerState {
 ///
 /// Many operations (env, working dir, user, etc.) apply equally to both containers and services.
 /// This type allows those operations to be written once and work on either.
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum ContainerLike {
     /// A container
     Container(ContainerState),
@@ -1828,7 +1828,7 @@ impl Client {
             }
         }
 
-        let mut services = im::HashMap::new();
+        let mut services = imbl::HashMap::new();
         for child in children {
             let Some(hostname) = &child.get_data().node.hostname else {
                 return Err(RuntimeError::internal(
