@@ -88,6 +88,12 @@ jobs:
           distribution: Ubuntu-22.04
           additional-packages: zstd
 
+      # WSL shuts the VM down once it looks idle, which it does while the tests compile. A
+      # long-lived D-Bus session keeps the distro up until the job ends.
+      - name: Keep WSL alive (Windows)
+        if: matrix.platform == 'windows'
+        run: wsl.exe -d Ubuntu-22.04 --exec dbus-launch true
+
       - name: Install Docker in WSL (Windows)
         if: matrix.platform == 'windows'
         shell: wsl-bash {0}
@@ -95,20 +101,31 @@ jobs:
           curl -fsSL https://get.docker.com | sudo VERSION=29.3 sh
           sudo usermod -aG docker $USER
 
+      # The tests run on the Windows side, so the daemon needs a TCP listener. `docker.socket`
+      # owns /var/run/docker.sock, so it has to stop before the overridden `ExecStart` binds it.
+      # Docker's default bridge pool overlaps the NAT range WSL2 picks, which breaks forwarding
+      # from the Windows host, so pin it well clear of 172.16.0.0/12.
       - name: Start Docker daemon in WSL (Windows)
         if: matrix.platform == 'windows'
         shell: wsl-bash {0}
         run: |
-          sudo dockerd -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock &
+          printf '{"default-address-pools":[{"base":"10.200.0.0/16","size":24}]}\n' \
+            | sudo tee /etc/docker/daemon.json
+          sudo mkdir -p /etc/systemd/system/docker.service.d
+          printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375\n' \
+            | sudo tee /etc/systemd/system/docker.service.d/tcp-listener.conf
+          sudo systemctl stop docker.socket
+          sudo systemctl daemon-reload
+          sudo systemctl restart docker.service
           for i in $(seq 1 15); do
-            if docker info >/dev/null 2>&1; then
+            if docker -H tcp://127.0.0.1:2375 info >/dev/null 2>&1; then
               echo "Docker is ready"
               break
             fi
             echo "Waiting for Docker... ($i)"
             sleep 2
           done
-          docker info
+          docker -H tcp://127.0.0.1:2375 info
 
       # --- Load Docker image ---
       - name: Download Docker image
@@ -131,9 +148,23 @@ jobs:
         run: |
           wslpath '${{ runner.temp }}/containerd-dev.tar.zst' | xargs zstd -d --stdout | docker load
 
+      # WSL's localhost forwarding is unreliable here, so fall back to addressing the VM directly.
       - name: Set DOCKER_HOST (Windows)
         if: matrix.platform == 'windows'
-        run: echo "DOCKER_HOST=tcp://localhost:2375" >> $env:GITHUB_ENV
+        run: |
+          $wslIp = (wsl.exe -d Ubuntu-22.04 hostname -I) -split '\s+' | Where-Object { $_ } | Select-Object -First 1
+          Write-Host "WSL IP: $wslIp"
+          foreach ($candidate in @("127.0.0.1", $wslIp)) {
+            try {
+              Invoke-RestMethod -Uri "http://${candidate}:2375/_ping" -TimeoutSec 5 | Out-Null
+              Write-Host "Daemon reachable at ${candidate}:2375"
+              "DOCKER_HOST=tcp://${candidate}:2375" >> $env:GITHUB_ENV
+              exit 0
+            } catch {
+              Write-Host "No daemon at ${candidate}:2375 - $($_.Exception.Message)"
+            }
+          }
+          throw "WSL Docker daemon unreachable from Windows"
 
       # --- Run tests ---
       # `--test-threads=1`: CI runners can't sustain several pipelines driving the shared
@@ -150,6 +181,14 @@ jobs:
         run: cargo nextest run -p serpentine --features _test_docker --profile integration_tests --fail-fast --test-threads=1
         env:
           RUST_LOG: serpentine=trace
+
+      - name: Dump WSL Docker state (Windows)
+        if: failure() && matrix.platform == 'windows'
+        run: |
+          Write-Host "DOCKER_HOST=$env:DOCKER_HOST"
+          wsl.exe -l -v
+          wsl.exe -d Ubuntu-22.04 -- sh -c "hostname -I; ss -ltnp | grep 2375; systemctl is-active docker"
+          curl.exe -sS -m 5 -o - "$($env:DOCKER_HOST -replace '^tcp','http')/_ping"
 
   lint:
     needs: [build-docker]
