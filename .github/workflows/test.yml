@@ -58,16 +58,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.140
 
-      # --- Protobuf (platform-specific) ---
-      - name: Install protobuf (Linux)
-        if: matrix.platform == 'linux'
-        run: sudo apt-get install -y protobuf-compiler
-      - name: Install protobuf (macOS)
-        if: matrix.platform == 'macos'
-        run: brew install protobuf@33
-      - name: Install protobuf (Windows)
-        if: matrix.platform == 'windows'
-        run: choco install protoc --version=34.1.0 -y
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       # --- Container runtime setup (platform-specific) ---
       - name: Setup Podman (Linux/Podman)
@@ -207,8 +201,10 @@ jobs:
           path: /tmp/serpentine_cache
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
-      - name: Install protobuf
-        run: sudo apt-get install -y protobuf-compiler
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: containerd-image
@@ -254,8 +250,10 @@ jobs:
           path: /tmp/serpentine_cache
           key: security_cache-${{ github.sha }}
           restore-keys: security_cache-
-      - name: Install protobuf
-        run: sudo apt-get install -y protobuf-compiler
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: containerd-image
