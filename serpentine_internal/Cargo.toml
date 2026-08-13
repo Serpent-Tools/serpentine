@@ -13,6 +13,8 @@ categories = ["rust-patterns"]
 tokio = { workspace = true, features = ["io-util", "fs"] }
 log.workspace = true
 typed-path.workspace = true
+serde.workspace = true
+postcard.workspace = true
 
 [dev-dependencies]
 bolero.workspace = true

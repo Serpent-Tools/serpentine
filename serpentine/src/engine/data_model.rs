@@ -3,9 +3,7 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-
-use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
+use crate::engine::cache::ContentHash;
 use crate::engine::filesystem::FileSystem;
 use crate::engine::nodes::NodeImpl;
 use crate::engine::{RuntimeContext, RuntimeError, containerd};
@@ -40,6 +38,19 @@ pub enum Data {
     FileSystem(FileSystem),
 }
 
+/// A version of `Data` that contains the data that can be cached.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum CacheableData {
+    /// `Int`
+    Int(i128),
+    /// `String`
+    String(Arc<str>),
+    /// `Container`
+    Container(containerd::ContainerState),
+    /// `Service`
+    Service(containerd::ServiceState),
+}
+
 impl Data {
     /// Return the type of this data.
     #[must_use]
@@ -53,9 +64,30 @@ impl Data {
         }
     }
 
+    /// Convert this data into a `CacheableData` if it is cacheable, otherwise return `None`.
+    #[must_use]
+    pub fn cachable(&self) -> Option<CacheableData> {
+        match self {
+            Data::Int(value) => Some(CacheableData::Int(*value)),
+            Data::String(string) => Some(CacheableData::String(Arc::clone(string))),
+            Data::Container(container) => Some(CacheableData::Container(container.clone())),
+            Data::Service(service) => Some(CacheableData::Service(service.clone())),
+            Data::FileSystem(_) => None,
+        }
+    }
+
+    /// Construct a `Data` from a `CacheableData`.
+    #[must_use]
+    pub fn from_cachable(chaceable_data: CacheableData) -> Self {
+        match chaceable_data {
+            CacheableData::Int(value) => Data::Int(value),
+            CacheableData::String(string) => Data::String(string),
+            CacheableData::Container(container) => Data::Container(container),
+            CacheableData::Service(service) => Data::Service(service),
+        }
+    }
+
     /// Check if this data is still valid
-    ///
-    /// Used by caching system to know if a docker state is delete externally for example.
     pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
         match self {
             Self::Container(state) => ctx.containerd.healthcheck(state).await,
@@ -65,88 +97,16 @@ impl Data {
     }
 }
 
-impl CacheData for Data {
-    async fn write(
-        &self,
-        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
-    ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Int(data) => {
-                writer.write_u8(0).await?;
-                writer.write_i128_le(*data).await?;
-            }
-            Self::String(data) => {
-                writer.write_u8(1).await?;
-                data.write(writer).await?;
-            }
-            Self::Container(data) => {
-                writer.write_u8(2).await?;
-                data.write(writer).await?;
-            }
-            Self::Service(data) => {
-                writer.write_u8(4).await?;
-                data.write(writer).await?;
-            }
-            Self::FileSystem(data) => {
-                writer.write_u8(3).await?;
-                data.write(writer).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn read(
-        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
-    ) -> Result<Self, RuntimeError> {
-        let kind = reader.read_u8().await?;
-        match kind {
-            0 => {
-                let data = reader.read_i128_le().await?;
-                Ok(Self::Int(data))
-            }
-            1 => {
-                let data = Arc::<str>::read(reader).await?;
-                Ok(Self::String(data))
-            }
-            2 => {
-                let data = containerd::ContainerState::read(reader).await?;
-                Ok(Self::Container(data))
-            }
-            3 => {
-                let data = FileSystem::read(reader).await?;
-                Ok(Self::FileSystem(data))
-            }
-            4 => {
-                let data = containerd::ServiceState::read(reader).await?;
-                Ok(Self::Service(data))
-            }
-            _ => Err(RuntimeError::internal("Unknown kind byte for Data")),
-        }
-    }
-
+impl ContentHash for Data {
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+        hasher.update(&[self.type_() as u8]);
+
         match self {
-            Self::Int(data) => {
-                hasher.update(&[0]);
-                hasher.update(&data.to_le_bytes());
-            }
-            Self::String(data) => {
-                hasher.update(&[1]);
-                data.content_hash(hasher).await?;
-            }
-            Self::Container(data) => {
-                hasher.update(&[2]);
-                data.content_hash(hasher).await?;
-            }
-            Self::Service(data) => {
-                hasher.update(&[4]);
-                data.content_hash(hasher).await?;
-            }
-            Self::FileSystem(data) => {
-                hasher.update(&[3]);
-                data.content_hash(hasher).await?;
-            }
+            Data::Int(value) => value.content_hash(hasher).await?,
+            Data::String(string) => string.content_hash(hasher).await?,
+            Data::Container(state) => state.content_hash(hasher).await?,
+            Data::Service(state) => state.content_hash(hasher).await?,
+            Data::FileSystem(fs) => fs.content_hash(hasher).await?,
         }
 
         Ok(())
@@ -155,6 +115,7 @@ impl CacheData for Data {
 
 /// A companion enum to `Data` denoting the variant/type
 #[derive(PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
 pub enum DataType {
     /// A integer
     Int,
@@ -178,6 +139,15 @@ impl DataType {
             Self::Container => "container",
             Self::Service => "service",
             Self::FileSystem => "file/folder",
+        }
+    }
+
+    /// Is this data type cacheable? (i.e. can it be stored in the cache)
+    #[must_use]
+    pub fn is_cacheable(self) -> bool {
+        match self {
+            Self::Int | Self::String | Self::Container | Self::Service => true,
+            Self::FileSystem => false,
         }
     }
 }
@@ -316,3 +286,15 @@ pub type NodeInstanceId = StoreId<Spanned<Node>>;
 
 /// Contains the graph
 pub type Graph = Store<Spanned<Node>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cachable_checks_agree() {
+        bolero::check!().with_type().for_each(|data: &Data| {
+            assert_eq!(data.cachable().is_some(), data.type_().is_cacheable());
+        });
+    }
+}

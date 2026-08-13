@@ -10,13 +10,13 @@ mod scheduler;
 mod sidecar_client;
 mod userdb;
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use miette::Diagnostic;
 use thiserror::Error;
 
+use crate::engine::cache::CacheBackend;
 use crate::events::{Lifecycle, Reporter};
 use crate::snek::CompileResult;
 
@@ -137,6 +137,11 @@ pub enum RuntimeError {
         msg: &'static str,
     },
 
+    /// Failed to serialize/deserialize data
+    #[error("Failed to serialize/deserialize data: {0}")]
+    #[diagnostic(code(serialization_error))]
+    SerializationError(#[from] postcard::Error),
+
     /// Unhandled internal error.
     #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
     #[diagnostic(code(internal_error))]
@@ -155,6 +160,12 @@ impl RuntimeError {
 impl From<containerd_client::tonic::Status> for RuntimeError {
     fn from(value: containerd_client::tonic::Status) -> Self {
         RuntimeError::ContainerdError(Box::new(value))
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for RuntimeError {
+    fn from(value: std::sync::PoisonError<T>) -> Self {
+        RuntimeError::internal(format!("Poisoned lock: {value}"))
     }
 }
 
@@ -233,75 +244,39 @@ pub struct RuntimeContext {
     /// The channel run events are reported through
     reporter: Reporter,
     /// Caching of values
-    cache: tokio::sync::Mutex<cache::Cache>,
-}
-
-/// Attempt to load the cache from the settings in the cli
-async fn load_cache_from_cli(
-    cli: &crate::Run,
-    external: &impl cache::ExternalCache,
-) -> Result<cache::Cache, RuntimeError> {
-    let mut cache_file = tokio::io::BufReader::new(tokio::fs::File::open(cli.get_cache()).await?);
-    cache::Cache::load_cache(&mut cache_file, external).await
+    cache: cache::Cache,
 }
 
 impl RuntimeContext {
     /// Create a new runtime context
-    async fn new(reporter: Reporter, cli: &crate::Run) -> Result<Self, RuntimeError> {
+    async fn new(
+        reporter: Reporter,
+        cli: &crate::Run,
+        cache_backend: Box<dyn CacheBackend + Send + Sync>,
+    ) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
 
         let containerd = containerd::Client::new(reporter.clone(), cli.jobs).await?;
-        let cache = match load_cache_from_cli(cli, &containerd).await {
-            Ok(cache) => {
-                log::info!("Cache loaded, deleting cache file");
-                reporter.lifecycle(Lifecycle::CacheLoaded {
-                    entries: cache.entry_count(),
-                });
-                let _ = tokio::fs::remove_file(cli.get_cache()).await;
-                cache
-            }
-            Err(error) => {
-                log::error!("{error}");
-                log::warn!("Error loading cache from disk, creating empty cache");
-                cache::Cache::new()
-            }
-        };
+        let cache = cache::Cache::new(cache_backend).await?;
 
         Ok(Self {
             containerd,
             reporter,
-            cache: tokio::sync::Mutex::new(cache),
+            cache,
         })
     }
 
     /// Shutdown the runtime context, cleaning up any resources
-    async fn shutdown(self, cli: &crate::Run) {
+    async fn shutdown(self) {
         log::debug!("Shutting down runtime context");
 
         let Self {
             containerd, cache, ..
         } = self;
-        let _ = tokio::fs::create_dir_all(cli.get_cache().parent().unwrap_or(Path::new(""))).await;
-        match tokio::fs::File::create(cli.get_cache()).await {
-            Ok(cache_file) => {
-                let res = cache
-                    .into_inner()
-                    .save_cache(
-                        &mut tokio::io::BufWriter::new(cache_file),
-                        &containerd,
-                        !cli.clean_old,
-                        cli.standalone_cache,
-                    )
-                    .await;
-                if let Err(err) = res {
-                    log::error!("Failed to write cache file: {err}");
-                }
-            }
-            Err(err) => {
-                log::error!("Failed to create cache file {err}");
-            }
-        }
 
+        if let Err(err) = cache.save().await {
+            log::warn!("Failed to save cache: {err}");
+        }
         containerd.shutdown().await;
     }
 }
@@ -329,7 +304,9 @@ pub fn run(
 
     runtime
         .block_on(async {
-            let context = Arc::new(RuntimeContext::new(reporter, cli).await?);
+            let backend = cache::LocalCacheBackend::new(cli.get_cache().into_owned()).await?;
+
+            let context = Arc::new(RuntimeContext::new(reporter, cli, Box::new(backend)).await?);
             let scheduler = Arc::new(scheduler::Scheduler::new(
                 compile_result.nodes,
                 compile_result.graph,
@@ -365,7 +342,7 @@ pub fn run(
             .await;
 
             match reclaimed {
-                Ok(runtime_context) => runtime_context.shutdown(cli).await,
+                Ok(runtime_context) => runtime_context.shutdown().await,
                 Err(_) => {
                     log::warn!("Tasks still in flight after timeout, skipping clean shutdown");
                 }
@@ -399,6 +376,7 @@ mod benchmarks {
             entry_point: "DEFAULT".into(),
             jobs: 2,
         };
+
         super::run(graph, crate::events::Reporter::none(), &cli).unwrap();
     }
 
@@ -409,7 +387,7 @@ mod benchmarks {
             .join("../test_cases")
             .join(snek);
         bencher
-            .with_inputs(|| tempfile::NamedTempFile::new().unwrap())
+            .with_inputs(|| tempfile::TempDir::new().unwrap())
             .bench_values(|cache| run_pipeline(&path, cache.path(), false));
     }
 
@@ -419,7 +397,7 @@ mod benchmarks {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../test_cases")
             .join(snek);
-        let cache = tempfile::NamedTempFile::new().unwrap();
+        let cache = tempfile::TempDir::new().unwrap();
         run_pipeline(&path, cache.path(), false);
 
         bencher.bench(|| run_pipeline(&path, cache.path(), false));
@@ -431,42 +409,9 @@ mod benchmarks {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../test_cases")
             .join(snek);
-        let cache = tempfile::NamedTempFile::new().unwrap();
+        let cache = tempfile::TempDir::new().unwrap();
         run_pipeline(&path, cache.path(), true);
 
         bencher.bench(|| run_pipeline(&path, cache.path(), true));
     }
-}
-
-/// Clear out the given cache file
-pub fn clear_cache(file_path: &Path) -> Result<(), RuntimeError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| RuntimeError::internal("Failed to start tokio"))?
-        .block_on(async move {
-            let cache_file_read = tokio::fs::File::open(file_path).await?;
-
-            let docker = containerd::Client::new(Reporter::none(), 1).await?;
-            let cache =
-                cache::Cache::load_cache(&mut tokio::io::BufReader::new(cache_file_read), &docker)
-                    .await?;
-
-            // When `keep_old_cache` is set to false `save_cache` will clean out the data not used
-            // this run, which is everything.
-            let cache_file_write = tokio::fs::File::create(file_path).await?;
-            cache
-                .save_cache(
-                    &mut tokio::io::BufWriter::new(cache_file_write),
-                    &docker,
-                    false,
-                    false,
-                )
-                .await?;
-            tokio::fs::remove_file(file_path).await?;
-
-            Ok::<_, RuntimeError>(())
-        })?;
-
-    Ok(())
 }

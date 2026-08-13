@@ -214,10 +214,6 @@ impl UiState {
                 label: "engine ready".into(),
                 value: format!("{runtime} · {image_tag}").into(),
             }),
-            Lifecycle::CacheLoaded { entries } => self.milestones.push(Milestone {
-                label: "cache loaded".into(),
-                value: format!("{entries} entries").into(),
-            }),
             Lifecycle::ShuttingDown => self.shutting_down = true,
             // Stop is intercepted in the event loop before update() is called; never reaches here.
             Lifecycle::Stop => {}

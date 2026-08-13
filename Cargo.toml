@@ -12,6 +12,9 @@ bolero = { version = "0.13.4", default-features = false, features = ["std", "all
 typed-path = { version = "0.12.3", default-features = false }
 nix = { version = "0.31.3", default-features = false }
 
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"]}
+
 [profile.release]
 opt-level = 3
 codegen-units = 1

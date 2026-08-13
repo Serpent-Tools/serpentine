@@ -2,12 +2,12 @@
 
 use std::net::SocketAddr;
 
-use serpentine_internal::WireFormat;
 use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
-use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, RequestKind};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter};
+use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, Request};
+use serpentine_internal::{TypedPathSerdeWrapper, read_postcard_frame, write_postcard_frame};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net;
-use typed_path::UnixPath;
+use typed_path::{UnixPath, UnixPathBuf};
 
 use crate::engine::RuntimeError;
 
@@ -22,31 +22,31 @@ impl Client {
     }
 
     /// Connect to serpentine and send the needed magic bytes
-    async fn connect(&self, kind: RequestKind) -> Result<BufWriter<net::TcpStream>, RuntimeError> {
-        let socket = net::TcpStream::connect(self.0).await?;
-        let mut socket = BufWriter::new(socket);
+    async fn connect(&self, request: Request) -> Result<net::TcpStream, RuntimeError> {
+        let mut socket = net::TcpStream::connect(self.0).await?;
         socket.write_all(MAGIC_NUMBER.as_bytes()).await?;
-        socket.write_u8(kind as u8).await?;
-        socket.flush().await?;
+        write_postcard_frame(&request, &mut socket).await?;
+
         Ok(socket)
     }
 
     /// Connect to the sidecar and setup a containerd proxy.
     pub async fn containerd(&self) -> Result<net::TcpStream, RuntimeError> {
-        let socket = self.connect(RequestKind::Proxy).await?;
-        Ok(socket.into_inner())
+        let socket = self.connect(Request::Proxy).await?;
+        Ok(socket)
     }
 
     /// Connected to the sidecar and request it create a fifo pipe, returns its (in container) path and a reader of the contents.
     pub async fn fifo_pipe(
         &self,
-    ) -> Result<(Box<str>, impl AsyncRead + Unpin + Send + 'static), RuntimeError> {
+    ) -> Result<(UnixPathBuf, impl AsyncRead + Unpin + Send + 'static), RuntimeError> {
         log::debug!("Creating fifo pipe");
-        let mut socket = self.connect(RequestKind::CreateFifo).await?;
+        let mut socket = self.connect(Request::CreateFifo).await?;
 
-        let path = serpentine_internal::read_length_prefixed_string(&mut socket).await?;
+        let path: TypedPathSerdeWrapper<typed_path::UnixEncoding> =
+            read_postcard_frame(&mut socket).await?;
 
-        Ok((path.into(), socket))
+        Ok((path.0, socket))
     }
 
     /// Create a network namespace and return its (container) path
@@ -55,19 +55,15 @@ impl Client {
         topology: AbstractTopology,
     ) -> Result<ConcreteTopology, RuntimeError> {
         log::debug!("Creating network topology");
-        let mut socket = self.connect(RequestKind::CreateNetwork).await?;
-        topology.write(&mut socket).await?;
-        socket.flush().await?;
+        let mut socket = self.connect(Request::CreateNetwork(topology)).await?;
 
-        let concrete_topology = ConcreteTopology::read(&mut socket).await?;
-        Ok(concrete_topology)
+        let network = read_postcard_frame(&mut socket).await?;
+        Ok(network)
     }
 
     /// Delete a network namespace
     pub async fn delete_network(&self, network: ConcreteTopology) -> Result<(), RuntimeError> {
-        let mut socket = self.connect(RequestKind::DeleteNetwork).await?;
-        network.write(&mut socket).await?;
-        socket.flush().await?;
+        self.connect(Request::DeleteNetwork(network)).await?;
 
         Ok(())
     }
@@ -75,34 +71,21 @@ impl Client {
     /// Export a file/folder from the given mounts in the sidecar container
     pub async fn export_files(
         &self,
-        mounts: Vec<containerd_client::types::Mount>,
-        path: &UnixPath,
+        mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
+        path: UnixPathBuf,
     ) -> Result<impl AsyncRead + Unpin + Send, RuntimeError> {
-        let mut socket = self.connect(RequestKind::ExportFiles).await?;
+        let mounts = mounts
+            .into_iter()
+            .map(containerd_to_sidecar_mount)
+            .collect();
 
-        serpentine_internal::write_u64_variable_length(&mut socket, mounts.len() as u64).await?;
-        for mount in mounts {
-            let mount = Mount {
-                type_: mount.r#type.into(),
-                source: UnixPath::new(&mount.source).to_path_buf(),
-                target: UnixPath::new(&mount.target).to_path_buf(),
-                options: mount.options.into_iter().map(Into::into).collect(),
-            };
-            mount.write(&mut socket).await?;
-        }
-
-        serpentine_internal::write_length_prefixed(&mut socket, path.as_bytes()).await?;
-        socket.flush().await?;
+        let mut socket = self.connect(Request::ExportFiles { mounts, path }).await?;
 
         let status = socket.read_u8().await?;
         if status != 0 {
-            let os_error = socket.read_u8().await?;
-            let message = serpentine_internal::read_length_prefixed_string(&mut socket).await?;
-            let error = if os_error != 0 {
-                std::io::Error::from_raw_os_error(i32::from(os_error))
-            } else {
-                std::io::Error::other(message)
-            };
+            let message: String = read_postcard_frame(&mut socket).await?;
+
+            let error = std::io::Error::other(message);
             return Err(RuntimeError::IoError(error));
         }
 
@@ -110,30 +93,30 @@ impl Client {
     }
 
     /// Import a file/folder from the given mounts in the sidecar container
+    ///
+    /// Returns a writer to write the filesystem stream to, which will be copied into the sidecar container.
     pub async fn import_files(
         &self,
-        mounts: Vec<containerd_client::types::Mount>,
-        path: &UnixPath,
-        fs_reader: &mut (impl AsyncRead + Send + Unpin),
-    ) -> Result<(), RuntimeError> {
-        let mut socket = self.connect(RequestKind::ImportFiles).await?;
+        mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
+        path: UnixPathBuf,
+    ) -> Result<impl AsyncWrite + Unpin + Send, RuntimeError> {
+        let mounts = mounts
+            .into_iter()
+            .map(containerd_to_sidecar_mount)
+            .collect();
 
-        serpentine_internal::write_u64_variable_length(&mut socket, mounts.len() as u64).await?;
-        for mount in mounts {
-            let mount = Mount {
-                type_: mount.r#type.into(),
-                source: UnixPath::new(&mount.source).to_path_buf(),
-                target: UnixPath::new(&mount.target).to_path_buf(),
-                options: mount.options.into_iter().map(Into::into).collect(),
-            };
-            mount.write(&mut socket).await?;
-        }
+        let socket = self.connect(Request::ImportFiles { mounts, path }).await?;
 
-        serpentine_internal::write_length_prefixed(&mut socket, path.as_bytes()).await?;
+        Ok(socket)
+    }
+}
 
-        crate::engine::filesystem::copy_filesystem_stream(fs_reader, &mut socket).await?;
-        socket.flush().await?;
-
-        Ok(())
+/// Convert the countainer mount type to the mount type of the sidecar protocol
+fn containerd_to_sidecar_mount(mount: containerd_client::types::Mount) -> Mount {
+    Mount {
+        type_: mount.r#type.into(),
+        source: UnixPath::new(&mount.source).to_path_buf(),
+        target: UnixPath::new(&mount.target).to_path_buf(),
+        options: mount.options.into_iter().map(Into::into).collect(),
     }
 }

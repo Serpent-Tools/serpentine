@@ -9,13 +9,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use serpentine_internal::{FileSystemEntryHeader, WireFormat};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, DuplexStream, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, DuplexStream, ReadBuf};
 use tokio::sync::OnceCell;
 use typed_path::{PlatformPath, PlatformPathBuf};
 
 use crate::engine::RuntimeError;
-use crate::engine::cache::{CacheData, CacheReader, CacheWriter};
+use crate::engine::cache::ContentHash;
 
 /// Type alias for a boxed async reader.
 pub type Reader<'this> = Box<dyn AsyncRead + Send + Unpin + 'this>;
@@ -105,62 +104,14 @@ impl std::fmt::Debug for FileSystem {
     }
 }
 
-/// An in-memory file system stream.
-///
-/// Should be avoided when possible, used when a filesystem is restored from cache.
-#[derive(Clone)]
-struct InMemoryFile(Arc<[u8]>);
-
-impl FileSystemProvider for InMemoryFile {
-    fn get_reader<'this>(
-        &'this self,
-    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>> {
-        let reader: Reader<'this> = Box::new(self.0.as_ref());
-        Box::pin(std::future::ready(Ok(reader)))
-    }
-    fn hash_data<'this>(
-        &'this self,
-        hasher: &'this mut blake3::Hasher,
-    ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'this>> {
-        hasher.update(&self.0);
-        Box::pin(std::future::ready(Ok(())))
-    }
-
-    fn dyn_clone(&self) -> Box<dyn FileSystemProvider> {
-        Box::new(self.clone())
-    }
-}
-
-impl CacheData for FileSystem {
-    async fn write(
-        &self,
-        writer: &mut CacheWriter<impl AsyncWrite + Unpin + Send>,
-    ) -> Result<(), RuntimeError> {
-        log::warn!("Storing filesystem in cache, this is often overkill.");
-
-        let mut reader = self.provider.get_reader().await?;
-        tokio::io::copy(&mut reader, &mut **writer).await?;
-
-        Ok(())
-    }
-
-    async fn read(
-        reader: &mut CacheReader<impl AsyncRead + Unpin + Send>,
-    ) -> Result<Self, RuntimeError> {
-        let mut data = Vec::new();
-
-        copy_filesystem_stream(&mut **reader, &mut data).await?;
-
-        Ok(InMemoryFile(data.into()).into())
-    }
-
+impl ContentHash for FileSystem {
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
         let hash = self
             .hash
-            .get_or_try_init::<RuntimeError, _, _>(async || {
-                let mut filesystem_hasher = blake3::Hasher::new();
-                self.provider.hash_data(&mut filesystem_hasher).await?;
-                Ok(filesystem_hasher.finalize())
+            .get_or_try_init(|| async move {
+                let mut inner_hasher = blake3::Hasher::new();
+                self.provider.hash_data(&mut inner_hasher).await?;
+                Ok::<_, RuntimeError>(inner_hasher.finalize())
             })
             .await?;
 
@@ -169,35 +120,34 @@ impl CacheData for FileSystem {
     }
 }
 
-/// Copy the following file system stream from reader to writer.
-/// Leaving the data after the filesystem in the reader.
-pub async fn copy_filesystem_stream(
-    reader: &mut (impl AsyncRead + Unpin + Send),
-    writer: &mut (impl AsyncWrite + Unpin + Send),
-) -> Result<(), RuntimeError> {
-    let mut folder_stack = vec![1_u64];
-    while let Some(current_folder) = folder_stack.last_mut() {
-        if *current_folder == 0 {
-            folder_stack.pop();
-        } else {
-            *current_folder = current_folder.saturating_sub(1);
-
-            let header = FileSystemEntryHeader::read(reader).await?;
-            match header {
-                FileSystemEntryHeader::File { length, .. } => {
-                    header.write(writer).await?;
-                    tokio::io::copy(&mut reader.take(length), writer).await?;
-                }
-                FileSystemEntryHeader::Folder { entries, .. } => {
-                    header.write(writer).await?;
-                    folder_stack.push(entries);
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
+// /// Copy the following file system stream from reader to writer.
+// /// Leaving the data after the filesystem in the reader.
+// pub async fn copy_filesystem_stream(
+//     reader: &mut (impl AsyncRead + Unpin + Send),
+//     writer: &mut (impl AsyncWrite + Unpin + Send),
+// ) -> Result<(), RuntimeError> {
+//     let mut folder_stack = vec![1_u64];
+//     while let Some(current_folder) = folder_stack.last_mut() {
+//         if *current_folder == 0 {
+//             folder_stack.pop();
+//         } else {
+//             *current_folder = current_folder.saturating_sub(1);
+//
+//             let header = serpentine_internal::read_postcard_frame(reader).await?;
+//             serpentine_internal::write_postcard_frame(&header, writer).await?;
+//             match header {
+//                 FileSystemEntryHeader::File { length, .. } => {
+//                     tokio::io::copy(&mut reader.take(length), writer).await?;
+//                 }
+//                 FileSystemEntryHeader::Folder { entries, .. } => {
+//                     folder_stack.push(entries);
+//                 }
+//             }
+//         }
+//     }
+//
+//     Ok(())
+// }
 
 /// The size of the in-process pipe buffer bridging a producer to its reader.
 const PIPE_BUFFER: usize = 64 * 1024;
@@ -276,7 +226,9 @@ impl FileSystemProvider for LocalFiles {
         &'this self,
     ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>> {
         Box::pin(async move {
-            let ignore = discover_gitignore(&serpentine_internal::platform_to_std(&self.0)?);
+            let ignore = discover_gitignore(
+                serpentine_internal::platform_to_std(&self.0).map_err(io::Error::other)?,
+            );
 
             let reader: Reader<'_> = Box::new(InlineReader::new(move |mut writer| async move {
                 serpentine_internal::read_disk_to_filesystem_stream(
@@ -332,9 +284,34 @@ fn discover_gitignore(within_dir: &Path) -> Option<Gitignore> {
 #[expect(clippy::expect_used, reason = "tests")]
 mod fuzz {
     use futures_util::FutureExt as _;
+    use serpentine_internal::FileSystemEntryHeader;
     use tokio::io::AsyncWriteExt as _;
 
     use super::*;
+
+    #[derive(Clone)]
+    struct InMemoryFile(Arc<[u8]>);
+
+    impl FileSystemProvider for InMemoryFile {
+        fn get_reader<'this>(
+            &'this self,
+        ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>>
+        {
+            let reader: Reader<'this> = Box::new(self.0.as_ref());
+            Box::pin(std::future::ready(Ok(reader)))
+        }
+        fn hash_data<'this>(
+            &'this self,
+            hasher: &'this mut blake3::Hasher,
+        ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'this>> {
+            hasher.update(&self.0);
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn dyn_clone(&self) -> Box<dyn FileSystemProvider> {
+            Box::new(self.clone())
+        }
+    }
 
     /// A file tree, encodable into the filesystem stream format.
     #[derive(Debug, bolero::TypeGenerator)]
@@ -350,21 +327,21 @@ mod fuzz {
         async fn write(&self, name: &str, out: &mut std::io::Cursor<Vec<u8>>) -> io::Result<()> {
             match self {
                 Self::File(contents) => {
-                    FileSystemEntryHeader::File {
+                    let header = FileSystemEntryHeader::File {
                         name: name.as_bytes().into(),
                         length: contents.len() as u64,
-                    }
-                    .write(out)
-                    .await?;
-                    out.write_all(contents).await
+                    };
+                    out.write_all(contents).await?;
+                    serpentine_internal::write_postcard_frame(&header, out).await?;
+
+                    Ok(())
                 }
                 Self::Folder(children) => {
-                    FileSystemEntryHeader::Folder {
+                    let header = FileSystemEntryHeader::Folder {
                         name: name.as_bytes().into(),
                         entries: children.len() as u64,
-                    }
-                    .write(out)
-                    .await?;
+                    };
+                    serpentine_internal::write_postcard_frame(&header, out).await?;
                     for (child_name, child) in children {
                         Box::pin(child.write(child_name, out)).await?;
                     }

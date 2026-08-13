@@ -2,18 +2,9 @@
 //! `serpentine/src/engine/sidecar_client.rs` for the server and client sides, this module exists to
 //! share certain values.
 
-use std::io::{Error, Result};
-
-use tokio::io::{AsyncRead, AsyncWrite};
 use typed_path::UnixPathBuf;
 
-use super::{
-    WireFormat,
-    read_length_prefixed_string,
-    read_u64_length_encoded,
-    write_length_prefixed,
-    write_u64_variable_length,
-};
+use crate::network::{AbstractTopology, ConcreteTopology};
 
 /// Magic number to protect sidecar from garbage data as well as XSRF attacks.
 pub const MAGIC_NUMBER: &str = "danger noodle";
@@ -22,106 +13,47 @@ pub const MAGIC_NUMBER: &str = "danger noodle";
 pub const PORT: u16 = 8000;
 
 /// The kind of events the sidecar supports.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[repr(u8)]
-pub enum RequestKind {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum Request {
     /// Proxy the containerd socket
     Proxy,
     /// Create a fifo pipe
     CreateFifo,
     /// Create a network topology
-    CreateNetwork,
+    CreateNetwork(AbstractTopology),
     /// Delete a network topology
-    DeleteNetwork,
+    DeleteNetwork(ConcreteTopology),
     /// Export files from a mount.
-    ExportFiles,
+    ExportFiles {
+        /// The mount stack to export file from.
+        mounts: Box<[Mount]>,
+        /// The path relative to the mount stack to export.
+        #[serde(with = "crate::TypedPathBufRemote")]
+        path: UnixPathBuf,
+    },
     /// Import files to a mount.
-    ImportFiles,
-}
-
-impl TryFrom<u8> for RequestKind {
-    type Error = ();
-
-    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Proxy),
-            1 => Ok(Self::CreateFifo),
-            2 => Ok(Self::CreateNetwork),
-            3 => Ok(Self::DeleteNetwork),
-            4 => Ok(Self::ExportFiles),
-            5 => Ok(Self::ImportFiles),
-            _ => Err(()),
-        }
-    }
+    ///
+    /// Stream filesystem afterwards.
+    ImportFiles {
+        /// The mount stack to import file to.
+        mounts: Box<[Mount]>,
+        /// The path relative to the mount stack to import to.
+        #[serde(with = "crate::TypedPathBufRemote")]
+        path: UnixPathBuf,
+    },
 }
 
 /// Mounts options for mounting a snapshot in the sidecar manually.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Mount {
     /// The kind of mount
     pub type_: Box<str>,
     /// The source to mount from
+    #[serde(with = "crate::TypedPathBufRemote")]
     pub source: UnixPathBuf,
     /// The target to mount to
+    #[serde(with = "crate::TypedPathBufRemote")]
     pub target: UnixPathBuf,
     /// The options for the mount
     pub options: Box<[Box<str>]>,
-}
-
-impl WireFormat for Mount {
-    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        write_length_prefixed(writer, self.type_.as_bytes()).await?;
-        self.source.write(writer).await?;
-        self.target.write(writer).await?;
-
-        write_u64_variable_length(writer, self.options.len() as u64).await?;
-        for option in self.options {
-            write_length_prefixed(writer, option.as_bytes()).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let type_ = read_length_prefixed_string(reader).await?.into_boxed_str();
-        let source = UnixPathBuf::read(reader).await?;
-        let target = UnixPathBuf::read(reader).await?;
-
-        let length = read_u64_length_encoded(reader)
-            .await?
-            .try_into()
-            .map_err(Error::other)?;
-        let mut options = Vec::with_capacity(length);
-        for _ in 0..length {
-            let option: Box<str> = read_length_prefixed_string(reader).await?.into();
-            options.push(option);
-        }
-
-        Ok(Self {
-            type_,
-            source,
-            target,
-            options: options.into_boxed_slice(),
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn request_kind_round_trip() {
-        bolero::check!().with_type().cloned().for_each(|byte: u8| {
-            if let Ok(kind) = RequestKind::try_from(byte) {
-                assert_eq!(kind as u8, byte, "failed for {byte}");
-            }
-        });
-    }
-
-    #[test]
-    fn request_kind_invalid_value() {
-        let parsed_kind = RequestKind::try_from(255);
-
-        assert_eq!(parsed_kind, Err(()));
-    }
 }
