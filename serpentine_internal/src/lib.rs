@@ -1,13 +1,47 @@
 //! Internal crate for serpentine, Nothing in this crate follows semantic versioning.
 
-use std::io::{Error, Result};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::marker::PhantomData;
+use std::path::Path;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use typed_path::{PlatformPath, UnixPath, UnixPathBuf};
+use typed_path::PlatformPath;
 
 pub mod network;
 pub mod sidecar;
+
+/// Write a postcard serialized frame to the given writer, prefixed with the length of the frame in bytes.
+///
+/// # Errors
+/// If the `writer` returns a error or the serialization fails.
+pub async fn write_postcard_frame<T: serde::Serialize>(
+    value: &T,
+    writer: &mut (impl AsyncWrite + Unpin + Send),
+) -> io::Result<()> {
+    let buffer = postcard::to_stdvec(value).map_err(io::Error::other)?;
+    let length = buffer.len() as u64;
+
+    writer.write_u64_le(length).await?;
+    writer.write_all(&buffer).await?;
+
+    Ok(())
+}
+
+/// Read a postcard serialized frame from the given reader, that has been prefixed with the length of the frame in bytes.
+///
+/// # Errors
+/// If the `reader` returns a error or the deserialization fails.
+pub async fn read_postcard_frame<T: serde::de::DeserializeOwned>(
+    reader: &mut (impl AsyncRead + Unpin + Send),
+) -> io::Result<T> {
+    let length = reader.read_u64_le().await?;
+
+    let mut buffer = vec![0u8; length.try_into().unwrap_or(usize::MAX)];
+    reader.read_exact(&mut buffer).await?;
+
+    let value = postcard::from_bytes(&buffer).map_err(io::Error::other)?;
+    Ok(value)
+}
 
 /// Convert a platform typed path into a [`std::path::PathBuf`] for real filesystem access.
 ///
@@ -21,146 +55,52 @@ pub mod sidecar;
 /// # Errors
 /// On non-unix platforms, if the path bytes are not valid UTF-8 we cannot represent them losslessly,
 /// so this errors rather than silently transcoding.
-pub fn platform_to_std(path: &PlatformPath) -> Result<PathBuf> {
+pub fn platform_to_std(path: &PlatformPath) -> Result<&Path, std::str::Utf8Error> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
 
-        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path.as_bytes())))
+        Ok(Path::new(std::ffi::OsStr::from_bytes(path.as_bytes())))
     }
+
     #[cfg(not(unix))]
     {
         let path = std::str::from_utf8(path.as_bytes()).map_err(Error::other)?;
-        Ok(PathBuf::from(path))
+        Ok(Path::new(path))
     }
 }
 
-impl WireFormat for UnixPathBuf {
-    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        write_length_prefixed(writer, self.as_bytes()).await
-    }
-
-    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        Ok(UnixPath::new(&read_length_prefixed(reader).await?).to_path_buf())
-    }
+/// Convert a `typed_path::PathBuf` into a `Vec<u8>` as serde wants a single function and the normal
+/// getter returns a slice.
+fn path_to_vec<T: typed_path::Encoding>(path: &typed_path::PathBuf<T>) -> Vec<u8> {
+    path.as_bytes().to_vec()
 }
 
-/// Trait for types that can be serialized to/from an async byte stream.
-#[expect(
-    async_fn_in_trait,
-    reason = "internal crate, auto trait bounds not needed"
-)]
-pub trait WireFormat: Sized {
-    /// Write this value to the writer.
-    ///
-    /// # Errors
-    /// If the underlying writer errors.
-    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()>;
-
-    /// Read a value from the reader.
-    ///
-    /// # Errors
-    /// If the underlying reader errors or data is corrupted.
-    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self>;
-}
-
-impl WireFormat for () {
-    fn write(
-        self,
-        _writer: &mut (impl AsyncWrite + Unpin + Send),
-    ) -> impl Future<Output = Result<()>> {
-        std::future::ready(Ok(()))
-    }
-
-    fn read(_reader: &mut (impl AsyncRead + Unpin + Send)) -> impl Future<Output = Result<Self>> {
-        std::future::ready(Ok(()))
-    }
-}
-
-/// Write a `u64` using variable-length encoding
+/// Remote type for `typed_path` has it doesnt implement `serde::Serialize` or `serde::Deserialize` itself.
 ///
-/// # Errors
-/// If writing the value causes IO error
-pub async fn write_u64_variable_length(
-    writer: &mut (impl AsyncWrite + Unpin),
-    mut value: u64,
-) -> Result<()> {
-    loop {
-        let mut byte = (value & 0b0111_1111) as u8;
-        value >>= 7;
-        if value != 0 {
-            byte |= 0b1000_0000;
-        }
-        writer.write_u8(byte).await?;
+/// Used as `#[serde(with = "crate::TypedPathBufRemote")]`
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(remote = "typed_path::PathBuf")]
+pub struct TypedPathBufRemote<T: typed_path::Encoding> {
+    /// The encoding used.
+    #[serde(skip)]
+    _encoding: PhantomData<T>,
+    /// The actual bytes
+    #[serde(getter = "path_to_vec")]
+    inner: Vec<u8>,
+}
 
-        if value == 0 {
-            break;
-        }
+impl<T: typed_path::Encoding> From<TypedPathBufRemote<T>> for typed_path::PathBuf<T> {
+    fn from(remote: TypedPathBufRemote<T>) -> Self {
+        typed_path::PathBuf::from(remote.inner)
     }
-
-    Ok(())
 }
 
-/// Read a variable-length encoded u64
-///
-/// # Errors
-/// If reading the value causes IO error
-pub async fn read_u64_length_encoded(reader: &mut (impl AsyncRead + Unpin)) -> Result<u64> {
-    let mut value: u64 = 0;
-    let mut shift_amount: u8 = 0;
-
-    loop {
-        let byte = reader.read_u8().await?;
-        value |= (u64::from(byte) & 0b0111_1111) << shift_amount;
-        shift_amount = shift_amount.saturating_add(7);
-
-        if byte & 0b1000_0000 == 0 {
-            break;
-        }
-    }
-
-    Ok(value)
-}
-
-/// Write a length-prefixed `Vec<u8>`
-///
-/// # Errors
-/// If writing the value causes IO error
-pub async fn write_length_prefixed(
-    writer: &mut (impl AsyncWrite + Unpin),
-    values: impl AsRef<[u8]>,
-) -> Result<()> {
-    let values = values.as_ref();
-    write_u64_variable_length(writer, values.len() as u64).await?;
-    writer.write_all(values).await?;
-
-    Ok(())
-}
-
-/// Read a length-prefixed `Vec<u8>`.
-///
-/// # Errors
-/// If reading the value causes IO error.
-pub async fn read_length_prefixed(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> {
-    let length = read_u64_length_encoded(reader)
-        .await?
-        .try_into()
-        .map_err(Error::other)?;
-    let mut result = vec![0; length];
-    reader.read_exact(&mut result).await?;
-
-    Ok(result)
-}
-
-/// Read a length-prefixed `String`.
-///
-/// # Errors
-/// If reading the value causes IO error.
-/// Or if the data read isnt utf8.
-pub async fn read_length_prefixed_string(reader: &mut (impl AsyncRead + Unpin)) -> Result<String> {
-    let bytes = read_length_prefixed(reader).await?;
-    String::from_utf8(bytes).map_err(Error::other)
-}
+/// A newtype around a `TypedPath` to allow serlizing/deserializing it directly when its not part of another type.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TypedPathSerdeWrapper<T: typed_path::Encoding>(
+    #[serde(with = "TypedPathBufRemote::<T>")] pub typed_path::PathBuf<T>,
+);
 
 /// Header for each entry in a file system stream.
 ///
@@ -175,6 +115,7 @@ pub async fn read_length_prefixed_string(reader: &mut (impl AsyncRead + Unpin)) 
 /// * <b data ...>
 /// * File(name="c") -> /foo/c
 /// * <c data ...>
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum FileSystemEntryHeader {
     /// A file
     File {
@@ -190,39 +131,6 @@ pub enum FileSystemEntryHeader {
         /// The number of other entries in this folder (direct children only)
         entries: u64,
     },
-}
-
-impl WireFormat for FileSystemEntryHeader {
-    async fn write(self, writer: &mut (impl AsyncWrite + Unpin + Send)) -> Result<()> {
-        match self {
-            Self::File { name, length } => {
-                writer.write_u8(0).await?;
-                write_length_prefixed(writer, name).await?;
-                write_u64_variable_length(writer, length).await?;
-            }
-            Self::Folder { name, entries } => {
-                writer.write_u8(1).await?;
-                write_length_prefixed(writer, name).await?;
-                write_u64_variable_length(writer, entries).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn read(reader: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self> {
-        let kind = reader.read_u8().await?;
-        let name = read_length_prefixed(reader).await?.into();
-        let length = read_u64_length_encoded(reader).await?;
-        match kind {
-            0 => Ok(Self::File { name, length }),
-            1 => Ok(Self::Folder {
-                name,
-                entries: length,
-            }),
-            _ => Err(Error::other("Unknown file header kind")),
-        }
-    }
 }
 
 /// Read the given path into the given reader according to the filesystem format.
@@ -241,7 +149,7 @@ pub async fn read_disk_to_filesystem_stream(
     relative_path: &PlatformPath,
     writer: &mut (impl AsyncWrite + Unpin + Send),
     filter: impl Fn(&Path, bool) -> bool + Copy,
-) -> Result<()> {
+) -> io::Result<()> {
     let name = relative_path.file_name().unwrap_or_default().into();
 
     let absolute_path_to_item = if relative_path.as_bytes().is_empty() {
@@ -250,7 +158,7 @@ pub async fn read_disk_to_filesystem_stream(
         absolute_path.join(relative_path)
     };
 
-    let std_path = platform_to_std(&absolute_path_to_item)?;
+    let std_path = platform_to_std(&absolute_path_to_item).map_err(io::Error::other)?;
     log::trace!("Exporting {}", absolute_path_to_item.display());
     let metadata = tokio::fs::metadata(&std_path).await?;
 
@@ -259,7 +167,7 @@ pub async fn read_disk_to_filesystem_stream(
             name,
             length: metadata.len(),
         };
-        header.write(writer).await?;
+        write_postcard_frame(&header, writer).await?;
 
         let mut file = tokio::fs::File::open(&std_path).await?;
         tokio::io::copy(&mut file, writer).await?;
@@ -282,7 +190,7 @@ pub async fn read_disk_to_filesystem_stream(
             name,
             entries: entries.len() as u64,
         };
-        header.write(writer).await?;
+        write_postcard_frame(&header, writer).await?;
 
         for entry in entries {
             let relative_path =
@@ -310,8 +218,9 @@ pub async fn read_filesystem_stream_to_disk(
     target_path: &PlatformPath,
     reader: &mut (impl AsyncRead + Unpin + Send),
     permissive_permissions: bool,
-) -> Result<()> {
-    let header = FileSystemEntryHeader::read(reader).await?;
+) -> io::Result<()> {
+    let header = read_postcard_frame(reader).await?;
+
     match header {
         FileSystemEntryHeader::File { name, length } => {
             let target_path = if name.is_empty() {
@@ -319,11 +228,12 @@ pub async fn read_filesystem_stream_to_disk(
             } else {
                 target_path.join(PlatformPath::new(&*name))
             };
-            let std_path = platform_to_std(&target_path)?;
+            let std_path = platform_to_std(&target_path).map_err(io::Error::other)?;
             log::trace!("Writing file at {}", target_path.display());
 
             if let Some(parent) = target_path.parent() {
-                tokio::fs::create_dir_all(&platform_to_std(parent)?).await?;
+                tokio::fs::create_dir_all(&platform_to_std(parent).map_err(io::Error::other)?)
+                    .await?;
             }
 
             let mut open_options = tokio::fs::File::options();
@@ -341,7 +251,8 @@ pub async fn read_filesystem_stream_to_disk(
         FileSystemEntryHeader::Folder { name, entries } => {
             let target_path = target_path.join(PlatformPath::new(&*name));
             log::trace!("Writing directory at {}", target_path.display());
-            tokio::fs::create_dir_all(&platform_to_std(&target_path)?).await?;
+            tokio::fs::create_dir_all(&platform_to_std(&target_path).map_err(io::Error::other)?)
+                .await?;
 
             for _ in 0..entries {
                 Box::pin(read_filesystem_stream_to_disk(
@@ -355,86 +266,4 @@ pub async fn read_filesystem_stream_to_disk(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-    }
-
-    #[test]
-    fn variable_length_encoding_roundtrips() {
-        let rt = runtime();
-        bolero::check!()
-            .with_type()
-            .cloned()
-            .for_each(|value: u64| {
-                rt.block_on(async {
-                    let mut buf = std::io::Cursor::new(Vec::new());
-                    write_u64_variable_length(&mut buf, value).await.unwrap();
-
-                    buf.set_position(0);
-                    let decoded = read_u64_length_encoded(&mut buf).await.unwrap();
-
-                    assert_eq!(decoded, value, "failed for {value}");
-                });
-            });
-    }
-
-    #[test]
-    fn length_prefixed_roundtrips() {
-        let rt = runtime();
-        bolero::check!().with_type().for_each(|value: &Vec<u8>| {
-            rt.block_on(async {
-                let mut buf = std::io::Cursor::new(Vec::new());
-                write_length_prefixed(&mut buf, value).await.unwrap();
-
-                buf.set_position(0);
-                let decoded = read_length_prefixed(&mut buf).await.unwrap();
-
-                assert_eq!(&decoded, value, "failed for {value:?}");
-            });
-        });
-    }
-
-    #[test]
-    fn length_prefixed_str_roundtrips() {
-        let rt = runtime();
-        bolero::check!().with_type().for_each(|value: &String| {
-            rt.block_on(async {
-                let mut buf = std::io::Cursor::new(Vec::new());
-                write_length_prefixed(&mut buf, value.as_bytes())
-                    .await
-                    .unwrap();
-
-                buf.set_position(0);
-                let decoded = read_length_prefixed_string(&mut buf).await.unwrap();
-
-                assert_eq!(&decoded, value, "failed for {value:?}");
-            });
-        });
-    }
-
-    #[test]
-    fn unix_path_roundtrips() {
-        let rt = runtime();
-        bolero::check!().with_type().for_each(|value: &Vec<u8>| {
-            rt.block_on(async {
-                let path = UnixPath::new(value).to_path_buf();
-
-                let mut buf = std::io::Cursor::new(Vec::new());
-                path.clone().write(&mut buf).await.unwrap();
-
-                buf.set_position(0);
-                let decoded = UnixPathBuf::read(&mut buf).await.unwrap();
-
-                assert_eq!(decoded, path, "failed for {value:?}");
-            });
-        });
-    }
 }

@@ -19,14 +19,10 @@
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-use crate::WireFormat;
-
 /// A generic network topology struct, for holding the various kinds of network topology forms.
 ///
 /// `Eq` and `Ord` only consider the abstract topology structure, not the data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct Topology<T> {
     /// This specific network kinds data
@@ -187,38 +183,6 @@ impl<T> Iterator for TopologyIter<T> {
     }
 }
 
-impl<T: WireFormat> WireFormat for Topology<T> {
-    async fn write(
-        self,
-        writer: &mut (impl tokio::io::AsyncWrite + Unpin + Send),
-    ) -> crate::Result<()> {
-        self.data.write(writer).await?;
-
-        super::write_u64_variable_length(writer, self.children.len() as u64).await?;
-        for child in self.children {
-            // This didnt trigger the recursion detection (for some reason),
-            // But did trigger layout calculation cycle on call sites.
-            Box::pin(child.write(writer)).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn read(reader: &mut (impl tokio::io::AsyncRead + Unpin + Send)) -> crate::Result<Self> {
-        let data = T::read(reader).await?;
-
-        let children_len = super::read_u64_length_encoded(reader).await?;
-        let mut children = Vec::new();
-        for _ in 0..children_len {
-            // This didnt trigger the recursion detection (for some reason),
-            // But did trigger layout calculation cycle on call sites.
-            children.push(Box::pin(Self::read(reader)).await?);
-        }
-
-        Ok(Self { data, children })
-    }
-}
-
 /// A abstract topology only contains the structure of the tree, without any data.
 /// This kind also implements `Hash`.
 pub type AbstractTopology = Topology<()>;
@@ -230,7 +194,7 @@ impl Hash for AbstractTopology {
 }
 
 /// A CNI adapter attached to a namespace.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Adapter {
     /// The interface name, for example "lo", "eth0", or a bridge UUID.
     pub ifname: Box<str>,
@@ -238,28 +202,8 @@ pub struct Adapter {
     pub config_json: Box<str>,
 }
 
-impl WireFormat for Adapter {
-    async fn write(
-        self,
-        writer: &mut (impl tokio::io::AsyncWrite + Unpin + Send),
-    ) -> crate::Result<()> {
-        super::write_length_prefixed(writer, self.ifname.as_bytes()).await?;
-        super::write_length_prefixed(writer, self.config_json.as_bytes()).await?;
-        Ok(())
-    }
-
-    async fn read(reader: &mut (impl tokio::io::AsyncRead + Unpin + Send)) -> crate::Result<Self> {
-        let ifname = super::read_length_prefixed_string(reader).await?.into();
-        let config_json = super::read_length_prefixed_string(reader).await?.into();
-        Ok(Self {
-            ifname,
-            config_json,
-        })
-    }
-}
-
 /// A description of a network namespace created by the sidecar.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Namespace {
     /// The path of the namespace, for example "/.../netns-1234".
     pub path: Box<str>,
@@ -267,48 +211,6 @@ pub struct Namespace {
     pub ip: Ipv4Addr,
     /// The CNI network adapters attached to this namespace, needed for teardown.
     pub adapters: Vec<Adapter>,
-}
-
-impl WireFormat for Namespace {
-    async fn write(
-        self,
-        writer: &mut (impl tokio::io::AsyncWrite + Unpin + Send),
-    ) -> crate::Result<()> {
-        super::write_length_prefixed(writer, self.path.as_bytes()).await?;
-
-        let ip_bytes = self.ip.octets();
-        for byte in ip_bytes {
-            writer.write_u8(byte).await?;
-        }
-
-        super::write_u64_variable_length(writer, self.adapters.len() as u64).await?;
-        for adapter in self.adapters {
-            adapter.write(writer).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn read(reader: &mut (impl tokio::io::AsyncRead + Unpin + Send)) -> crate::Result<Self> {
-        let path = super::read_length_prefixed_string(reader).await?;
-        let mut ip_bytes = [0u8; 4];
-        for byte in &mut ip_bytes {
-            *byte = reader.read_u8().await?;
-        }
-        let ip = Ipv4Addr::from(ip_bytes);
-
-        let adapter_count = super::read_u64_length_encoded(reader).await?;
-        let mut adapters = Vec::new();
-        for _ in 0..adapter_count {
-            adapters.push(Adapter::read(reader).await?);
-        }
-
-        Ok(Self {
-            path: path.into(),
-            ip,
-            adapters,
-        })
-    }
 }
 
 /// A concrete network topology with resolved namespaces.

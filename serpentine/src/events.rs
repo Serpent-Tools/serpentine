@@ -64,11 +64,6 @@ pub enum Lifecycle {
         /// The tag of the serpentine engine image in use.
         image_tag: Box<str>,
     },
-    /// The on-disk cache was loaded.
-    CacheLoaded {
-        /// Number of entries read.
-        entries: usize,
-    },
     /// The engine has started shutting down: saving the cache and tearing down containers.
     ShuttingDown,
     /// The run is over and the consumer should leave its event loop.

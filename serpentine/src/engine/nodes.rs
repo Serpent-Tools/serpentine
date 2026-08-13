@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use typed_path::{PlatformPathBuf, UnixPath};
 
-use crate::engine::cache::CacheKey;
+use crate::engine::cache::{CacheHash, CacheKey, CacheScope};
 use crate::engine::data_model::{Data, DataType, NodeInstanceId, NodeKindId};
 use crate::engine::filesystem::{self, FileSystem};
 use crate::engine::scheduler::Scheduler;
@@ -63,10 +63,16 @@ pub trait NodeImpl: Send + Sync {
                         node: kind,
                         inputs: &inputs,
                     };
-                    let key = key.content_hash().await?;
+                    let key = CacheHash::from_data(CacheScope::Data, &key).await?;
                     log::debug!("Checking cache with {key:?}");
-                    if let Some(cached_value) = context.cache.lock().await.get(key).cloned() {
+
+                    if let Some(cached_value) =
+                        // NOTE: braces such that the mutex lock is dropped.
+                        { context.cache.data_cache.lock()?.get(key).cloned() }
+                    {
                         log::debug!("Cache hit on {}", self.describe());
+
+                        let cached_value = Data::from_cachable(cached_value);
                         if cached_value.healthcheck(context).await {
                             return Ok((cached_value, crate::events::NodeTransition::Cached));
                         }
@@ -76,7 +82,10 @@ pub trait NodeImpl: Send + Sync {
                     log::debug!("Executing {}", self.describe());
                     let result = self.execute(context, inputs).await?;
 
-                    context.cache.lock().await.insert(key, result.clone());
+                    if let Some(result) = result.cachable() {
+                        log::debug!("Caching result of {} with {key:?}", self.describe());
+                        context.cache.data_cache.lock()?.insert(key, result);
+                    }
 
                     Ok((result, crate::events::NodeTransition::Ran))
                 } else {
@@ -233,8 +242,6 @@ impl RawData for containerd::ContainerLike {
 struct Wrap<F, P> {
     /// The function thats wrapped
     function: F,
-    /// Should this node be cached
-    should_be_cached: bool,
     /// If true, `return_type` returns the type of the first argument instead of `R::KIND`.
     /// Used for nodes where the output type matches the input (e.g. Container -> Container).
     passthrough_return: bool,
@@ -248,20 +255,18 @@ struct Wrap<F, P> {
 
 impl<F, P> Wrap<F, P> {
     /// Create a new wrapped node with a fixed return type.
-    fn new(func: F, should_be_cached: bool) -> Self {
+    fn new(func: F) -> Self {
         Self {
             function: func,
-            should_be_cached,
             passthrough_return: false,
             phantom: PhantomData,
         }
     }
 
     /// Create a new wrapped node whose return type passes through from the first argument.
-    fn passthrough(func: F, should_be_cached: bool) -> Self {
+    fn passthrough(func: F) -> Self {
         Self {
             function: func,
-            should_be_cached,
             passthrough_return: true,
             phantom: PhantomData,
         }
@@ -280,7 +285,7 @@ macro_rules! impl_node_impl {
               $($arg: RawData),*
         {
             fn should_be_cached(&self) -> bool {
-                self.should_be_cached
+                R::KIND.is_cacheable()
             }
 
             fn describe(&self) -> Cow<'static, str> {
@@ -671,76 +676,63 @@ async fn healthcheck(
 pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
     vec![
         (NOOP_NAME, Box::new(Noop) as Box<dyn NodeImpl>),
-        ("Image", Box::new(Wrap::<_, Arc<str>>::new(image, true))),
+        ("Image", Box::new(Wrap::<_, Arc<str>>::new(image))),
         (
             "ImageService",
-            Box::new(Wrap::<_, Arc<str>>::new(image_service, true)),
+            Box::new(Wrap::<_, Arc<str>>::new(image_service)),
         ),
         (
             "Exec",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(exec, true)),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(exec)),
         ),
         (
             "ExecOutput",
             Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
                 exec_output,
-                true,
             )),
         ),
-        (
-            "FromHost",
-            Box::new(Wrap::<_, Arc<str>>::new(from_host, false)),
-        ),
+        ("FromHost", Box::new(Wrap::<_, Arc<str>>::new(from_host))),
         (
             "Export",
             Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
-                export, false,
+                export,
             )),
         ),
         (
             "ToHost",
-            Box::new(Wrap::<_, (FileSystem, Arc<str>)>::new(to_host, false)),
+            Box::new(Wrap::<_, (FileSystem, Arc<str>)>::new(to_host)),
         ),
         (
             "With",
             Box::new(
-                Wrap::<_, (containerd::ContainerLike, FileSystem, Arc<str>)>::passthrough(
-                    with, true,
-                ),
+                Wrap::<_, (containerd::ContainerLike, FileSystem, Arc<str>)>::passthrough(with),
             ),
         ),
         (
             "WorkingDir",
             Box::new(
-                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(
-                    with_working_dir,
-                    false,
-                ),
+                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(with_working_dir),
             ),
         ),
         (
             "Env",
-            Box::new(
-                Wrap::<_, (containerd::ContainerLike, Arc<str>, Arc<str>)>::passthrough(env, false),
-            ),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>, Arc<str>)>::passthrough(env)),
         ),
         (
             "GetEnv",
             Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
-                get_env, false,
+                get_env,
             )),
         ),
         (
             "User",
-            Box::new(
-                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(set_user, false),
-            ),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(set_user)),
         ),
         ("Join", Box::new(Join)),
         (
             "ToService",
             Box::new(Wrap::<_, (containerd::ContainerState, Arc<str>)>::new(
-                to_service, false,
+                to_service,
             )),
         ),
         (
@@ -752,13 +744,12 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
                     containerd::ServiceState,
                     Arc<str>,
                 ),
-            >::passthrough(with_service, false)),
+            >::passthrough(with_service)),
         ),
         (
             "HealthCheck",
             Box::new(Wrap::<_, (containerd::ServiceState, Arc<str>, i128)>::new(
                 healthcheck,
-                false,
             )),
         ),
     ]
