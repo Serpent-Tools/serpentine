@@ -267,14 +267,14 @@ impl RuntimeContext {
     }
 
     /// Shutdown the runtime context, cleaning up any resources
-    async fn shutdown(self) {
+    async fn shutdown(self, cli: &crate::Run) {
         log::debug!("Shutting down runtime context");
 
         let Self {
             containerd, cache, ..
         } = self;
 
-        if let Err(err) = cache.save().await {
+        if let Err(err) = cache.save(!cli.clean_old).await {
             log::warn!("Failed to save cache: {err}");
         }
         containerd.shutdown().await;
@@ -342,7 +342,7 @@ pub fn run(
             .await;
 
             match reclaimed {
-                Ok(runtime_context) => runtime_context.shutdown().await,
+                Ok(runtime_context) => runtime_context.shutdown(cli).await,
                 Err(_) => {
                     log::warn!("Tasks still in flight after timeout, skipping clean shutdown");
                 }

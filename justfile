@@ -7,7 +7,7 @@ test filter="": build_container
     RUST_LOG="serpentine=trace" cargo nextest run --no-fail-fast --jobs num-cpus --features _test_docker {{filter}} 
 
 update_snapshots: build_container
-    NEXTEST_PROFILE="snapshots" cargo insta test --features _test_docker --review --unreferenced delete --test-runner nextest
+    cargo insta test --features _test_docker --review --unreferenced delete --test-runner nextest
 
 bench: build_container
     cargo run --release -p serpentine --features _test_docker,_bench -- --bench

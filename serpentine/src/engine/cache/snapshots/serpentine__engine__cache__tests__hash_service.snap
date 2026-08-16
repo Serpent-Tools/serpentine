@@ -1,0 +1,40 @@
+---
+source: serpentine/src/engine/cache/mod.rs
+expression: "Service(ServiceState { container: ContainerState { snapshot: \"snapshot-fixture\", config: ContainerConfig { env: {\"PATH\": \"/usr/local/bin\", \"HOME\": \"/home/root\"}, working_dir: PathBuf { _encoding: \"unix\", inner: [47, 97, 112, 112] }, user: Some(\"root:root\"), services: {} } }, service_config: ServiceConfig { entrypoint: \"exec /entry\", healthcheck: (\"exit 0\", 1s) } })"
+---
+CacheHash(
+    [
+        118,
+        97,
+        144,
+        221,
+        220,
+        95,
+        231,
+        199,
+        223,
+        137,
+        182,
+        108,
+        37,
+        78,
+        179,
+        203,
+        221,
+        208,
+        10,
+        251,
+        185,
+        59,
+        83,
+        5,
+        242,
+        103,
+        20,
+        21,
+        39,
+        139,
+        17,
+        199,
+    ],
+)
