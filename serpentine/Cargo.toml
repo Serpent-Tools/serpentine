@@ -31,7 +31,6 @@ tokio-util = { version = "0.7.18", default-features = false, features = ["rt"] }
 tower = { version = "0.5.3", default-features = false }
 blake3 = { version = "1.8.3", default-features = false }
 typed-path.workspace = true
-imbl = { version = "7.0.1", default-features = false, features = ["serde"] }
 ignore = { version = "0.4.25", default-features = false }
 
 serde = { workspace = true, features = ["rc"] }

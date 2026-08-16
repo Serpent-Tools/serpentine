@@ -1,6 +1,6 @@
 //! Wrapper around containerd API client and other container related operations
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,8 +39,7 @@ mod fuzz {
     }
 
     /// Generator for small environment maps.
-    pub(super) fn env_map()
-    -> impl bolero::ValueGenerator<Output = imbl::HashMap<Arc<str>, Arc<str>>> {
+    pub(super) fn env_map() -> impl bolero::ValueGenerator<Output = BTreeMap<Arc<str>, Arc<str>>> {
         bolero::produce::<Vec<(String, String)>>()
             .with()
             .len(0..10_usize)
@@ -72,7 +71,7 @@ mod fuzz {
 pub struct ContainerConfig {
     /// Environment
     #[cfg_attr(test, generator(fuzz::env_map()))]
-    env: imbl::HashMap<Arc<str>, Arc<str>>,
+    env: BTreeMap<Arc<str>, Arc<str>>,
     /// The working directory
     #[cfg_attr(test, generator(fuzz::unix_path()))]
     #[serde(with = "serpentine_internal::TypedPathBufRemote")]
@@ -84,8 +83,9 @@ pub struct ContainerConfig {
     #[cfg_attr(test, generator(fuzz::opt_arc_str()))]
     user: Option<Arc<str>>,
     /// The services to attach to this container.
-    #[cfg_attr(test, generator(bolero::constant(imbl::HashMap::new())))]
-    services: imbl::HashMap<Arc<str>, ServiceState>,
+    // TODO: Should this generate services?
+    #[cfg_attr(test, generator(bolero::constant(BTreeMap::new())))]
+    services: BTreeMap<Arc<str>, ServiceState>,
 }
 
 impl ContainerConfig {
@@ -134,7 +134,7 @@ impl From<oci_client::config::Config> for ContainerConfig {
                 |dir| UnixPath::new(&dir).to_path_buf(),
             ),
             user: config.user.map(Arc::from),
-            services: imbl::HashMap::new(),
+            services: BTreeMap::new(),
         }
     }
 }
@@ -1642,7 +1642,7 @@ impl Client {
             }
         }
 
-        let mut services = imbl::HashMap::new();
+        let mut services = BTreeMap::new();
         for child in children {
             let Some(hostname) = &child.get_data().node.hostname else {
                 return Err(RuntimeError::internal(
