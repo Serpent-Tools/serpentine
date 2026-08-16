@@ -39,12 +39,13 @@ pub enum Data {
 }
 
 /// A version of `Data` that contains the data that can be cached.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(bolero::TypeGenerator))]
 pub enum CacheableData {
     /// `Int`
     Int(i128),
     /// `String`
-    String(Arc<str>),
+    String(#[cfg_attr(test, generator(fuzz::arc_str()))] Arc<str>),
     /// `Container`
     Container(containerd::ContainerState),
     /// `Service`

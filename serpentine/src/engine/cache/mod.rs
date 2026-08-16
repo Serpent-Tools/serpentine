@@ -232,9 +232,22 @@ impl DataCache {
     }
 
     /// Write this cache to the given writer, including the version number.
-    async fn write(&self, mut writer: impl AsyncWrite + Unpin + Send) -> Result<(), RuntimeError> {
+    async fn write(
+        self,
+        keep_old_cache: bool,
+        mut writer: impl AsyncWrite + Unpin + Send,
+    ) -> Result<(), RuntimeError> {
         writer.write_u8(CACHE_COMPATIBILITY_VERSION).await?;
-        serpentine_internal::write_postcard_frame(&self, &mut writer).await?;
+
+        let cache = if keep_old_cache {
+            let mut combined_cache = self.new_cache;
+            combined_cache.extend(self.old_cache);
+            combined_cache
+        } else {
+            self.new_cache
+        };
+
+        serpentine_internal::write_postcard_frame(&cache, &mut writer).await?;
 
         Ok(())
     }
@@ -251,7 +264,10 @@ impl DataCache {
 
         let cache = serpentine_internal::read_postcard_frame(&mut reader).await?;
 
-        Ok(cache)
+        Ok(DataCache {
+            old_cache: cache,
+            new_cache: CacheHashMap::default(),
+        })
     }
 }
 
@@ -287,13 +303,13 @@ impl Cache {
     }
 
     /// Save the cache to the backend.
-    pub async fn save(self) -> Result<(), RuntimeError> {
+    pub async fn save(self, keep_old_cache: bool) -> Result<(), RuntimeError> {
         let data_cache = self.data_cache.into_inner().map_err(|_| {
             RuntimeError::internal("Failed to lock data cache for saving, mutex poisoned")
         })?;
 
         let mut writer = self.backend.get_data_cache_writer().await?;
-        data_cache.write(&mut writer).await?;
+        data_cache.write(keep_old_cache, &mut writer).await?;
 
         Ok(())
     }
@@ -301,420 +317,365 @@ impl Cache {
 
 // TODO: Snapshot test hashes
 
-// #[cfg(test)]
-// #[expect(clippy::expect_used, reason = "tests")]
-// mod tests {
-//     use rstest::{fixture, rstest};
-//
-//     use super::*;
-//
-//     struct DummyExternal;
-//
-//     // async-to-`std::future::ready` needs a named lifetime on `_values`, which the trait elides
-//     #[expect(clippy::unused_async_trait_impl, reason = "tests")]
-//     impl ExternalCache for DummyExternal {
-//         type ResourceKey = ();
-//
-//         async fn export(
-//             &self,
-//             _values: impl IntoIterator<Item = &Data>,
-//             _file: &mut (impl AsyncWrite + Unpin + Send),
-//         ) -> Result<(), RuntimeError> {
-//             Ok(())
-//         }
-//
-//         async fn import(
-//             &self,
-//             _file: &mut (impl AsyncRead + Unpin + Send),
-//         ) -> Result<(), RuntimeError> {
-//             Ok(())
-//         }
-//
-//         fn resource_keys(&self, _data: &Data) -> Vec<Self::ResourceKey> {
-//             Vec::new()
-//         }
-//
-//         async fn cleanup(&self, _key: Self::ResourceKey) {}
-//     }
-//
-//     #[fixture]
-//     fn external() -> impl ExternalCache {
-//         DummyExternal
-//     }
-//
-//     /// Serialize a value with a fresh writer, giving a structural fingerprint to compare against.
-//     async fn data_bytes(data: &Data) -> Vec<u8> {
-//         let mut out = std::io::Cursor::new(Vec::new());
-//         data.write(&mut CacheWriter::new(&mut out))
-//             .await
-//             .expect("in-memory serialization cannot fail");
-//         out.into_inner()
-//     }
-//
-//     /// Content hash of a data value, used to compare cache roundtrips.
-//     async fn data_hash(data: &Data) -> CacheHash {
-//         let mut hasher = blake3::Hasher::new();
-//         data.content_hash(&mut hasher)
-//             .await
-//             .expect("hashing in-memory data cannot fail");
-//         CacheHash(hasher.finalize().into())
-//     }
-//
-//     fn runtime() -> tokio::runtime::Runtime {
-//         tokio::runtime::Builder::new_current_thread()
-//             .build()
-//             .expect("failed to build runtime")
-//     }
-//
-//     #[test]
-//     fn different_entries_hash_differently() {
-//         let rt = runtime();
-//         bolero::check!().with_type().for_each(
-//             |(node, data1, data2): &(NodeKindId, Vec<Data>, Vec<Data>)| {
-//                 rt.block_on(async {
-//                     let key1 = CacheKey {
-//                         node: *node,
-//                         inputs: data1,
-//                     };
-//
-//                     let key2 = CacheKey {
-//                         node: *node,
-//                         inputs: data2,
-//                     };
-//
-//                     let hash_1 = key1.content_hash().await.unwrap();
-//                     let hash_2 = key2.content_hash().await.unwrap();
-//
-//                     let mut equal = data1.len() == data2.len();
-//                     for (value1, value2) in data1.iter().zip(data2) {
-//                         equal &= data_bytes(value1).await == data_bytes(value2).await;
-//                     }
-//
-//                     if equal {
-//                         assert_eq!(hash_1, hash_2, "Keys equal expected same hash.");
-//                     } else {
-//                         assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
-//                     }
-//                 });
-//             },
-//         );
-//     }
-//
-//     #[test]
-//     fn same_entry_hashes_equal() {
-//         let rt = runtime();
-//         bolero::check!()
-//             .with_type()
-//             .for_each(|(node, data): &(NodeKindId, Vec<Data>)| {
-//                 rt.block_on(async {
-//                     let key = CacheKey {
-//                         node: *node,
-//                         inputs: data,
-//                     };
-//
-//                     assert_eq!(
-//                         key.content_hash().await.unwrap(),
-//                         key.content_hash().await.unwrap()
-//                     );
-//                 });
-//             });
-//     }
-//
-//     #[test]
-//     fn save_and_load_one_entry() {
-//         let rt = runtime();
-//         bolero::check!().with_type().for_each(
-//             |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
-//                 rt.block_on(async {
-//                     let key = CacheKey {
-//                         node: *node,
-//                         inputs: data,
-//                     };
-//
-//                     let mut cache = DataCache::new();
-//                     cache.insert(key.content_hash().await.unwrap(), value.clone());
-//
-//                     let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-//                     cache
-//                         .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let mut loaded_cache = DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                         .await
-//                         .unwrap();
-//                     let loaded_value = loaded_cache
-//                         .get(key.content_hash().await.unwrap())
-//                         .expect("Value not found");
-//
-//                     assert_eq!(data_hash(loaded_value).await, data_hash(value).await);
-//                 });
-//             },
-//         );
-//     }
-//
-//     #[test]
-//     fn save_and_load_duplicate() {
-//         let rt = runtime();
-//         bolero::check!().with_type().for_each(|value: &Data| {
-//             rt.block_on(async {
-//                 let mut cache = DataCache::new();
-//
-//                 let key1 = CacheHash(blake3::hash(&[0]).into());
-//                 let key2 = CacheHash(blake3::hash(&[1]).into());
-//                 let key3 = CacheHash(blake3::hash(&[2]).into());
-//
-//                 cache.insert(key1, value.clone());
-//                 cache.insert(key2, value.clone());
-//                 cache.insert(key3, value.clone());
-//
-//                 let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-//                 cache
-//                     .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                     .await
-//                     .unwrap();
-//
-//                 cache_file.set_position(0);
-//                 let mut loaded_cache = DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                     .await
-//                     .unwrap();
-//                 let expected = data_hash(value).await;
-//                 for key in [key1, key2, key3] {
-//                     let loaded_value = loaded_cache.get(key).expect("Value not found");
-//                     assert_eq!(data_hash(loaded_value).await, expected);
-//                 }
-//             });
-//         });
-//     }
-//
-//     #[tokio::test]
-//     #[rstest]
-//     #[test_log::test]
-//     #[expect(clippy::panic, reason = "tests")]
-//     async fn save_and_load_duplicate_rc_is_deduplicated(external: impl ExternalCache) {
-//         let mut cache = DataCache::new();
-//
-//         let value = Data::String(Arc::from("foo"));
-//
-//         let key1 = CacheHash(blake3::hash(&[0]).into());
-//         let key2 = CacheHash(blake3::hash(&[1]).into());
-//
-//         cache.insert(key1, value.clone());
-//         cache.insert(key2, value.clone());
-//
-//         let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-//         cache
-//             .save_cache(&mut cache_file, &external, false, false)
-//             .await
-//             .unwrap();
-//
-//         cache_file.set_position(0);
-//         let mut loaded_cache = DataCache::load_cache(&mut cache_file, &external)
-//             .await
-//             .unwrap();
-//         let loaded_value1 = loaded_cache.get(key1).expect("Value not found").clone();
-//         let loaded_value2 = loaded_cache.get(key1).expect("Value not found").clone();
-//
-//         let Data::String(value1) = loaded_value1 else {
-//             panic!("Unexpected enum variant");
-//         };
-//         let Data::String(value2) = loaded_value2 else {
-//             panic!("Unexpected enum variant");
-//         };
-//
-//         assert!(
-//             Arc::ptr_eq(&value1, &value2),
-//             "Rcs point to different allocations despite being serialized from the same rc allocation."
-//         );
-//     }
-//
-//     #[test]
-//     fn save_and_load_multiple_entries() {
-//         let rt = runtime();
-//         bolero::check!()
-//             .with_generator(
-//                 bolero::produce::<Vec<(NodeKindId, Vec<Data>, Data)>>()
-//                     .with()
-//                     .len(0..4_usize),
-//             )
-//             .for_each(|values: &Vec<(NodeKindId, Vec<Data>, Data)>| {
-//                 rt.block_on(async {
-//                     let mut cache = DataCache::new();
-//                     for (node, data, value) in values {
-//                         let key = CacheKey {
-//                             node: *node,
-//                             inputs: data,
-//                         };
-//
-//                         cache.insert(key.content_hash().await.unwrap(), value.clone());
-//                     }
-//
-//                     let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-//                     cache
-//                         .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let mut loaded_cache = DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                         .await
-//                         .unwrap();
-//
-//                     for (node, data, _) in values {
-//                         let key = CacheKey {
-//                             node: *node,
-//                             inputs: data,
-//                         };
-//
-//                         let _ = loaded_cache
-//                             .get(key.content_hash().await.unwrap())
-//                             .expect("Value not found");
-//                         // We do not check what the value is as generation might (and likely will)
-//                         // produce duplicate keys.
-//                     }
-//                 });
-//             });
-//     }
-//
-//     /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
-//     /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
-//     #[test]
-//     fn if_cache_used_should_always_be_kept() {
-//         let rt = runtime();
-//         bolero::check!().with_type().for_each(
-//             |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
-//                 rt.block_on(async {
-//                     let key = CacheKey {
-//                         node: *node,
-//                         inputs: data,
-//                     };
-//
-//                     let mut cache = DataCache::new();
-//                     cache.insert(key.content_hash().await.unwrap(), value.clone());
-//
-//                     let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-//                     cache
-//                         .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let mut loaded_cache = DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                         .await
-//                         .unwrap();
-//                     loaded_cache
-//                         .get(key.content_hash().await.unwrap())
-//                         .expect("Value not found");
-//
-//                     // Even tho `keep_old_cache` is false it should still keep the entry in there
-//                     // since we used it.
-//                     cache_file.set_position(0);
-//                     cache_file.get_mut().clear();
-//                     loaded_cache
-//                         .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let mut second_loaded_cache =
-//                         DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                             .await
-//                             .unwrap();
-//                     second_loaded_cache
-//                         .get(key.content_hash().await.unwrap())
-//                         .expect("Value not found");
-//                 });
-//             },
-//         );
-//     }
-//
-//     #[test]
-//     fn old_entry_cleared_if_not_used() {
-//         let rt = runtime();
-//         bolero::check!().with_type().for_each(
-//             |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
-//                 rt.block_on(async {
-//                     let key = CacheKey {
-//                         node: *node,
-//                         inputs: data,
-//                     };
-//
-//                     let mut cache = DataCache::new();
-//                     cache.insert(key.content_hash().await.unwrap(), value.clone());
-//
-//                     let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-//                     cache
-//                         .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let loaded_cache = DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     cache_file.get_mut().clear();
-//                     loaded_cache
-//                         .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let mut second_loaded_cache =
-//                         DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                             .await
-//                             .unwrap();
-//                     let result = second_loaded_cache.get(key.content_hash().await.unwrap());
-//                     assert!(result.is_none(), "unused old_cache value was saved.");
-//                 });
-//             },
-//         );
-//     }
-//
-//     #[test]
-//     fn old_entry_kept_if_keep_old_true_even_if_not_used() {
-//         let rt = runtime();
-//         bolero::check!().with_type().for_each(
-//             |(node, data, value): &(NodeKindId, Vec<Data>, Data)| {
-//                 rt.block_on(async {
-//                     let key = CacheKey {
-//                         node: *node,
-//                         inputs: data,
-//                     };
-//
-//                     let mut cache = DataCache::new();
-//                     cache.insert(key.content_hash().await.unwrap(), value.clone());
-//
-//                     let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
-//                     cache
-//                         .save_cache(&mut cache_file, &DummyExternal, false, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let loaded_cache = DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     cache_file.get_mut().clear();
-//                     loaded_cache
-//                         .save_cache(&mut cache_file, &DummyExternal, true, false)
-//                         .await
-//                         .unwrap();
-//
-//                     cache_file.set_position(0);
-//                     let mut second_loaded_cache =
-//                         DataCache::load_cache(&mut cache_file, &DummyExternal)
-//                             .await
-//                             .unwrap();
-//                     second_loaded_cache
-//                         .get(key.content_hash().await.unwrap())
-//                         .expect("Value not found");
-//                 });
-//             },
-//         );
-//     }
-// }
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod tests {
+    use std::time::Duration;
+
+    use rstest::rstest;
+    use typed_path::UnixPath;
+
+    use super::*;
+    use crate::engine::containerd::{ContainerConfig, ContainerState, ServiceState};
+    use crate::engine::filesystem::{self, FileSystem};
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("failed to build runtime")
+    }
+
+    fn simple_container() -> ContainerState {
+        let mut config = ContainerConfig::default();
+        config.set_working_dir(UnixPath::new("/app"));
+        config.set_env_var("PATH".into(), "/usr/local/bin".into());
+        config.set_env_var("HOME".into(), "/home/root".into());
+        config.set_user("root:root".into());
+
+        ContainerState::from_parts("snapshot-fixture".into(), config)
+    }
+
+    fn simple_service() -> ServiceState {
+        simple_container()
+            .into_service("exec /entry".into())
+            .update_service_config(|config| {
+                config.set_healthcheck("exit 0".into(), Duration::from_secs(1));
+            })
+    }
+
+    fn complex_container() -> ContainerState {
+        let mut config = ContainerConfig::default();
+        config.with_service(simple_service(), "backend".into());
+        config.with_service(simple_service(), "frontend".into());
+
+        ContainerState::from_parts("snapshot-fixture-complex".into(), config)
+    }
+
+    fn file() -> filesystem::FileSystem {
+        let tree = filesystem::fuzz::Tree::File("hello world".as_bytes().to_vec());
+        let bytes = tree.encode();
+
+        filesystem::fuzz::InMemoryFile(bytes.into()).into()
+    }
+
+    fn folder() -> filesystem::FileSystem {
+        let tree = filesystem::fuzz::Tree::Folder(vec![
+            (
+                "file1.txt".into(),
+                filesystem::fuzz::Tree::File("file1".as_bytes().to_vec()),
+            ),
+            (
+                "file2.txt".into(),
+                filesystem::fuzz::Tree::File("file2".as_bytes().to_vec()),
+            ),
+        ]);
+        let bytes = tree.encode();
+
+        filesystem::fuzz::InMemoryFile(bytes.into()).into()
+    }
+
+    #[rstest]
+    #[case::zero("zero", Data::Int(0))]
+    #[case::one("one", Data::Int(1))]
+    #[case::negative("negative", Data::Int(-20))]
+    #[case::hello_world("hello_world", Data::String("Hello World".into()))]
+    #[case::complex_string("complex_string", Data::String("\n\r".into()))]
+    #[case::container("container", Data::Container(simple_container()))]
+    #[case::service("service", Data::Service(simple_service()))]
+    #[case::complex_container("complex_container", Data::Container(complex_container()))]
+    #[case::file("file", Data::FileSystem(file()))]
+    #[case::folder("folder", Data::FileSystem(folder()))]
+    fn snapshot_hashes(#[case] name: &str, #[case] value: Data) {
+        let rt = runtime();
+        rt.block_on(async {
+            let hash = CacheHash::from_data(CacheScope::Data, &value)
+                .await
+                .expect("Failed to hash value");
+
+            insta::assert_debug_snapshot!(format!("hash_{name}"), hash, &format!("{value:?}"));
+        });
+    }
+
+    #[test]
+    fn different_entries_hash_differently() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data1, data2): &(NodeKindId, Vec<CacheableData>, Vec<CacheableData>)| {
+                rt.block_on(async {
+                    if data1 == data2 {
+                        return;
+                    }
+
+                    let data1 = data1
+                        .iter()
+                        .cloned()
+                        .map(Data::from_cachable)
+                        .collect::<Vec<_>>();
+                    let data2 = data2
+                        .iter()
+                        .cloned()
+                        .map(Data::from_cachable)
+                        .collect::<Vec<_>>();
+
+                    let key1 = CacheKey {
+                        node: *node,
+                        inputs: &data1,
+                    };
+
+                    let key2 = CacheKey {
+                        node: *node,
+                        inputs: &data2,
+                    };
+
+                    let hash_1 = CacheHash::from_data(CacheScope::Data, &key1).await.unwrap();
+                    let hash_2 = CacheHash::from_data(CacheScope::Data, &key2).await.unwrap();
+
+                    assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn same_entry_hashes_equal() {
+        let rt = runtime();
+        bolero::check!()
+            .with_type()
+            .for_each(|(node, data): &(NodeKindId, Vec<Data>)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
+
+                    assert_eq!(
+                        CacheHash::from_data(CacheScope::Data, &key).await.unwrap(),
+                        CacheHash::from_data(CacheScope::Data, &key).await.unwrap(),
+                        "Same key expected same hash."
+                    );
+                });
+            });
+    }
+
+    #[test]
+    fn save_and_load_one_entry() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, CacheableData)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
+
+                    let mut cache = DataCache::new();
+                    let hash = CacheHash::from_data(CacheScope::Data, &key).await.unwrap();
+                    cache.insert(hash, value.clone());
+
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache.write(true, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let mut loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+                    let loaded_value = loaded_cache.get(hash).expect("Value not found");
+
+                    assert_eq!(loaded_value, value);
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn save_and_load_duplicate() {
+        let rt = runtime();
+        bolero::check!()
+            .with_type()
+            .for_each(|value: &CacheableData| {
+                rt.block_on(async {
+                    let mut cache = DataCache::new();
+
+                    let key1 = CacheHash(blake3::hash(&[0]).into());
+                    let key2 = CacheHash(blake3::hash(&[1]).into());
+                    let key3 = CacheHash(blake3::hash(&[2]).into());
+
+                    cache.insert(key1, value.clone());
+                    cache.insert(key2, value.clone());
+                    cache.insert(key3, value.clone());
+
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache.write(true, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let mut loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+
+                    for key in [key1, key2, key3] {
+                        let loaded_value = loaded_cache.get(key).expect("Value not found");
+                        assert_eq!(loaded_value, value);
+                    }
+                });
+            });
+    }
+
+    #[test]
+    fn save_and_load_multiple_entries() {
+        let rt = runtime();
+        bolero::check!()
+            .with_generator(
+                bolero::produce::<Vec<(NodeKindId, Vec<Data>, CacheableData)>>()
+                    .with()
+                    .len(0..4_usize),
+            )
+            .for_each(|values: &Vec<(NodeKindId, Vec<Data>, CacheableData)>| {
+                rt.block_on(async {
+                    let mut cache = DataCache::new();
+                    for (node, data, value) in values {
+                        let key = CacheKey {
+                            node: *node,
+                            inputs: data,
+                        };
+
+                        cache.insert(
+                            CacheHash::from_data(CacheScope::Data, &key).await.unwrap(),
+                            value.clone(),
+                        );
+                    }
+
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache.write(true, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let mut loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+
+                    for (node, data, value) in values {
+                        let key = CacheKey {
+                            node: *node,
+                            inputs: data,
+                        };
+
+                        let loaded_value = loaded_cache
+                            .get(CacheHash::from_data(CacheScope::Data, &key).await.unwrap())
+                            .expect("Value not found");
+                        assert_eq!(loaded_value, value);
+                    }
+                });
+            });
+    }
+
+    /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
+    /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
+    #[test]
+    fn if_cache_used_should_always_be_kept() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, CacheableData)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
+
+                    let hash = CacheHash::from_data(CacheScope::Data, &key).await.unwrap();
+
+                    let mut cache = DataCache::new();
+                    cache.insert(hash, value.clone());
+
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache.write(false, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let mut loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+
+                    loaded_cache.get(hash).expect("Value not found");
+
+                    // Even tho `keep_old_cache` is false it should still keep the entry in there
+                    // since we used it.
+                    cache_file.set_position(0);
+                    cache_file.get_mut().clear();
+
+                    loaded_cache.write(false, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let mut second_loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+                    second_loaded_cache.get(hash).expect("Value not found");
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn old_entry_cleared_if_not_used() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, CacheableData)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
+
+                    let hash = CacheHash::from_data(CacheScope::Data, &key).await.unwrap();
+                    let mut cache = DataCache::new();
+                    cache.insert(hash, value.clone());
+
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache.write(false, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    cache_file.get_mut().clear();
+                    loaded_cache.write(false, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let mut second_loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+                    let result = second_loaded_cache.get(hash);
+                    assert!(result.is_none(), "unused old_cache value was saved.");
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn old_entry_kept_if_keep_old_true_even_if_not_used() {
+        let rt = runtime();
+        bolero::check!().with_type().for_each(
+            |(node, data, value): &(NodeKindId, Vec<Data>, CacheableData)| {
+                rt.block_on(async {
+                    let key = CacheKey {
+                        node: *node,
+                        inputs: data,
+                    };
+
+                    let hash = CacheHash::from_data(CacheScope::Data, &key).await.unwrap();
+                    let mut cache = DataCache::new();
+                    cache.insert(hash, value.clone());
+
+                    let mut cache_file = std::io::Cursor::new(Vec::<u8>::new());
+                    cache.write(true, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    cache_file.get_mut().clear();
+                    loaded_cache.write(true, &mut cache_file).await.unwrap();
+
+                    cache_file.set_position(0);
+                    let mut second_loaded_cache = DataCache::load(&mut cache_file).await.unwrap();
+                    second_loaded_cache.get(hash).expect("Value not found");
+                });
+            },
+        );
+    }
+}

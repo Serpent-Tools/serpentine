@@ -9,6 +9,9 @@ use typed_path::PlatformPathBuf;
 
 use crate::engine::cache::{CacheBackend, CacheHash};
 
+// FIX: What happens when multiple threads want sto read/write to the same key?
+// (lets write some tests for that.)
+
 /// The extension to use for cache files.
 const CACHE_EXTENSION: &str = ".serpentine";
 

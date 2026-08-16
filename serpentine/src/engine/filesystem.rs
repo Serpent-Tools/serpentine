@@ -282,7 +282,7 @@ fn discover_gitignore(within_dir: &Path) -> Option<Gitignore> {
 /// Generation of valid filesystem streams for fuzzing.
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
-mod fuzz {
+pub mod fuzz {
     use futures_util::FutureExt as _;
     use serpentine_internal::FileSystemEntryHeader;
     use tokio::io::AsyncWriteExt as _;
@@ -290,7 +290,7 @@ mod fuzz {
     use super::*;
 
     #[derive(Clone)]
-    struct InMemoryFile(Arc<[u8]>);
+    pub struct InMemoryFile(pub Arc<[u8]>);
 
     impl FileSystemProvider for InMemoryFile {
         fn get_reader<'this>(
@@ -315,7 +315,7 @@ mod fuzz {
 
     /// A file tree, encodable into the filesystem stream format.
     #[derive(Debug, bolero::TypeGenerator)]
-    enum Tree {
+    pub enum Tree {
         /// A file and its contents
         File(Vec<u8>),
         /// A folder of named entries
@@ -351,7 +351,7 @@ mod fuzz {
         }
 
         /// Encode this tree as a stream's root entry.
-        fn encode(&self) -> Vec<u8> {
+        pub fn encode(&self) -> Vec<u8> {
             let mut out = std::io::Cursor::new(Vec::new());
             self.write("", &mut out)
                 .now_or_never()

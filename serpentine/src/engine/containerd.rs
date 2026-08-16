@@ -350,6 +350,15 @@ impl ContainerState {
     }
 }
 
+#[cfg(test)]
+impl ContainerState {
+    /// Build a state from exact field values, for tests that need a fixed constant rather than a
+    /// generated one.
+    pub(crate) fn from_parts(snapshot: Arc<str>, config: ContainerConfig) -> Self {
+        Self { snapshot, config }
+    }
+}
+
 /// Either a container or a service.
 ///
 /// Many operations (env, working dir, user, etc.) apply equally to both containers and services.
