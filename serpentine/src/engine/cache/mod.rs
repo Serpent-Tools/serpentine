@@ -1,7 +1,6 @@
 //! A content addressable cache.
 
-use std::pin::Pin;
-
+use futures_util::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::engine::RuntimeError;
@@ -115,10 +114,7 @@ pub trait CacheBackend {
     /// Read the given key from the cache backend, returning a reader for the data.
     ///
     /// Returns `None` if the key does not exist in the cache backend.
-    fn read_key(
-        &self,
-        key: CacheHash,
-    ) -> Pin<Box<dyn Future<Output = Option<Box<dyn AsyncRead + Unpin + Send>>>>>;
+    fn read_key(&self, key: CacheHash) -> BoxFuture<'_, Option<Box<dyn AsyncRead + Unpin + Send>>>;
 
     /// Write the given key to the cache backend, returning a writer for the data.
     ///
@@ -126,19 +122,17 @@ pub trait CacheBackend {
     fn write_key(
         &self,
         key: CacheHash,
-    ) -> Pin<Box<dyn Future<Output = Option<Box<dyn AsyncWrite + Unpin + Send>>>>>;
+    ) -> BoxFuture<'_, Option<Box<dyn AsyncWrite + Unpin + Send>>>;
 
     /// Retrive a reader to the  `DataCache` from this backend, this does not use `read_key`
     /// as the data cache should always be loaded and is not lazily loaded based on keys.
-    fn get_data_cache(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Option<Box<dyn AsyncRead + Unpin + Send>>>>>;
+    fn get_data_cache(&self) -> BoxFuture<'static, Option<Box<dyn AsyncRead + Unpin + Send>>>;
 
     /// Get a writer to the `DataCache` in this backend, this does not use `write_key`
     /// as the data cache should always be saved and is not lazily saved based on keys
     fn get_data_cache_writer(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn AsyncWrite + Unpin + Send>, RuntimeError>>>>;
+    ) -> BoxFuture<'_, Result<Box<dyn AsyncWrite + Unpin + Send>, RuntimeError>>;
 }
 
 static_assertions::assert_obj_safe!(CacheBackend);
@@ -315,8 +309,6 @@ impl Cache {
     }
 }
 
-// TODO: Snapshot test hashes
-
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
@@ -327,7 +319,7 @@ mod tests {
 
     use super::*;
     use crate::engine::containerd::{ContainerConfig, ContainerState, ServiceState};
-    use crate::engine::filesystem::{self, FileSystem};
+    use crate::engine::filesystem;
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()

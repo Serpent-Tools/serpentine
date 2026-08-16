@@ -2,9 +2,9 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::pin::Pin;
 use std::sync::Arc;
 
+use futures_util::future::BoxFuture;
 use typed_path::{PlatformPathBuf, UnixPath};
 
 use crate::engine::cache::{CacheHash, CacheKey, CacheScope};
@@ -48,7 +48,7 @@ pub trait NodeImpl: Send + Sync {
         kind: NodeKindId,
         scheduler: Arc<Scheduler>,
         inputs: &'scheduler [NodeInstanceId],
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
+    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
         Box::pin(async move {
             let inputs = scheduler.resolve_all(inputs).await?;
 
@@ -110,7 +110,7 @@ pub trait NodeImpl: Send + Sync {
         &'scheduler self,
         context: &'scheduler Arc<RuntimeContext>,
         inputs: Vec<Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>>;
+    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>>;
 }
 
 /// Trait implemented on the raw types in `Data`
@@ -341,7 +341,7 @@ macro_rules! impl_node_impl {
                 &'scheduler self,
                 context: &'scheduler Arc<RuntimeContext>,
                 inputs: Vec<Data>,
-            ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
+            ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
                 Box::pin(async move {
                     let mut inputs = inputs.into_iter();
                     let ($($arg),*,) = (
@@ -403,7 +403,7 @@ impl NodeImpl for Noop {
         &'scheduler self,
         _context: &'scheduler Arc<RuntimeContext>,
         inputs: Vec<Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
+    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
         Box::pin(async move {
             inputs
                 .into_iter()
@@ -438,7 +438,7 @@ impl NodeImpl for LiteralNode {
         &'scheduler self,
         _context: &'scheduler Arc<RuntimeContext>,
         _inputs: Vec<Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
+    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -618,7 +618,7 @@ impl NodeImpl for Join {
         &'scheduler self,
         _context: &'scheduler Arc<RuntimeContext>,
         inputs: Vec<Data>,
-    ) -> Pin<Box<dyn Future<Output = Result<Data, RuntimeError>> + Send + 'scheduler>> {
+    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
         Box::pin(async move {
             inputs
                 .into_iter()
