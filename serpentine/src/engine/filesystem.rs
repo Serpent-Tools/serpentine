@@ -8,6 +8,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use futures_util::future::BoxFuture;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use tokio::io::{AsyncRead, AsyncReadExt, DuplexStream, ReadBuf};
 use tokio::sync::OnceCell;
@@ -26,9 +27,7 @@ pub type Reader<'this> = Box<dyn AsyncRead + Send + Unpin + 'this>;
 pub trait FileSystemProvider: Send + Sync {
     /// Get a reader matching the format specified in `serpentine_internal` from this file system
     /// source.
-    fn get_reader<'this>(
-        &'this self,
-    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>>;
+    fn get_reader(&self) -> BoxFuture<'_, Result<Reader<'_>, RuntimeError>>;
 
     /// Hash this content.
     ///
@@ -36,7 +35,7 @@ pub trait FileSystemProvider: Send + Sync {
     fn hash_data<'this>(
         &'this self,
         hasher: &'this mut blake3::Hasher,
-    ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'this>> {
+    ) -> BoxFuture<'this, Result<(), RuntimeError>> {
         Box::pin(async move {
             let mut reader = self.get_reader().await?;
             let mut buffer = [0_u8; 4048];
@@ -222,9 +221,7 @@ impl<Fut: Future<Output = io::Result<()>>> AsyncRead for InlineReader<Fut> {
 pub struct LocalFiles(pub PlatformPathBuf);
 
 impl FileSystemProvider for LocalFiles {
-    fn get_reader<'this>(
-        &'this self,
-    ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>> {
+    fn get_reader(&self) -> BoxFuture<'_, Result<Reader<'_>, RuntimeError>> {
         Box::pin(async move {
             let ignore = discover_gitignore(
                 serpentine_internal::platform_to_std(&self.0).map_err(io::Error::other)?,
@@ -293,17 +290,14 @@ pub mod fuzz {
     pub struct InMemoryFile(pub Arc<[u8]>);
 
     impl FileSystemProvider for InMemoryFile {
-        fn get_reader<'this>(
-            &'this self,
-        ) -> Pin<Box<dyn Future<Output = Result<Reader<'this>, RuntimeError>> + Send + 'this>>
-        {
+        fn get_reader<'this>(&'this self) -> BoxFuture<'this, Result<Reader<'this>, RuntimeError>> {
             let reader: Reader<'this> = Box::new(self.0.as_ref());
             Box::pin(std::future::ready(Ok(reader)))
         }
         fn hash_data<'this>(
             &'this self,
             hasher: &'this mut blake3::Hasher,
-        ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'this>> {
+        ) -> BoxFuture<'this, Result<(), RuntimeError>> {
             hasher.update(&self.0);
             Box::pin(std::future::ready(Ok(())))
         }

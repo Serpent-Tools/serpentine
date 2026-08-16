@@ -1,8 +1,7 @@
 //! `CacheBackend` that writes to the local filesystem.
 
-use std::pin::Pin;
-
 use base64::Engine;
+use futures_util::future::BoxFuture;
 use serpentine_internal::platform_to_std;
 use tokio::io::{AsyncRead, AsyncWrite};
 use typed_path::PlatformPathBuf;
@@ -54,7 +53,7 @@ impl CacheBackend for LocalCacheBackend {
     fn read_key(
         &self,
         key: CacheHash,
-    ) -> Pin<Box<dyn Future<Output = Option<Box<dyn AsyncRead + Unpin + Send>>>>> {
+    ) -> BoxFuture<'static, Option<Box<dyn AsyncRead + Unpin + Send>>> {
         let path = self.file_path_for_key(key);
 
         Box::pin(async move {
@@ -68,7 +67,7 @@ impl CacheBackend for LocalCacheBackend {
     fn write_key(
         &self,
         key: CacheHash,
-    ) -> Pin<Box<dyn Future<Output = Option<Box<dyn AsyncWrite + Unpin + Send>>>>> {
+    ) -> BoxFuture<'static, Option<Box<dyn AsyncWrite + Unpin + Send>>> {
         let path = self.file_path_for_key(key);
 
         Box::pin(async move {
@@ -80,9 +79,7 @@ impl CacheBackend for LocalCacheBackend {
         })
     }
 
-    fn get_data_cache(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Option<Box<dyn AsyncRead + Unpin + Send>>>>> {
+    fn get_data_cache(&self) -> BoxFuture<'static, Option<Box<dyn AsyncRead + Unpin + Send>>> {
         let path = self.file_path_for_data();
 
         Box::pin(async move {
@@ -95,13 +92,8 @@ impl CacheBackend for LocalCacheBackend {
 
     fn get_data_cache_writer(
         &self,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                Output = Result<Box<dyn AsyncWrite + Unpin + Send>, crate::engine::RuntimeError>,
-            >,
-        >,
-    > {
+    ) -> BoxFuture<'_, Result<Box<dyn AsyncWrite + Unpin + Send>, crate::engine::RuntimeError>>
+    {
         let path = self.file_path_for_data();
 
         Box::pin(async move {
