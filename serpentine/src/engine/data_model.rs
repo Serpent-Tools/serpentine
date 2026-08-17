@@ -3,7 +3,7 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
-use crate::engine::cache::ContentHash;
+use crate::engine::cache::{CacheHash, CacheScope, ContentHash};
 use crate::engine::filesystem::FileSystem;
 use crate::engine::nodes::NodeImpl;
 use crate::engine::{RuntimeContext, RuntimeError, containerd};
@@ -52,6 +52,19 @@ pub enum CacheableData {
     Service(containerd::ServiceState),
 }
 
+/// A value referencing a external data source thats up for cache driven cleanup.
+///
+/// This is used instead of just cleaning out induvidual `Data` values as multiple data values can
+/// reference the same external resource, like a containerd snapshot.
+///
+/// This type lets us uniformly collect all such keys and ensure we only clean out the ones that
+/// arent used.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ResourceKey {
+    /// A containerd snapshot
+    Snapshot(Arc<str>),
+}
+
 impl Data {
     /// Return the type of this data.
     #[must_use]
@@ -91,10 +104,48 @@ impl Data {
     /// Check if this data is still valid
     pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
         match self {
-            Self::Container(state) => ctx.containerd.healthcheck(state).await,
-            Self::Service(state) => ctx.containerd.healthcheck(state).await,
+            Self::Container(state) => ctx.containerd.healthcheck_value(state).await,
+            Self::Service(state) => ctx.containerd.healthcheck_value(state).await,
             _ => true,
         }
+    }
+}
+
+impl CacheableData {
+    /// Retrive the resource keys for this data, if any.
+    pub fn resource_keys(&self) -> Vec<ResourceKey> {
+        match self {
+            Self::Container(state) => {
+                let mut snapshots = Vec::new();
+                state.collect_snapshots(&mut snapshots);
+                snapshots.into_iter().map(ResourceKey::Snapshot).collect()
+            }
+            Self::Service(state) => {
+                let mut snapshots = Vec::new();
+                state.collect_snapshots(&mut snapshots);
+                snapshots.into_iter().map(ResourceKey::Snapshot).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl ResourceKey {
+    /// Return a cache hash for this resource key, must match the cache hash used when trying to
+    /// retrive/save the resource to the cache backend.
+    pub async fn cache_hash(&self) -> Result<CacheHash, RuntimeError> {
+        match self {
+            Self::Snapshot(name) => CacheHash::from_data(CacheScope::Snapshot, name).await,
+        }
+    }
+
+    /// Delete this resource from the various backends, if it exists.
+    pub async fn clean(self, containerd: &containerd::Client) -> Result<(), RuntimeError> {
+        match self {
+            Self::Snapshot(name) => containerd.delete(&name).await?,
+        }
+
+        Ok(())
     }
 }
 

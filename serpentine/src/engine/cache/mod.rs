@@ -1,10 +1,13 @@
 //! A content addressable cache.
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use futures_util::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::engine::RuntimeError;
-use crate::engine::data_model::{CacheableData, Data, NodeKindId};
+use crate::engine::data_model::{CacheableData, Data, NodeKindId, ResourceKey};
+use crate::engine::{BoxedReader, BoxedWriter, RuntimeError};
 
 mod filesystem_backend;
 
@@ -70,7 +73,7 @@ pub trait ContentHash {
     async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError>;
 }
 
-impl<T: serde::Serialize> ContentHash for T {
+impl<T: serde::Serialize + ?Sized> ContentHash for T {
     fn content_hash(
         &self,
         hasher: &mut blake3::Hasher,
@@ -91,11 +94,13 @@ impl<T: serde::Serialize> ContentHash for T {
 pub enum CacheScope {
     /// `Data`
     Data,
+    /// A containerd snapshot
+    Snapshot,
 }
 
 impl CacheHash {
     /// Hash the given data, prefixing it with its type id, so that different types with the same data do not collide.
-    pub async fn from_data<T: ContentHash>(
+    pub async fn from_data<T: ContentHash + ?Sized>(
         scope: CacheScope,
         data: &T,
     ) -> Result<Self, RuntimeError> {
@@ -114,28 +119,56 @@ pub trait CacheBackend {
     /// Read the given key from the cache backend, returning a reader for the data.
     ///
     /// Returns `None` if the key does not exist in the cache backend.
-    fn read_key(&self, key: CacheHash) -> BoxFuture<'_, Option<Box<dyn AsyncRead + Unpin + Send>>>;
+    fn read_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedReader>>;
 
     /// Write the given key to the cache backend, returning a writer for the data.
     ///
     /// Returns `None` if the key already exists in the cache backend, and thus should not be written to.
-    fn write_key(
-        &self,
-        key: CacheHash,
-    ) -> BoxFuture<'_, Option<Box<dyn AsyncWrite + Unpin + Send>>>;
+    fn write_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>>;
 
     /// Retrive a reader to the  `DataCache` from this backend, this does not use `read_key`
     /// as the data cache should always be loaded and is not lazily loaded based on keys.
-    fn get_data_cache(&self) -> BoxFuture<'static, Option<Box<dyn AsyncRead + Unpin + Send>>>;
+    fn get_data_cache(&self) -> BoxFuture<'_, Option<BoxedReader>>;
 
     /// Get a writer to the `DataCache` in this backend, this does not use `write_key`
     /// as the data cache should always be saved and is not lazily saved based on keys
-    fn get_data_cache_writer(
-        &self,
-    ) -> BoxFuture<'_, Result<Box<dyn AsyncWrite + Unpin + Send>, RuntimeError>>;
+    fn get_data_cache_writer(&self) -> BoxFuture<'_, Result<BoxedWriter, RuntimeError>>;
+
+    /// Delete the given key if it exists in the cache backend.
+    ///
+    /// This function is allowed to be a noop if the backend already performs its own eviction, or
+    /// if the backend is append-only and does not support deletion.
+    fn delete_key(&self, _key: CacheHash) -> BoxFuture<'_, ()> {
+        Box::pin(std::future::ready(()))
+    }
 }
 
 static_assertions::assert_obj_safe!(CacheBackend);
+
+/// A cache backend that does not store anything.
+#[expect(clippy::allow_attributes, reason = "dead_code doesnt work with expect")]
+#[allow(dead_code, reason = "not wired into cli yet, but used in tests.")]
+pub struct NoneCacheBackend;
+
+impl CacheBackend for NoneCacheBackend {
+    fn read_key(&self, _key: CacheHash) -> BoxFuture<'_, Option<BoxedReader>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    fn write_key(&self, _key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    fn get_data_cache(&self) -> BoxFuture<'_, Option<BoxedReader>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    fn get_data_cache_writer(&self) -> BoxFuture<'_, Result<BoxedWriter, RuntimeError>> {
+        Box::pin(std::future::ready(Ok(
+            BoxedWriter::new(std::io::Cursor::new(Vec::new())),
+        )))
+    }
+}
 
 /// A key into the cache
 #[derive(Debug)]
@@ -158,29 +191,6 @@ impl ContentHash for CacheKey<'_> {
         Ok(())
     }
 }
-
-// /// A external cache is data stored in another service like a docker volume that our cache system
-// /// needs to take into account.
-// pub trait ExternalCache {
-//     /// Identity of an external resource referenced by cached data.
-//     type ResourceKey: std::hash::Hash + Eq;
-//
-//     /// Export data from the external cache to this file
-//     async fn export(
-//         &self,
-//         values: impl IntoIterator<Item = &Data>,
-//         file: &mut (impl AsyncWrite + Unpin + Send),
-//     ) -> Result<(), RuntimeError>;
-//
-//     /// Import data from the given file to this external cache
-//     async fn import(&self, file: &mut (impl AsyncRead + Unpin + Send)) -> Result<(), RuntimeError>;
-//
-//     /// The external resources the given data references.
-//     fn resource_keys(&self, data: &Data) -> Vec<Self::ResourceKey>;
-//
-//     /// Delete the given resource from this external cache
-//     async fn cleanup(&self, key: Self::ResourceKey);
-// }
 
 /// A hashmap storing the cache data
 type CacheHashMap = nohash::IntMap<CacheHash, CacheableData>;
@@ -226,24 +236,28 @@ impl DataCache {
     }
 
     /// Write this cache to the given writer, including the version number.
+    ///
+    /// Returns the resource keys to clean from the cache backend.
     async fn write(
         self,
         keep_old_cache: bool,
         mut writer: impl AsyncWrite + Unpin + Send,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<HashSet<ResourceKey>, RuntimeError> {
         writer.write_u8(CACHE_COMPATIBILITY_VERSION).await?;
 
-        let cache = if keep_old_cache {
+        if keep_old_cache {
             let mut combined_cache = self.new_cache;
             combined_cache.extend(self.old_cache);
-            combined_cache
+            serpentine_internal::write_postcard_frame(&combined_cache, &mut writer).await?;
+            Ok(HashSet::new())
         } else {
-            self.new_cache
-        };
-
-        serpentine_internal::write_postcard_frame(&cache, &mut writer).await?;
-
-        Ok(())
+            serpentine_internal::write_postcard_frame(&self.new_cache, &mut writer).await?;
+            Ok(self
+                .old_cache
+                .into_values()
+                .flat_map(|data| data.resource_keys())
+                .collect())
+        }
     }
 
     /// Load a cache from the given reader, checking the version number.
@@ -270,12 +284,12 @@ pub struct Cache {
     /// The cache for `Data` values
     pub data_cache: std::sync::Mutex<DataCache>,
     /// The cache for arbitrary keyed blobs
-    pub backend: Box<dyn CacheBackend + Send + Sync>,
+    pub backend: Arc<dyn CacheBackend + Send + Sync>,
 }
 
 impl Cache {
     /// Load the cache from the given backend, or create a new empty cache if the backend does not have a cache.
-    pub async fn new(backend: Box<dyn CacheBackend + Send + Sync>) -> Result<Self, RuntimeError> {
+    pub async fn new(backend: Arc<dyn CacheBackend + Send + Sync>) -> Result<Self, RuntimeError> {
         let data_cache = if let Some(mut reader) = backend.get_data_cache().await {
             match DataCache::load(&mut reader).await {
                 Ok(data_cache) => data_cache,
@@ -296,16 +310,41 @@ impl Cache {
         })
     }
 
+    /// Delete the given resource key, split out to make error handling easier in `save`.
+    async fn delete_resource_key(
+        backend: &(impl CacheBackend + ?Sized),
+        key: &ResourceKey,
+    ) -> Result<(), RuntimeError> {
+        let hash = key.cache_hash().await?;
+        backend.delete_key(hash).await;
+
+        Ok(())
+    }
+
     /// Save the cache to the backend.
-    pub async fn save(self, keep_old_cache: bool) -> Result<(), RuntimeError> {
-        let data_cache = self.data_cache.into_inner().map_err(|_| {
+    ///
+    /// Returns a hashset of the resource keys that the shutdown system should pass along to the
+    /// various engines for cleanup.
+    pub async fn save(self, keep_old_cache: bool) -> Result<HashSet<ResourceKey>, RuntimeError> {
+        let Self {
+            data_cache,
+            backend,
+        } = self;
+
+        let data_cache = data_cache.into_inner().map_err(|_| {
             RuntimeError::internal("Failed to lock data cache for saving, mutex poisoned")
         })?;
 
-        let mut writer = self.backend.get_data_cache_writer().await?;
-        data_cache.write(keep_old_cache, &mut writer).await?;
+        let mut writer = backend.get_data_cache_writer().await?;
+        let removed_resource_keys = data_cache.write(keep_old_cache, &mut writer).await?;
 
-        Ok(())
+        for key in &removed_resource_keys {
+            if let Err(err) = Self::delete_resource_key(&*backend, key).await {
+                log::error!("Failed to delete resource key {key:?}: {err}");
+            }
+        }
+
+        Ok(removed_resource_keys)
     }
 }
 

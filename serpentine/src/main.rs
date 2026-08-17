@@ -45,6 +45,8 @@ enum Command {
     /// Run a serpentine pipeline
     Run(Run),
     // TODO: Figure this out again
+    // This should ideally just delete the cache file and reset the containerd volume.
+    //
     // /// Clear out serpentine's cache.
     // Clean {
     //     /// The cache file to clean
@@ -300,20 +302,6 @@ mod tests {
             let err = format!("{err:?}");
             panic!("Failed to run {path:?}\n{err}")
         }
-
-        // Extra test to ensure the produced cache file can be read back in without error.
-        // While we have property tests for cache round-tripping, this at least tests that we can
-        // read back in the cache file produced by a real example without error (which sometimes
-        // hits edge cases that the property tests don't hit).
-
-        // TODO: re enable this
-
-        // let cache_file = cli.get_cache();
-        // if let Err(err) = crate::engine::clear_cache(&cache_file) {
-        //     let err = miette::Report::new(err);
-        //     let err = format!("{err:?}");
-        //     panic!("Failed to load cache {cache_file:?}\n{err}")
-        // }
     }
 
     #[rstest]

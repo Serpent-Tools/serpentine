@@ -73,7 +73,7 @@ impl Client {
         &self,
         mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
         path: UnixPathBuf,
-    ) -> Result<impl AsyncRead + Unpin + Send, RuntimeError> {
+    ) -> Result<impl AsyncRead + Unpin + Send + 'static, RuntimeError> {
         let mounts = mounts
             .into_iter()
             .map(containerd_to_sidecar_mount)
@@ -99,7 +99,7 @@ impl Client {
         &self,
         mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
         path: UnixPathBuf,
-    ) -> Result<impl AsyncWrite + Unpin + Send, RuntimeError> {
+    ) -> Result<impl AsyncWrite + Unpin + Send + 'static, RuntimeError> {
         let mounts = mounts
             .into_iter()
             .map(containerd_to_sidecar_mount)
@@ -107,6 +107,18 @@ impl Client {
 
         let socket = self.connect(Request::ImportFiles { mounts, path }).await?;
 
+        Ok(socket)
+    }
+
+    /// Export the given overlayfs mount from the sidecar.
+    ///
+    /// returns a reader of the tar stream.
+    pub async fn export_layer(
+        &self,
+        mount: containerd_client::types::Mount,
+    ) -> Result<impl AsyncRead + Unpin + Send + 'static, RuntimeError> {
+        let mount = containerd_to_sidecar_mount(mount);
+        let socket = self.connect(Request::ExportLayer(mount)).await?;
         Ok(socket)
     }
 }

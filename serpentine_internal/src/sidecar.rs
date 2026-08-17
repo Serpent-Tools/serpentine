@@ -41,6 +41,8 @@ pub enum Request {
         #[serde(with = "crate::TypedPathBufRemote")]
         path: UnixPathBuf,
     },
+    /// Export a overlayfs layer given by the given mounts.
+    ExportLayer(Mount),
 }
 
 /// Mounts options for mounting a snapshot in the sidecar manually.
