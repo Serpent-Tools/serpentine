@@ -14,11 +14,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, DuplexStream, ReadBuf};
 use tokio::sync::OnceCell;
 use typed_path::{PlatformPath, PlatformPathBuf};
 
-use crate::engine::RuntimeError;
 use crate::engine::cache::ContentHash;
-
-/// Type alias for a boxed async reader.
-pub type Reader<'this> = Box<dyn AsyncRead + Send + Unpin + 'this>;
+use crate::engine::{BoxedReader, RuntimeError};
 
 /// Trait for a object that can provide file system data.
 ///
@@ -27,7 +24,7 @@ pub type Reader<'this> = Box<dyn AsyncRead + Send + Unpin + 'this>;
 pub trait FileSystemProvider: Send + Sync {
     /// Get a reader matching the format specified in `serpentine_internal` from this file system
     /// source.
-    fn get_reader(&self) -> BoxFuture<'_, Result<Reader<'_>, RuntimeError>>;
+    fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>>;
 
     /// Hash this content.
     ///
@@ -221,15 +218,17 @@ impl<Fut: Future<Output = io::Result<()>>> AsyncRead for InlineReader<Fut> {
 pub struct LocalFiles(pub PlatformPathBuf);
 
 impl FileSystemProvider for LocalFiles {
-    fn get_reader(&self) -> BoxFuture<'_, Result<Reader<'_>, RuntimeError>> {
+    fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>> {
         Box::pin(async move {
             let ignore = discover_gitignore(
                 serpentine_internal::platform_to_std(&self.0).map_err(io::Error::other)?,
             );
 
-            let reader: Reader<'_> = Box::new(InlineReader::new(move |mut writer| async move {
+            let absolute_path = self.0.clone();
+
+            let reader = BoxedReader::new(InlineReader::new(move |mut writer| async move {
                 serpentine_internal::read_disk_to_filesystem_stream(
-                    &self.0,
+                    &absolute_path,
                     PlatformPath::new(""),
                     &mut writer,
                     |path, is_dir| {
@@ -290,8 +289,8 @@ pub mod fuzz {
     pub struct InMemoryFile(pub Arc<[u8]>);
 
     impl FileSystemProvider for InMemoryFile {
-        fn get_reader<'this>(&'this self) -> BoxFuture<'this, Result<Reader<'this>, RuntimeError>> {
-            let reader: Reader<'this> = Box::new(self.0.as_ref());
+        fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>> {
+            let reader = BoxedReader::new(io::Cursor::new(Arc::clone(&self.0)));
             Box::pin(std::future::ready(Ok(reader)))
         }
         fn hash_data<'this>(

@@ -10,11 +10,14 @@ mod scheduler;
 mod sidecar_client;
 mod userdb;
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use miette::Diagnostic;
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::engine::cache::CacheBackend;
 use crate::events::{Lifecycle, Reporter};
@@ -169,8 +172,62 @@ impl<T> From<std::sync::PoisonError<T>> for RuntimeError {
     }
 }
 
+/// A boxed `AsyncRead`-er.
+///
+/// A newtype rather than a type alias, as an alias leaves the `dyn`'s region in the type, which
+/// rustc universally quantifies and then fails to discharge once the reader reaches the bounds of a
+/// future that must be `Send` (rust-lang/rust#102870).
+pub(crate) struct BoxedReader(Box<dyn AsyncRead + Send + Unpin>);
+
+impl BoxedReader {
+    /// Erase `reader` behind the box.
+    pub(crate) fn new(reader: impl AsyncRead + Send + Unpin + 'static) -> Self {
+        Self(Box::new(reader))
+    }
+}
+
+impl AsyncRead for BoxedReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+/// A boxed `AsyncWrite`-er.
+///
+/// A newtype for the same reason as [`BoxedReader`].
+pub(crate) struct BoxedWriter(Box<dyn AsyncWrite + Send + Unpin>);
+
+impl BoxedWriter {
+    /// Erase `writer` behind the box.
+    pub(crate) fn new(writer: impl AsyncWrite + Send + Unpin + 'static) -> Self {
+        Self(Box::new(writer))
+    }
+}
+
+impl AsyncWrite for BoxedWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
 /// Handle to a held cross-process advisory lock. Dropping it releases the lock.
-pub(crate) struct FileLockGuard {
+struct FileLockGuard {
     /// The locked file; its handle is unlocked on drop, then closed as the file itself drops.
     file: std::fs::File,
 }
@@ -219,7 +276,7 @@ fn lock_file_name(key: &str) -> String {
 /// and snapshot stores. Locking on a stable key lets the first process do a create or fetch while
 /// the others wait and then reuse the result, avoiding duplicated work and races on that shared
 /// state. The lock is released when the returned guard is dropped.
-pub(crate) async fn acquire_file_lock(key: &str) -> Result<FileLockGuard, RuntimeError> {
+async fn acquire_file_lock(key: &str) -> Result<FileLockGuard, RuntimeError> {
     let file_name = lock_file_name(key);
     let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
         let dir = std::env::temp_dir().join("serpent-tools").join("locks");
@@ -252,11 +309,12 @@ impl RuntimeContext {
     async fn new(
         reporter: Reporter,
         cli: &crate::Run,
-        cache_backend: Box<dyn CacheBackend + Send + Sync>,
+        cache_backend: Arc<dyn CacheBackend + Send + Sync>,
     ) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
 
-        let containerd = containerd::Client::new(reporter.clone(), cli.jobs).await?;
+        let containerd =
+            containerd::Client::new(reporter.clone(), Arc::clone(&cache_backend), cli.jobs).await?;
         let cache = cache::Cache::new(cache_backend).await?;
 
         Ok(Self {
@@ -274,9 +332,20 @@ impl RuntimeContext {
             containerd, cache, ..
         } = self;
 
-        if let Err(err) = cache.save(!cli.clean_old).await {
-            log::warn!("Failed to save cache: {err}");
+        match cache.save(!cli.clean_old).await {
+            Err(err) => {
+                log::warn!("Failed to save cache: {err}");
+            }
+            Ok(resources_to_remove) => {
+                for resource in resources_to_remove {
+                    log::debug!("Removing resource {resource:?}");
+                    if let Err(err) = resource.clean(&containerd).await {
+                        log::error!("Failed to remove resource {err}");
+                    }
+                }
+            }
         }
+
         containerd.shutdown().await;
     }
 }
@@ -306,7 +375,7 @@ pub fn run(
         .block_on(async {
             let backend = cache::LocalCacheBackend::new(cli.get_cache().into_owned()).await?;
 
-            let context = Arc::new(RuntimeContext::new(reporter, cli, Box::new(backend)).await?);
+            let context = Arc::new(RuntimeContext::new(reporter, cli, Arc::new(backend)).await?);
             let scheduler = Arc::new(scheduler::Scheduler::new(
                 compile_result.nodes,
                 compile_result.graph,

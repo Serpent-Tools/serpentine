@@ -12,10 +12,13 @@ compile_error!(
 );
 
 use std::error::Error;
+use std::ffi::OsString;
 use std::net::Ipv4Addr;
 use std::ops::Deref;
+use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 
+use async_fs::unix::DirEntryExt;
 use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
 use rand::TryRng;
@@ -23,8 +26,9 @@ use rust_cni::libcni as cni;
 use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, PORT, Request};
 use serpentine_internal::{TypedPathSerdeWrapper, read_postcard_frame, write_postcard_frame};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net;
+use tokio_stream::StreamExt;
 use typed_path::{PlatformPath, PlatformPathBuf};
 
 /// The location serpentine connects to the containerd over
@@ -83,6 +87,8 @@ fn spawn_containerd() {
     log::info!("Creating containerd config");
     std::fs::create_dir_all("/etc/containerd/").expect("Failed to create directories");
 
+    // WARN: We specifically disable the more efficent overlayfs options for now as exporting them
+    // to a OCI layer requires walking the lowerdirs as well as the upperdir, which is more complex.
     std::fs::write(
         "/etc/containerd/config.toml",
         r#"
@@ -120,6 +126,9 @@ disabled_plugins = [
     "io.containerd.internal.v1.tracing",
     "io.containerd.ttrpc.v1.otelttrpc",
 ]
+
+[plugins."io.containerd.snapshotter.v1.overlayfs"]
+mount_options = ["redirect_dir=off", "metacopy=off"]
 "#,
     )
     .expect("Failed to create containerd config");
@@ -155,6 +164,7 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
         Request::ImportFiles { mounts, path } => {
             import_files(remote_socket, mounts, path.with_platform_encoding()).await
         }
+        Request::ExportLayer(mounts) => export_layer(remote_socket, mounts).await,
     }
 }
 
@@ -580,6 +590,118 @@ async fn import_files(
     serpentine_internal::read_filesystem_stream_to_disk(&target, &mut remote_socket, true).await?;
 
     Ok(())
+}
+
+/// Export a overlayfs upperdir to a tar stream.
+///
+/// # Based on
+/// * Linux overlayfs: <https://www.kernel.org/doc/html/latest/filesystems/overlayfs.html>
+/// * OCI spec: <https://github.com/opencontainers/image-spec/blob/main/layer.md>
+async fn export_layer(
+    remote_socket: impl AsyncWrite + Unpin + Send + Sync,
+    mount: Mount,
+) -> Result<(), Box<dyn Error>> {
+    let upperdir_path = extract_overlayfs_uppder(mount)?;
+    let mut tar = async_tar::Builder::new(remote_socket);
+
+    tar.follow_symlinks(false);
+    tar.mode(async_tar::HeaderMode::Complete);
+
+    let mut walker = async_walkdir::WalkDir::new(platform_to_std(&upperdir_path));
+    while let Some(Ok(entry)) = walker.next().await {
+        let absolute_path = entry.path();
+        let relative_path = absolute_path.strip_prefix(platform_to_std(&upperdir_path))?;
+
+        if is_whiteout(&entry).await? {
+            if let Some(original_name) = relative_path.file_name() {
+                let mut whiteout_name = OsString::from(".wh.");
+                whiteout_name.push(original_name);
+
+                let whiteout_path = relative_path.with_file_name(whiteout_name);
+                tar.append_data(
+                    &mut async_tar::Header::new_gnu(),
+                    whiteout_path,
+                    tokio::io::empty(),
+                )
+                .await?;
+            }
+        } else if is_opaque(&entry).await? {
+            let whiteout_path = relative_path.join(".wh..wh..opq");
+            tar.append_data(
+                &mut async_tar::Header::new_gnu(),
+                whiteout_path,
+                tokio::io::empty(),
+            )
+            .await?;
+        } else {
+            tar.append_path_with_name(&absolute_path, relative_path)
+                .await?;
+        }
+    }
+
+    tar.finish().await?;
+
+    Ok(())
+}
+
+/// Check if the given entry is a whiteout
+///
+/// Docs: <https://www.kernel.org/doc/html/latest/filesystems/overlayfs.html#whiteouts-and-opaque-directories>
+#[expect(
+    clippy::filetype_is_file,
+    reason = "We are explicitly checking for 'regular file' here"
+)]
+async fn is_whiteout(entry: &async_walkdir::DirEntry) -> Result<bool, Box<dyn Error>> {
+    let file_type = entry.file_type().await?;
+    if file_type.is_char_device() {
+        let inode = entry.ino();
+        let is_whiteout = nix::sys::stat::minor(inode) == 0 && nix::sys::stat::major(inode) == 0;
+
+        Ok(is_whiteout)
+    } else if file_type.is_file() {
+        let path = entry.path();
+        let is_whiteout = tokio::task::spawn_blocking(move || {
+            let result = xattr::get(path, "trusted.overlay.whiteout").map_err(|x| x.to_string())?;
+            Ok::<_, String>(result.is_some())
+        })
+        .await??;
+
+        Ok(is_whiteout)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Check if the given entry is a opaque directory.
+///
+/// Docs: <https://www.kernel.org/doc/html/latest/filesystems/overlayfs.html#whiteouts-and-opaque-directories>
+async fn is_opaque(entry: &async_walkdir::DirEntry) -> Result<bool, Box<dyn Error>> {
+    let file_type = entry.file_type().await?;
+
+    if file_type.is_dir() {
+        let path = entry.path();
+        let is_opaque = tokio::task::spawn_blocking(move || {
+            let value = xattr::get(path, "trusted.overlay.opaque").map_err(|x| x.to_string())?;
+            let is_opaque = value.is_some_and(|value| value == b"y");
+            Ok::<_, String>(is_opaque)
+        })
+        .await??;
+
+        Ok(is_opaque)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Extract the path to the mounts upperdir
+fn extract_overlayfs_uppder(mount: Mount) -> Result<PlatformPathBuf, Box<dyn Error>> {
+    for option in mount.options {
+        if let Some(path) = option.strip_prefix("upperdir=") {
+            return Ok(PlatformPathBuf::from(path));
+        }
+    }
+
+    Err("upperdir option not found".into())
 }
 
 /// Call `nix::mount::unmount` on drop

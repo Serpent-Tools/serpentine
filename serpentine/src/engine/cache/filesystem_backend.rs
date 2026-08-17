@@ -3,10 +3,10 @@
 use base64::Engine;
 use futures_util::future::BoxFuture;
 use serpentine_internal::platform_to_std;
-use tokio::io::{AsyncRead, AsyncWrite};
 use typed_path::PlatformPathBuf;
 
 use crate::engine::cache::{CacheBackend, CacheHash};
+use crate::engine::{BoxedReader, BoxedWriter};
 
 // FIX: What happens when multiple threads want sto read/write to the same key?
 // (lets write some tests for that.)
@@ -28,6 +28,7 @@ impl LocalCacheBackend {
     ///
     /// This will create the directory if it does not exist.
     pub async fn new(cache_dir: PlatformPathBuf) -> Result<Self, std::io::Error> {
+        log::debug!("Creating local cache backend with directory: {cache_dir:?}");
         tokio::fs::create_dir_all(platform_to_std(&cache_dir).map_err(std::io::Error::other)?)
             .await?;
 
@@ -50,24 +51,20 @@ impl LocalCacheBackend {
 }
 
 impl CacheBackend for LocalCacheBackend {
-    fn read_key(
-        &self,
-        key: CacheHash,
-    ) -> BoxFuture<'static, Option<Box<dyn AsyncRead + Unpin + Send>>> {
+    fn read_key(&self, key: CacheHash) -> BoxFuture<'static, Option<BoxedReader>> {
+        log::debug!("Reading key {key:?} from local cache backend");
         let path = self.file_path_for_key(key);
 
         Box::pin(async move {
             let file = tokio::fs::File::open(platform_to_std(&path).ok()?)
                 .await
                 .ok()?;
-            Some(Box::new(file) as Box<dyn AsyncRead + Unpin + Send>)
+            Some(BoxedReader::new(file))
         })
     }
 
-    fn write_key(
-        &self,
-        key: CacheHash,
-    ) -> BoxFuture<'static, Option<Box<dyn AsyncWrite + Unpin + Send>>> {
+    fn write_key(&self, key: CacheHash) -> BoxFuture<'static, Option<BoxedWriter>> {
+        log::debug!("Writing key {key:?} to local cache backend");
         let path = self.file_path_for_key(key);
 
         Box::pin(async move {
@@ -75,25 +72,26 @@ impl CacheBackend for LocalCacheBackend {
                 .await
                 .ok()?;
 
-            Some(Box::new(file) as Box<dyn AsyncWrite + Unpin + Send>)
+            Some(BoxedWriter::new(file))
         })
     }
 
-    fn get_data_cache(&self) -> BoxFuture<'static, Option<Box<dyn AsyncRead + Unpin + Send>>> {
+    fn get_data_cache(&self) -> BoxFuture<'static, Option<BoxedReader>> {
+        log::debug!("Reading data cache from local cache backend");
         let path = self.file_path_for_data();
 
         Box::pin(async move {
             let file = tokio::fs::File::open(platform_to_std(&path).ok()?)
                 .await
                 .ok()?;
-            Some(Box::new(file) as Box<dyn AsyncRead + Unpin + Send>)
+            Some(BoxedReader::new(file))
         })
     }
 
     fn get_data_cache_writer(
         &self,
-    ) -> BoxFuture<'_, Result<Box<dyn AsyncWrite + Unpin + Send>, crate::engine::RuntimeError>>
-    {
+    ) -> BoxFuture<'_, Result<BoxedWriter, crate::engine::RuntimeError>> {
+        log::debug!("Writing data cache to local cache backend");
         let path = self.file_path_for_data();
 
         Box::pin(async move {
@@ -103,7 +101,19 @@ impl CacheBackend for LocalCacheBackend {
                 })?)
                 .await?;
 
-            Ok(Box::new(file) as Box<dyn AsyncWrite + Unpin + Send>)
+            Ok(BoxedWriter::new(file))
+        })
+    }
+
+    fn delete_key(&self, key: CacheHash) -> BoxFuture<'_, ()> {
+        let path = self.file_path_for_key(key);
+
+        Box::pin(async move {
+            let Ok(path) = platform_to_std(&path) else {
+                return;
+            };
+
+            let _ = tokio::fs::remove_file(path).await;
         })
     }
 }

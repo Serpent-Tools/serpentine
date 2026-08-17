@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use containerd_client::services::v1 as containerd_services;
@@ -13,16 +14,16 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use typed_path::{UnixPath, UnixPathBuf};
 
+use crate::engine::cache::{CacheBackend, CacheHash, CacheScope};
 // use crate::engine::cache::ExternalCache;
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
-use crate::engine::{RuntimeError, acquire_file_lock, sidecar_client, userdb};
+use crate::engine::{BoxedReader, RuntimeError, acquire_file_lock, sidecar_client, userdb};
 use crate::events::{Lifecycle, Reporter, TaskHandle, TaskId, TaskKind};
 
 /// The snapshotter to use for containers.
-// WARN: While most of the code is snapshotter agnostic, the ExternalCache implementation uses
+// WARN: While most of the code is snapshotter agnostic, the sidecar export layer implementation uses
 // overlayfs specific knowledge to efficiently produce filesystem diffs.
-// If we change snapshotter in the future that code will need to be updated (likely using the diff
-// service).
+// If we change snapshotter in the future that code will need to be updated.
 const SNAPSHOTTER: &str = "overlayfs";
 
 /// Field generators for fuzzing the container config types.
@@ -521,6 +522,8 @@ pub struct Client {
     oci: oci_client::Client,
     /// Channel run events are reported through
     reporter: Reporter,
+    /// Caching backend for storing snapshots in
+    cache: Arc<dyn CacheBackend + Send + Sync>,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
     /// Dangling resources
@@ -555,7 +558,11 @@ impl Client {
     }
 
     /// Create a new containerd client
-    pub async fn new(reporter: Reporter, exec_permits: usize) -> Result<Self, RuntimeError> {
+    pub async fn new(
+        reporter: Reporter,
+        cache: Arc<dyn CacheBackend + Send + Sync>,
+        exec_permits: usize,
+    ) -> Result<Self, RuntimeError> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
             user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
             platform_resolver: Some(Box::new(platform_resolver)),
@@ -586,29 +593,248 @@ impl Client {
             containerd: ContainerdRootClient(containerd),
             oci,
             reporter,
+            cache,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
             dangling: Mutex::new(Vec::new()),
             free_networks: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Check if a state and all its services exist
-    pub async fn healthcheck(&self, config: &ContainerState) -> bool {
+    /// Export the given snapshot to the caching backend
+    async fn export_snapshot(&self, snapshot: &str) -> Result<(), RuntimeError> {
+        log::debug!("Exporting snapshot {snapshot} to cache");
+
+        let hash = CacheHash::from_data(CacheScope::Snapshot, snapshot).await?;
+        let Some(mut writer) = self.cache.write_key(hash).await else {
+            log::debug!("Snapshot {snapshot} already exists in cache");
+            return Ok(());
+        };
+
+        let mounts = self
+            .containerd
+            .snapshot()
+            .mounts(containerd_services::snapshots::MountsRequest {
+                snapshotter: SNAPSHOTTER.into(),
+                key: snapshot.into(),
+            })
+            .await?
+            .into_inner()
+            .mounts;
+
+        debug_assert!(
+            mounts.len() == 1,
+            "Expected overlayfs mounts to only have one mount returned"
+        );
+        let mount = mounts
+            .into_iter()
+            .next()
+            .ok_or_else(|| RuntimeError::internal("No mounts returned for snapshoter"))?;
+
+        let parent = self
+            .containerd
+            .snapshot()
+            .stat(containerd_services::snapshots::StatSnapshotRequest {
+                snapshotter: SNAPSHOTTER.into(),
+                key: snapshot.into(),
+            })
+            .await?
+            .into_inner()
+            .info
+            .ok_or_else(|| RuntimeError::internal("snapshot didnt have any info"))?
+            .parent;
+
+        serpentine_internal::write_postcard_frame(&parent, &mut writer).await?;
+        let mut tar_stream = self.sidecar.export_layer(mount).await?;
+        tokio::io::copy(&mut tar_stream, &mut writer).await?;
+
+        log::debug!("Finished exporting layer");
+
+        if !parent.is_empty() {
+            Box::pin(self.export_snapshot(&parent)).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Attempt to load the given snapshot from the cache backend.
+    ///
+    /// returns wether the snapshot was imported
+    async fn import_layer(&self, snapshot: &str) -> Result<bool, RuntimeError> {
+        log::debug!("Attempting to import {snapshot}");
+
+        let hash = CacheHash::from_data(CacheScope::Snapshot, snapshot).await?;
+        let Some(mut reader) = self.cache.read_key(hash).await else {
+            log::debug!("Snapshot {snapshot} not in cache backend");
+            return Ok(false);
+        };
+
+        let parent: String = serpentine_internal::read_postcard_frame(&mut reader).await?;
+        Box::pin(self.import_layer(&parent)).await?;
+
+        let lease = self.new_lease().await?;
+
+        log::debug!("Importing {snapshot} into content store");
+        let (total_size, digest) = self
+            .import_reader_into_content_store(reader, &lease)
+            .await?;
+
+        let temp_snapshot = uuid::Uuid::new_v4().to_string();
+        log::debug!("Creating temporary snapshot {temp_snapshot} from {parent}");
+        let mounts = self
+            .containerd
+            .snapshot()
+            .prepare(
+                containerd_services::snapshots::PrepareSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.into(),
+                    key: temp_snapshot.clone(),
+                    parent,
+                    labels: HashMap::new(),
+                }
+                .with_lease(&lease),
+            )
+            .await?
+            .into_inner()
+            .mounts;
+
+        log::debug!("Applying layer diff {digest} to {temp_snapshot}");
+        let descriptor = containerd_client::types::Descriptor {
+            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+            digest,
+            size: total_size.try_into().unwrap_or(0),
+            annotations: HashMap::new(),
+        };
+        self.containerd
+            .diff()
+            .apply(containerd_services::ApplyRequest {
+                mounts,
+                diff: Some(descriptor),
+                payloads: HashMap::new(),
+                sync_fs: true,
+            })
+            .await?;
+        log::debug!("Diff applied, commiting snapshot to {snapshot}");
+        self.containerd
+            .snapshot()
+            .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                snapshotter: SNAPSHOTTER.into(),
+                key: temp_snapshot,
+                name: snapshot.to_owned(),
+                // FIX: When importing cached image layers this will mark them all as root which
+                // makes cleanup fail to remove them as we only remove gc.root from snapshots
+                // directly named by serpentine.
+                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
+            })
+            .await?;
+
+        self.drop_lease(lease).await?;
+
+        Ok(true)
+    }
+
+    /// Import data from the given reader into the content store (under the given lease.)
+    ///
+    /// returns the total size in bytes, as well as the digest.
+    async fn import_reader_into_content_store(
+        &self,
+        reader: BoxedReader,
+        lease: &str,
+    ) -> Result<(usize, String), RuntimeError> {
+        let upload_ref = uuid::Uuid::new_v4().to_string();
+        let upload_ref_clone = upload_ref.clone();
+        let reader = tokio_util::io::ReaderStream::new(reader);
+        let current_offset = Arc::new(AtomicUsize::new(0));
+        let current_offset_clone = Arc::clone(&current_offset);
+        self.containerd
+            .content()
+            .write(
+                reader
+                    .filter_map(async |layer_data| layer_data.ok())
+                    .map(move |layer_data| {
+                        let previous_offset =
+                            current_offset_clone.fetch_add(layer_data.len(), Ordering::SeqCst);
+
+                        containerd_services::WriteContentRequest {
+                            action: containerd_services::WriteAction::Write.into(),
+                            r#ref: upload_ref_clone.clone(),
+                            total: 0,
+                            expected: String::new(),
+                            offset: previous_offset.try_into().unwrap_or(0),
+                            data: layer_data.to_vec(),
+                            labels: HashMap::new(),
+                        }
+                    })
+                    .with_lease(lease),
+            )
+            .await?
+            .into_inner()
+            .try_for_each(async |_| Ok(()))
+            .await?;
+        let total_size = current_offset.load(Ordering::SeqCst);
+        let digest = self
+            .containerd
+            .content()
+            .write(
+                futures_util::stream::once(async move {
+                    containerd_services::WriteContentRequest {
+                        action: containerd_services::WriteAction::Write.into(),
+                        r#ref: upload_ref,
+                        total: total_size.try_into().unwrap_or(0),
+                        expected: String::new(),
+                        offset: (total_size).try_into().unwrap_or(0),
+                        data: Vec::new(),
+                        labels: HashMap::new(),
+                    }
+                })
+                .with_lease(lease),
+            )
+            .await?
+            .into_inner()
+            .try_next()
+            .await?
+            .ok_or_else(|| RuntimeError::internal("No response for commit"))?
+            .digest;
+        Ok((total_size, digest))
+    }
+
+    /// Checks if the snapshot exsists in containerd and if not tries to import it from the cache.
+    ///
+    /// Returns wether the snapshot exsists after this.
+    async fn ensure_snapshot(&self, snapshot: &str) -> bool {
+        log::debug!("Ensuring {snapshot} exsists");
+
         if self
             .containerd
             .snapshot()
             .stat(containerd_services::snapshots::StatSnapshotRequest {
                 snapshotter: SNAPSHOTTER.to_owned(),
-                key: (*config.snapshot).to_owned(),
+                key: snapshot.into(),
             })
             .await
-            .is_err()
+            .is_ok()
         {
+            log::debug!("{snapshot} exsists");
+            true
+        } else {
+            let result = self.import_layer(snapshot).await;
+
+            match result {
+                Ok(imported) => imported,
+                Err(err) => {
+                    log::error!("Failed to import layer: {err}");
+                    false
+                }
+            }
+        }
+    }
+
+    /// Check if a state and all its services exist
+    pub async fn healthcheck_value(&self, config: &ContainerState) -> bool {
+        if !self.ensure_snapshot(&config.snapshot).await {
             return false;
         }
 
         for service in config.config.services.values() {
-            if !Box::pin(self.healthcheck(service)).await {
+            if !Box::pin(self.healthcheck_value(service)).await {
                 return false;
             }
         }
@@ -1620,6 +1846,10 @@ impl Client {
             })
             .await?;
 
+        if let Err(err) = self.export_snapshot(&final_snapshot).await {
+            log::error!("Failed to export snapshot: {err}");
+        }
+
         let stdout = handle
             .stdout
             .await
@@ -1742,6 +1972,10 @@ impl Client {
             .await?;
         self.drop_lease(lease).await?;
 
+        if let Err(err) = self.export_snapshot(&snapshot).await {
+            log::error!("Failed to export snapshot: {err}");
+        }
+
         Ok(ContainerState {
             snapshot: new_snapshot.into(),
             config: state.config.clone(),
@@ -1825,307 +2059,29 @@ impl Client {
         }
     }
 
-    // /// Export the given snapshot recursively to the given file.
-    // ///
-    // /// The `seen` hashmap will be used to ensure each snapshot is only exported once.
-    // async fn export_snapshot(
-    //     &self,
-    //     file: &mut (impl AsyncWrite + Unpin + Send),
-    //     lease: &str,
-    //     seen: &mut HashSet<Box<str>>,
-    //     snapshot: &str,
-    // ) -> Result<(), RuntimeError> {
-    //     if snapshot.trim().is_empty() {
-    //         log::warn!("Was told to export empty snapshot");
-    //         return Ok(());
-    //     }
-    //
-    //     if seen.contains(snapshot) {
-    //         return Ok(());
-    //     }
-    //     seen.insert(snapshot.into());
-    //
-    //     log::debug!("Exporting {snapshot}");
-    //     let Some(info) = self
-    //         .containerd
-    //         .snapshot()
-    //         .stat(containerd_services::snapshots::StatSnapshotRequest {
-    //             snapshotter: SNAPSHOTTER.into(),
-    //             key: snapshot.to_owned(),
-    //         })
-    //         .await?
-    //         .into_inner()
-    //         .info
-    //     else {
-    //         return Err(RuntimeError::internal("Snapshot not found"));
-    //     };
-    //
-    //     if let Some(image) = info.labels.get("serpentine/image") {
-    //         log::debug!("Image layer found, writing image name.");
-    //         file.write_u8(1).await?;
-    //         serpentine_internal::write_length_prefixed(file, &info.name).await?;
-    //         file.write_u8(1).await?;
-    //         serpentine_internal::write_length_prefixed(file, image).await?;
-    //     } else {
-    //         log::debug!("Ensuring parent is exported");
-    //         Box::pin(self.export_snapshot(file, lease, seen, &info.parent)).await?;
-    //
-    //         log::debug!("Exporting (actually) {snapshot}");
-    //         file.write_u8(1).await?;
-    //         serpentine_internal::write_length_prefixed(file, &info.name).await?;
-    //         file.write_u8(0).await?;
-    //         serpentine_internal::write_length_prefixed(file, &info.parent).await?;
-    //         let view_snapshot = format!("{}/export/{}", info.name, uuid::Uuid::new_v4());
-    //         let mounts = self
-    //             .containerd
-    //             .snapshot()
-    //             .view(
-    //                 containerd_services::snapshots::ViewSnapshotRequest {
-    //                     snapshotter: SNAPSHOTTER.into(),
-    //                     key: view_snapshot,
-    //                     parent: info.name,
-    //                     labels: HashMap::new(),
-    //                 }
-    //                 .with_lease(lease),
-    //             )
-    //             .await?
-    //             .into_inner()
-    //             .mounts;
-    //         debug_assert_eq!(mounts.len(), 1, "overlayfs should only produce one mount");
-    //         let Some(mount) = mounts.first() else {
-    //             return Err(RuntimeError::internal(
-    //                 "snapshotter did not return any mounts",
-    //             ));
-    //         };
-    //         let Some(lowerdir_option) = mount
-    //             .options
-    //             .iter()
-    //             .find_map(|option| option.strip_prefix("lowerdir="))
-    //         else {
-    //             return Err(RuntimeError::internal(
-    //                 "No lowerdir option found in mounts.",
-    //             ));
-    //         };
-    //         let Some(snapshot_dir) = lowerdir_option.split(':').next() else {
-    //             return Err(RuntimeError::internal("No dirs found in lowerdir option"));
-    //         };
-    //         let mut filesystem = self
-    //             .sidecar
-    //             .export_files(
-    //                 vec![containerd_client::types::Mount {
-    //                     r#type: "bind".to_owned(),
-    //                     source: snapshot_dir.to_owned(),
-    //                     target: String::new(),
-    //                     options: vec!["ro".to_owned(), "rbind".to_owned()],
-    //                 }],
-    //                 UnixPath::new(""),
-    //             )
-    //             .await?;
-    //         log::debug!("Streaming layer to cache.");
-    //         tokio::io::copy(&mut filesystem, file).await?;
-    //     }
-    //
-    //     Ok(())
-    // }
+    // TEST: That this works, hard to do as its simply asking containerd to delete it at a later
+    // time.
+
+    /// Mark the given snapshot for garbage collection.
+    pub async fn delete(&self, snapshot: &str) -> Result<(), RuntimeError> {
+        self.containerd
+            .snapshot()
+            .update(containerd_services::snapshots::UpdateSnapshotRequest {
+                snapshotter: SNAPSHOTTER.to_owned(),
+                info: Some(containerd_services::snapshots::Info {
+                    name: snapshot.to_owned(),
+                    labels: HashMap::from([("containerd.io/gc.root".to_owned(), "0".to_owned())]),
+                    ..Default::default()
+                }),
+                update_mask: Some(prost_types::FieldMask {
+                    paths: vec!["labels".to_owned()],
+                }),
+            })
+            .await?;
+
+        Ok(())
+    }
 }
-
-// TODO: Figure out standalone cache again.
-
-// impl ExternalCache for Client {
-//     type ResourceKey = Arc<str>;
-//
-//     fn resource_keys(&self, data: &super::data_model::Data) -> Vec<Self::ResourceKey> {
-//         let mut keys = Vec::new();
-//         match data {
-//             super::data_model::Data::Container(container) => container.collect_snapshots(&mut keys),
-//             super::data_model::Data::Service(service) => service.collect_snapshots(&mut keys),
-//             _ => {}
-//         }
-//         keys
-//     }
-//
-//     async fn cleanup(&self, snapshot: Self::ResourceKey) {
-//         log::debug!("Deleting snapshot {snapshot}");
-//
-//         let delete_result = self
-//             .containerd
-//             .snapshot()
-//             .remove(containerd_services::snapshots::RemoveSnapshotRequest {
-//                 snapshotter: SNAPSHOTTER.into(),
-//                 key: snapshot.to_string(),
-//             })
-//             .await;
-//         if let Err(delete_error) = delete_result {
-//             log::error!("Error deleting snapshot, {delete_error}, marking as free instead.");
-//
-//             let Ok(info) = self
-//                 .containerd
-//                 .snapshot()
-//                 .stat(containerd_services::snapshots::StatSnapshotRequest {
-//                     snapshotter: SNAPSHOTTER.into(),
-//                     key: snapshot.to_string(),
-//                 })
-//                 .await
-//             else {
-//                 log::error!("Failed to get labels");
-//                 return;
-//             };
-//
-//             let mut labels = info
-//                 .into_inner()
-//                 .info
-//                 .map(|info| info.labels)
-//                 .unwrap_or_default();
-//             labels.remove("containerd.io/gc.root");
-//
-//             let update_result = self
-//                 .containerd
-//                 .snapshot()
-//                 .update(containerd_services::snapshots::UpdateSnapshotRequest {
-//                     snapshotter: SNAPSHOTTER.into(),
-//                     update_mask: Some(prost_types::FieldMask {
-//                         paths: vec!["labels".to_owned()],
-//                     }),
-//                     info: Some(containerd_services::snapshots::Info {
-//                         labels,
-//                         name: snapshot.to_string(),
-//                         ..Default::default()
-//                     }),
-//                 })
-//                 .await;
-//
-//             if let Err(update_error) = update_result {
-//                 log::error!("Failed to remove labels from snapshot {update_error}");
-//             }
-//         }
-//     }
-//
-//     async fn export(
-//         &self,
-//         values: impl IntoIterator<Item = &super::data_model::Data>,
-//         file: &mut (impl AsyncWrite + Unpin + Send),
-//     ) -> Result<(), RuntimeError> {
-//         log::info!("Exporting from containerd into cache.");
-//         let lease = self.new_lease().await?;
-//
-//         let mut seen = HashSet::new();
-//
-//         for value in values {
-//             if let super::data_model::Data::Container(container) = value {
-//                 self.export_snapshot(file, &lease, &mut seen, &container.snapshot)
-//                     .await?;
-//             }
-//         }
-//
-//         self.drop_lease(lease).await?;
-//
-//         file.write_u8(0).await?;
-//
-//         Ok(())
-//     }
-//
-//     async fn import(&self, file: &mut (impl AsyncRead + Send + Unpin)) -> Result<(), RuntimeError> {
-//         log::info!("Importing from cache into containerd.");
-//         let lease = self.new_lease().await?;
-//
-//         while file.read_u8().await? == 1 {
-//             let name = serpentine_internal::read_length_prefixed_string(file).await?;
-//             log::debug!("Importing {name}");
-//             let kind = file.read_u8().await?;
-//
-//             match kind {
-//                 1 => {
-//                     let image = serpentine_internal::read_length_prefixed_string(file).await?;
-//                     match self.pull_image(&image).await {
-//                         Ok(state) => {
-//                             let pulled_layer = state.snapshot;
-//                             if *pulled_layer != *name {
-//                                 log::warn!("Image name resolved to different image than in cache.");
-//                             }
-//                         }
-//                         Err(err) => log::error!("Failed to restore {image}: {err}"),
-//                     }
-//                 }
-//                 0 => {
-//                     let parent = serpentine_internal::read_length_prefixed_string(file).await?;
-//                     let temp_snapshot = format!("{name}/import/{}", uuid::Uuid::new_v4());
-//                     let mounts = self
-//                         .containerd
-//                         .snapshot()
-//                         .prepare(
-//                             containerd_services::snapshots::PrepareSnapshotRequest {
-//                                 snapshotter: SNAPSHOTTER.into(),
-//                                 key: temp_snapshot.clone(),
-//                                 parent,
-//                                 labels: HashMap::new(),
-//                             }
-//                             .with_lease(&lease),
-//                         )
-//                         .await?
-//                         .into_inner()
-//                         .mounts;
-//                     debug_assert_eq!(mounts.len(), 1, "There should only be one mount.");
-//
-//                     let Some(mount) = mounts.first() else {
-//                         return Err(RuntimeError::internal(
-//                             "snapshotter did not return any mounts",
-//                         ));
-//                     };
-//                     let Some(upperdir_option) = mount
-//                         .options
-//                         .iter()
-//                         .find_map(|option| option.strip_prefix("upperdir="))
-//                     else {
-//                         return Err(RuntimeError::internal(
-//                             "No lowerdir option found in mounts.",
-//                         ));
-//                     };
-//
-//                     log::debug!("Copying in filesystem");
-//                     self.sidecar
-//                         .import_files(
-//                             vec![containerd_client::types::Mount {
-//                                 r#type: "bind".to_owned(),
-//                                 source: upperdir_option.to_owned(),
-//                                 target: String::new(),
-//                                 options: vec!["rw".to_owned(), "rbind".to_owned()],
-//                             }],
-//                             UnixPath::new(""),
-//                             file,
-//                         )
-//                         .await?;
-//
-//                     let commit_result = self
-//                         .containerd
-//                         .snapshot()
-//                         .commit(containerd_services::snapshots::CommitSnapshotRequest {
-//                             snapshotter: SNAPSHOTTER.into(),
-//                             name,
-//                             key: temp_snapshot,
-//                             labels: HashMap::from([(
-//                                 "containerd.io/gc.root".to_owned(),
-//                                 "1".to_owned(),
-//                             )]),
-//                         })
-//                         .await;
-//                     match commit_result {
-//                         Ok(_) => {}
-//                         Err(status)
-//                             if status.code() == containerd_client::tonic::Code::AlreadyExists => {}
-//                         Err(err) => return Err(err.into()),
-//                     }
-//                 }
-//                 _ => {
-//                     return Err(RuntimeError::internal("Unknown layer kind."));
-//                 }
-//             }
-//         }
-//
-//         self.drop_lease(lease).await?;
-//
-//         Ok(())
-//     }
-// }
 
 impl Drop for Client {
     fn drop(&mut self) {
@@ -2150,20 +2106,15 @@ struct ContainerFileExport {
 impl FileSystemProvider for ContainerFileExport {
     fn get_reader<'this>(
         &'this self,
-    ) -> std::pin::Pin<
-        Box<
-            dyn Future<Output = Result<crate::engine::filesystem::Reader<'this>, RuntimeError>>
-                + Send
-                + 'this,
-        >,
-    > {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<BoxedReader, RuntimeError>> + Send + 'this>>
+    {
         Box::pin(async move {
             log::debug!("Creating reader for {} in container", self.path.display());
             let reader = self
                 .sidecar
                 .export_files(self.mounts.to_vec(), self.path.clone())
                 .await?;
-            Ok(crate::engine::filesystem::Reader::from(Box::new(reader)))
+            Ok(BoxedReader::new(reader))
         })
     }
 
@@ -2230,9 +2181,13 @@ mod integration_tests {
 
     #[fixture]
     async fn containerd_client() -> Client {
-        Client::new(Reporter::none(), 1)
-            .await
-            .expect("Failed to create Docker client")
+        Client::new(
+            Reporter::none(),
+            Arc::new(crate::engine::cache::NoneCacheBackend),
+            1,
+        )
+        .await
+        .expect("Failed to create Docker client")
     }
 
     #[rstest]
