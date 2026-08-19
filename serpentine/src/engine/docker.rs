@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::process::Command;
 
 use bollard::API_DEFAULT_VERSION;
+use bollard::query_parameters::{RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder};
 use futures_util::StreamExt;
 
 use crate::engine::{RuntimeError, acquire_file_lock, sidecar_client};
@@ -130,6 +131,40 @@ fn is_docker_status(err: &bollard::errors::Error, status: u16) -> bool {
         bollard::errors::Error::DockerResponseServerError { status_code, .. }
             if *status_code == status
     )
+}
+
+/// Delete the container and docker volume in order to fully reset the sidecar
+pub async fn delete_container_and_volume() -> Result<(), RuntimeError> {
+    let (engine, docker) = connect_docker().await?;
+    log::info!("Cleaning out serpentine container from {engine}");
+
+    log::info!("Deleting container {CONTAINER_NAME}");
+    let res_container = docker
+        .remove_container(
+            CONTAINER_NAME,
+            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+        )
+        .await;
+
+    if let Err(err) = res_container {
+        log::error!("Failed to delete container: {err}");
+    }
+
+    log::info!("Deleting volume {CONTAINER_VOLUME}");
+    let res_volume = docker
+        .remove_volume(
+            CONTAINER_VOLUME,
+            Some(RemoveVolumeOptionsBuilder::default().force(true).build()),
+        )
+        .await;
+
+    if let Err(err) = res_volume {
+        log::error!("Failed to delete volume: {err}");
+    }
+
+    log::info!("Deleted serpentine container states");
+
+    Ok(())
 }
 
 /// Spin up a containerd instance using the given docker client.

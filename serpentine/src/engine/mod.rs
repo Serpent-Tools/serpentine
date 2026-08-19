@@ -3,7 +3,7 @@
 mod cache;
 mod containerd;
 pub mod data_model;
-mod docker;
+pub mod docker;
 mod filesystem;
 pub mod nodes;
 mod scheduler;
