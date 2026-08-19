@@ -19,7 +19,7 @@
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 
-// TODO: use a orderd vec with a wrapper ordering type instead of badly implementing `Ord` and `Eq` for this tree structure, which is not a total order.
+// TODO: use a ordered vec with a wrapper ordering type instead of badly implementing `Ord` and `Eq` for this tree structure, which is not a total order.
 
 /// A generic network topology struct, for holding the various kinds of network topology forms.
 ///

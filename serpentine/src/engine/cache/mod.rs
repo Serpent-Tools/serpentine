@@ -126,7 +126,7 @@ pub trait CacheBackend {
     /// Returns `None` if the key already exists in the cache backend, and thus should not be written to.
     fn write_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>>;
 
-    /// Retrive a reader to the  `DataCache` from this backend, this does not use `read_key`
+    /// Retrieve a reader to the  `DataCache` from this backend, this does not use `read_key`
     /// as the data cache should always be loaded and is not lazily loaded based on keys.
     fn get_data_cache(&self) -> BoxFuture<'_, Option<BoxedReader>>;
 
@@ -164,9 +164,9 @@ impl CacheBackend for NoneCacheBackend {
     }
 
     fn get_data_cache_writer(&self) -> BoxFuture<'_, Result<BoxedWriter, RuntimeError>> {
-        Box::pin(std::future::ready(Ok(
-            BoxedWriter::new(std::io::Cursor::new(Vec::new())),
-        )))
+        Box::pin(std::future::ready(Ok(BoxedWriter::new(
+            std::io::Cursor::new(Vec::new()),
+        ))))
     }
 }
 
@@ -450,12 +450,12 @@ mod tests {
                     let data1 = data1
                         .iter()
                         .cloned()
-                        .map(Data::from_cachable)
+                        .map(Data::from_cacheable)
                         .collect::<Vec<_>>();
                     let data2 = data2
                         .iter()
                         .cloned()
-                        .map(Data::from_cachable)
+                        .map(Data::from_cacheable)
                         .collect::<Vec<_>>();
 
                     let key1 = CacheKey {

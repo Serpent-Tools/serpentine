@@ -61,7 +61,7 @@ bolero.workspace = true
 insta = { version = "1.46.3", default-features = false, features = ["filters"] }
 rstest.workspace = true
 strum = { version = "0.28.0", default-features = false, features = ["derive"] }
-test-log = { version = "0.2.18", default-features = false }
+test-log = { version = "0.2.18", default-features = false, features = ["log"] }
 tokio = { workspace = true, features = ["macros", "test-util"] }
 
 [features]

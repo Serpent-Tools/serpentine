@@ -658,7 +658,7 @@ impl Client {
 
     /// Attempt to load the given snapshot from the cache backend.
     ///
-    /// returns wether the snapshot was imported
+    /// returns whether the snapshot was imported
     async fn import_layer(&self, snapshot: &str) -> Result<bool, RuntimeError> {
         log::debug!("Attempting to import {snapshot}");
 
@@ -712,7 +712,7 @@ impl Client {
                 sync_fs: true,
             })
             .await?;
-        log::debug!("Diff applied, commiting snapshot to {snapshot}");
+        log::debug!("Diff applied, committing snapshot to {snapshot}");
         self.containerd
             .snapshot()
             .commit(containerd_services::snapshots::CommitSnapshotRequest {
@@ -796,11 +796,11 @@ impl Client {
         Ok((total_size, digest))
     }
 
-    /// Checks if the snapshot exsists in containerd and if not tries to import it from the cache.
+    /// Checks if the snapshot exists in containerd and if not tries to import it from the cache.
     ///
-    /// Returns wether the snapshot exsists after this.
+    /// Returns whether the snapshot exists after this.
     async fn ensure_snapshot(&self, snapshot: &str) -> bool {
-        log::debug!("Ensuring {snapshot} exsists");
+        log::debug!("Ensuring {snapshot} exists");
 
         if self
             .containerd
@@ -812,7 +812,7 @@ impl Client {
             .await
             .is_ok()
         {
-            log::debug!("{snapshot} exsists");
+            log::debug!("{snapshot} exists");
             true
         } else {
             let result = self.import_layer(snapshot).await;
@@ -1708,7 +1708,7 @@ impl Client {
 
     /// Read the given file from the given mounts
     ///
-    /// This inteded for known good paths and should not be used for user specific files.
+    /// This intended for known good paths and should not be used for user specific files.
     ///
     /// This requires the file to be UTF-8.
     async fn read_file(
