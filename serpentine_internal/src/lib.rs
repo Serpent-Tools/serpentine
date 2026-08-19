@@ -65,7 +65,7 @@ pub fn platform_to_std(path: &PlatformPath) -> Result<&Path, std::str::Utf8Error
 
     #[cfg(not(unix))]
     {
-        let path = std::str::from_utf8(path.as_bytes()).map_err(Error::other)?;
+        let path = std::str::from_utf8(path.as_bytes())?;
         Ok(Path::new(path))
     }
 }

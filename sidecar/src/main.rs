@@ -46,7 +46,7 @@ const SUBNET_PREFIX: Ipv4Addr = Ipv4Addr::from_octets([198, 18, 0, 0]);
 /// The length of the prefix subnet.
 const SUBNET_PREFIX_LENGTH: u8 = 15;
 
-/// Convert a `PlatformPath` to the std path, always succeeds becaues we are on unix.
+/// Convert a `PlatformPath` to the std path, always succeeds because we are on unix.
 fn platform_to_std(path: &PlatformPath) -> &std::path::Path {
     use std::os::unix::ffi::OsStrExt;
 
@@ -87,7 +87,7 @@ fn spawn_containerd() {
     log::info!("Creating containerd config");
     std::fs::create_dir_all("/etc/containerd/").expect("Failed to create directories");
 
-    // WARN: We specifically disable the more efficent overlayfs options for now as exporting them
+    // WARN: We specifically disable the more efficient overlayfs options for now as exporting them
     // to a OCI layer requires walking the lowerdirs as well as the upperdir, which is more complex.
     std::fs::write(
         "/etc/containerd/config.toml",
@@ -126,9 +126,6 @@ disabled_plugins = [
     "io.containerd.internal.v1.tracing",
     "io.containerd.ttrpc.v1.otelttrpc",
 ]
-
-[plugins."io.containerd.snapshotter.v1.overlayfs"]
-mount_options = ["redirect_dir=off", "metacopy=off"]
 "#,
     )
     .expect("Failed to create containerd config");

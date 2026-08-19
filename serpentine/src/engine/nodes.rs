@@ -72,7 +72,7 @@ pub trait NodeImpl: Send + Sync {
                     {
                         log::debug!("Cache hit on {}", self.describe());
 
-                        let cached_value = Data::from_cachable(cached_value);
+                        let cached_value = Data::from_cacheable(cached_value);
                         if cached_value.healthcheck(context).await {
                             return Ok((cached_value, crate::events::NodeTransition::Cached));
                         }
@@ -82,7 +82,7 @@ pub trait NodeImpl: Send + Sync {
                     log::debug!("Executing {}", self.describe());
                     let result = self.execute(context, inputs).await?;
 
-                    if let Some(result) = result.cachable() {
+                    if let Some(result) = result.cacheable() {
                         log::debug!("Caching result of {} with {key:?}", self.describe());
                         context.cache.data_cache.lock()?.insert(key, result);
                     }

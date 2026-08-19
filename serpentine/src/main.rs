@@ -6,7 +6,6 @@
 
 use std::borrow::Cow;
 use std::io::IsTerminal;
-use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -32,7 +31,7 @@ fn get_default_cache_file() -> PlatformPathBuf {
     if let Some(project_dirs) = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
     {
         let cache_dir = project_dirs.cache_dir();
-        PlatformPathBuf::from(cache_dir.as_os_str().as_bytes())
+        PlatformPathBuf::from(cache_dir.as_os_str().as_encoded_bytes())
     } else {
         log::warn!("Failed to determine default cache location.");
         PlatformPathBuf::from("./serpentine_cache/")
@@ -98,7 +97,7 @@ impl Run {
     /// Get the cache to use
     fn get_cache(&self) -> Cow<'_, PlatformPath> {
         if let Some(cache) = &self.cache {
-            Cow::Borrowed(PlatformPath::new(cache.as_os_str().as_bytes()))
+            Cow::Borrowed(PlatformPath::new(cache.as_os_str().as_encoded_bytes()))
         } else {
             Cow::Owned(get_default_cache_file())
         }

@@ -80,7 +80,7 @@ impl Data {
 
     /// Convert this data into a `CacheableData` if it is cacheable, otherwise return `None`.
     #[must_use]
-    pub fn cachable(&self) -> Option<CacheableData> {
+    pub fn cacheable(&self) -> Option<CacheableData> {
         match self {
             Data::Int(value) => Some(CacheableData::Int(*value)),
             Data::String(string) => Some(CacheableData::String(Arc::clone(string))),
@@ -92,7 +92,7 @@ impl Data {
 
     /// Construct a `Data` from a `CacheableData`.
     #[must_use]
-    pub fn from_cachable(chaceable_data: CacheableData) -> Self {
+    pub fn from_cacheable(chaceable_data: CacheableData) -> Self {
         match chaceable_data {
             CacheableData::Int(value) => Data::Int(value),
             CacheableData::String(string) => Data::String(string),
@@ -112,7 +112,7 @@ impl Data {
 }
 
 impl CacheableData {
-    /// Retrive the resource keys for this data, if any.
+    /// Retrieve the resource keys for this data, if any.
     pub fn resource_keys(&self) -> Vec<ResourceKey> {
         match self {
             Self::Container(state) => {
@@ -344,9 +344,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cachable_checks_agree() {
+    fn cacheable_checks_agree() {
         bolero::check!().with_type().for_each(|data: &Data| {
-            assert_eq!(data.cachable().is_some(), data.type_().is_cacheable());
+            assert_eq!(data.cacheable().is_some(), data.type_().is_cacheable());
         });
     }
 }

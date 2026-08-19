@@ -123,7 +123,7 @@ impl Client {
     }
 }
 
-/// Convert the countainer mount type to the mount type of the sidecar protocol
+/// Convert the container mount type to the mount type of the sidecar protocol
 fn containerd_to_sidecar_mount(mount: containerd_client::types::Mount) -> Mount {
     Mount {
         type_: mount.r#type.into(),
