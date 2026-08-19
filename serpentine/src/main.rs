@@ -13,6 +13,9 @@ use miette::Diagnostic;
 use thiserror::Error;
 use typed_path::{PlatformPath, PlatformPathBuf};
 
+use crate::engine::RuntimeError;
+use crate::events::Reporter;
+
 mod engine;
 mod events;
 mod snek;
@@ -43,14 +46,16 @@ fn get_default_cache_file() -> PlatformPathBuf {
 enum Command {
     /// Run a serpentine pipeline
     Run(Run),
-    // TODO: Figure this out again
-    // This should ideally just delete the cache file and reset the containerd volume.
-    //
-    // /// Clear out serpentine's cache.
-    // Clean {
-    //     /// The cache file to clean
-    //     cache: Option<PathBuf>,
-    // },
+    /// Clear out serpentine's cache.
+    ///
+    /// This will delete the specified cache volume, as well as deleting serpentines docker volume.
+    ///
+    /// NOTE: This will invalidate most caches, not only those pointed to in this command (unless
+    /// those caches)
+    Clean {
+        /// The cache file to clean
+        cache: Option<PathBuf>,
+    },
 }
 
 /// Arguments for the run command
@@ -87,7 +92,6 @@ struct Run {
     /// NOTE: Serpentine already ensures that multiple instance cooperate in regards to containerd.
     #[arg(long, default_value = "serpentine")]
     containerd_namespace: String,
-
     /// Delete old cache entries (also cleans out stale docker images).
     #[arg(long)]
     clean_old: bool,
@@ -230,7 +234,40 @@ fn main() -> miette::Result<()> {
 
     match command.command {
         Command::Run(run) => handle_run(&run),
+        Command::Clean { cache } => clean_caches(&cache.map_or(get_default_cache_file(), |path| {
+            PlatformPathBuf::from(path.as_os_str().as_encoded_bytes())
+        }))
+        .map_err(Into::into),
     }
+}
+
+/// Clean out serpentine caches and docker state
+fn clean_caches(cache: &PlatformPath) -> Result<(), RuntimeError> {
+    if let Err(err) = setup_logging(Reporter::none(), true) {
+        eprintln!("Failed to setup logging: {err}");
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        log::info!("Deleting {}", cache.display());
+        let res = tokio::fs::remove_dir_all(
+            serpentine_internal::platform_to_std(cache)
+                .map_err(|err| RuntimeError::internal(err.to_string()))?,
+        )
+        .await;
+
+        if let Err(err) = res {
+            log::error!("Failed to delete folder: {err}");
+        }
+
+        engine::docker::delete_container_and_volume().await?;
+
+        Ok::<_, RuntimeError>(())
+    })?;
+
+    Ok(())
 }
 
 /// Handle the `run` subcommand

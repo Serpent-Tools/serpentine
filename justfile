@@ -19,10 +19,8 @@ build_container:
     docker build -t serpent-tools/containerd:dev . --pull=false
     docker image save serpent-tools/containerd:dev -o ./target/containerd.tar
 
-clean: build_container
+clean:
     cargo run -p serpentine -- clean || exit 0
-    cargo clean
-    docker system reset -f
 
 sidecar_logs:
     docker logs serpent-tools.containerd
