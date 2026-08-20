@@ -66,6 +66,10 @@ struct Run {
     #[arg(long)]
     ci: bool,
     /// Location of the cache file
+    ///
+    /// This can be useful to set in CI, or per project if you are running multiple serpentine
+    /// instances at once as some caching features are racing (this will only ever lead to cache
+    /// misses, never corruption).
     #[arg(short, long)]
     cache: Option<PathBuf>,
     /// Also export docker layers, and any other external data referenced by the cache to the cache
@@ -75,6 +79,15 @@ struct Run {
     /// between systems.
     #[arg(long)]
     standalone_cache: bool,
+    /// The containerd namespace to use.
+    ///
+    /// This is mostly only useful for temporarily disabling the snapshot caches (unless
+    /// --standalone-cache has been used).
+    ///
+    /// NOTE: Serpentine already ensures that multiple instance cooperate in regards to containerd.
+    #[arg(long, default_value = "serpentine")]
+    containerd_namespace: String,
+
     /// Delete old cache entries (also cleans out stale docker images).
     #[arg(long)]
     clean_old: bool,
@@ -295,6 +308,7 @@ mod tests {
             clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 1,
+            containerd_namespace: "serpentine-test".into(),
         };
         if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
             let err = miette::Report::new(err);
@@ -328,6 +342,7 @@ mod tests {
             clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 1,
+            containerd_namespace: "serpentine-test".into(),
         };
         if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
             let _ = miette::set_hook(Box::new(|_| {

@@ -318,6 +318,7 @@ impl RuntimeContext {
             Arc::clone(&cache_backend),
             cli.jobs,
             "serpentine",
+            cli.standalone_cache,
         )
         .await?;
         let cache = cache::Cache::new(cache_backend).await?;
@@ -439,7 +440,12 @@ mod benchmarks {
     use std::path::{Path, PathBuf};
 
     /// Compile and run a full pipeline from a snek file.
-    fn run_pipeline(snek_path: &Path, cache_path: &Path, standalone_cache: bool) {
+    fn run_pipeline(
+        snek_path: &Path,
+        cache_path: &Path,
+        standalone_cache: bool,
+        namespace: String,
+    ) {
         let graph = crate::snek::compile_graph(snek_path, "DEFAULT").unwrap();
         let cli = crate::Run {
             pipeline: snek_path.to_path_buf(),
@@ -449,6 +455,7 @@ mod benchmarks {
             clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 2,
+            containerd_namespace: namespace,
         };
 
         super::run(graph, crate::events::Reporter::none(), &cli).unwrap();
@@ -461,31 +468,58 @@ mod benchmarks {
             .join("../test_cases")
             .join(snek);
         bencher
-            .with_inputs(|| tempfile::TempDir::new().unwrap())
-            .bench_values(|cache| run_pipeline(&path, cache.path(), false));
+            .with_inputs(|| {
+                (
+                    tempfile::TempDir::new().unwrap(),
+                    uuid::Uuid::new_v4().to_string(),
+                )
+            })
+            .bench_values(|(cache, namespace)| run_pipeline(&path, cache.path(), false, namespace));
     }
 
     /// Benchmark a warm pipeline run (with primed cache).
-    #[divan::bench(threads = false, sample_count = 20, args = ["bench/small.snek", "bench/large.snek"])]
+    #[divan::bench(threads = false, args = ["bench/small.snek", "bench/large.snek"])]
     fn live_warm(bencher: divan::Bencher, snek: &str) {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../test_cases")
             .join(snek);
         let cache = tempfile::TempDir::new().unwrap();
-        run_pipeline(&path, cache.path(), false);
+        let namespace = uuid::Uuid::new_v4().to_string();
+        run_pipeline(&path, cache.path(), false, namespace.clone());
 
-        bencher.bench(|| run_pipeline(&path, cache.path(), false));
+        bencher
+            .with_inputs(|| namespace.clone())
+            .bench_values(|namespace| run_pipeline(&path, cache.path(), false, namespace));
+    }
+
+    /// Benchmark a cold pipeline run (no cache).
+    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
+    fn live_cold_standalone(bencher: divan::Bencher, snek: &str) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../test_cases")
+            .join(snek);
+
+        bencher
+            .with_inputs(|| {
+                (
+                    tempfile::TempDir::new().unwrap(),
+                    uuid::Uuid::new_v4().to_string(),
+                )
+            })
+            .bench_values(|(cache, namespace)| run_pipeline(&path, cache.path(), true, namespace));
     }
 
     /// Benchmark a warm pipeline run with standalone cache.
-    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
+    #[divan::bench(threads = false, args = ["bench/small.snek", "bench/large.snek"])]
     fn live_warm_standalone(bencher: divan::Bencher, snek: &str) {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../test_cases")
             .join(snek);
         let cache = tempfile::TempDir::new().unwrap();
-        run_pipeline(&path, cache.path(), true);
+        run_pipeline(&path, cache.path(), true, uuid::Uuid::new_v4().to_string());
 
-        bencher.bench(|| run_pipeline(&path, cache.path(), true));
+        bencher
+            .with_inputs(|| uuid::Uuid::new_v4().to_string())
+            .bench_values(|namespace| run_pipeline(&path, cache.path(), true, namespace));
     }
 }
