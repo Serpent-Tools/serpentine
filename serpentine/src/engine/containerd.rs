@@ -533,6 +533,10 @@ pub struct Client {
     cache: Arc<dyn CacheBackend + Send + Sync>,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
+    /// Should snapshots be exported to the serpentine cache as well.
+    ///
+    /// This is required for portabiltiy.
+    export_snapshots: bool,
     /// Dangling resources
     dangling: Mutex<Vec<DanglingResource>>,
     /// Networks that arent currently in use.
@@ -574,6 +578,7 @@ impl Client {
         cache: Arc<dyn CacheBackend + Send + Sync>,
         exec_permits: usize,
         namespace: impl Into<String>,
+        export_snapshots: bool,
     ) -> Result<Self, RuntimeError> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
             user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
@@ -609,6 +614,7 @@ impl Client {
             oci,
             reporter,
             cache,
+            export_snapshots,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
             dangling: Mutex::new(Vec::new()),
             free_networks: Mutex::new(HashMap::new()),
@@ -619,6 +625,10 @@ impl Client {
     // TODO: This is slow and blocks further execution, which it really shouldnt. its hard to clone
     // the self from here tho...
     async fn export_snapshot(&self, snapshot: &str) -> Result<(), RuntimeError> {
+        if !self.export_snapshots {
+            return Ok(());
+        }
+
         log::debug!("Exporting snapshot {snapshot} to cache");
 
         let hash = CacheHash::from_data(CacheScope::Snapshot, snapshot).await?;
@@ -626,6 +636,8 @@ impl Client {
             log::debug!("Snapshot {snapshot} already exists in cache");
             return Ok(());
         };
+
+        let task = self.reporter.start_task(TaskKind::Exec, "exporting layer");
 
         let view_name = format!("{snapshot}/view/{}", uuid::Uuid::new_v4());
         let lease = self.new_lease().await?;
@@ -674,6 +686,7 @@ impl Client {
 
         log::debug!("Finished exporting layer");
         self.drop_lease(lease).await?;
+        drop(task);
 
         if !parent.is_empty() {
             Box::pin(self.export_snapshot(&parent)).await?;
@@ -705,6 +718,7 @@ impl Client {
 
         let lease = self.new_lease().await?;
 
+        let task = self.reporter.start_task(TaskKind::Exec, "importing layer");
         log::debug!("Importing {snapshot} into content store");
         let (total_size, digest) = self
             .import_reader_into_content_store(reader, &lease)
@@ -759,6 +773,7 @@ impl Client {
             .await?;
 
         self.drop_lease(lease).await?;
+        drop(task);
 
         Ok(true)
     }
@@ -803,7 +818,7 @@ impl Client {
             .try_for_each(async |_| Ok(()))
             .await?;
         let total_size = current_offset.load(Ordering::SeqCst);
-        log::debug!("Commiting {total_size} bytes to the store");
+        log::debug!("Committing {total_size} bytes to the store");
         let digest = self
             .containerd
             .content()
@@ -2228,6 +2243,7 @@ mod integration_tests {
             Arc::new(crate::engine::cache::NoneCacheBackend),
             1,
             "serpentine-test",
+            false,
         )
         .await
         .expect("Failed to create Docker client")
@@ -2721,6 +2737,7 @@ mod integration_tests {
             Arc::clone(&cache),
             1,
             uuid::Uuid::new_v4().to_string(),
+            true,
         )
         .await
         .unwrap();
@@ -2728,7 +2745,7 @@ mod integration_tests {
         let image = first_client
             .pull_image(TEST_IMAGE)
             .await
-            .expect("Faield to create image");
+            .expect("Failed to create image");
         let first_layer = first_client
             .exec(
                 &image,
@@ -2811,6 +2828,7 @@ cat opaque/test2.txt
             Arc::clone(&cache),
             1,
             uuid::Uuid::new_v4().to_string(),
+            false,
         )
         .await
         .unwrap();

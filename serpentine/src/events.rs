@@ -17,6 +17,8 @@ pub enum TaskKind {
     /// Pulling an image layer from a registry.
     Pull,
     /// Running a command inside a container.
+    ///
+    /// Or any other misc status update.
     Exec,
 }
 
