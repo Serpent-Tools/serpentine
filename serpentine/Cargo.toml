@@ -63,6 +63,7 @@ rstest.workspace = true
 strum = { version = "0.28.0", default-features = false, features = ["derive"] }
 test-log = { version = "0.2.18", default-features = false, features = ["log"] }
 tokio = { workspace = true, features = ["macros", "test-util"] }
+tempfile = { version = "3.27.0", default-features = false }
 
 [features]
 default = []

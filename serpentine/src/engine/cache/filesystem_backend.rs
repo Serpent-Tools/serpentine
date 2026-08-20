@@ -1,15 +1,15 @@
 //! `CacheBackend` that writes to the local filesystem.
 
+use std::sync::Mutex;
+
 use base64::Engine;
 use futures_util::future::BoxFuture;
+use nohash::IntSet;
 use serpentine_internal::platform_to_std;
 use typed_path::PlatformPathBuf;
 
 use crate::engine::cache::{CacheBackend, CacheHash};
 use crate::engine::{BoxedReader, BoxedWriter};
-
-// FIX: What happens when multiple threads want sto read/write to the same key?
-// (lets write some tests for that.)
 
 /// The extension to use for cache files.
 const CACHE_EXTENSION: &str = ".serpentine";
@@ -21,6 +21,11 @@ const DATA_BLOB_NAME: &str = "data";
 pub struct LocalCacheBackend {
     /// The caching directory to use.
     cache_dir: PlatformPathBuf,
+    /// Locks for blob store.
+    ///
+    /// If another task is already attempting to write the key we will return None for further
+    /// readers
+    locks: Mutex<IntSet<CacheHash>>,
 }
 
 impl LocalCacheBackend {
@@ -32,7 +37,10 @@ impl LocalCacheBackend {
         tokio::fs::create_dir_all(platform_to_std(&cache_dir).map_err(std::io::Error::other)?)
             .await?;
 
-        Ok(Self { cache_dir })
+        Ok(Self {
+            cache_dir,
+            locks: Mutex::new(IntSet::default()),
+        })
     }
 
     /// Get the file path for the data blob
@@ -64,6 +72,18 @@ impl CacheBackend for LocalCacheBackend {
     }
 
     fn write_key(&self, key: CacheHash) -> BoxFuture<'static, Option<BoxedWriter>> {
+        {
+            let Ok(mut lock) = self.locks.lock() else {
+                log::error!("Failed to get mutex on cache lock");
+                return Box::pin(std::future::ready(None));
+            };
+
+            let new = lock.insert(key);
+            if !new {
+                return Box::pin(std::future::ready(None));
+            }
+        }
+
         log::debug!("Writing key {key:?} to local cache backend");
         let path = self.file_path_for_key(key);
 

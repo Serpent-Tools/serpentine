@@ -313,8 +313,13 @@ impl RuntimeContext {
     ) -> Result<Self, RuntimeError> {
         log::debug!("Creating runtime context");
 
-        let containerd =
-            containerd::Client::new(reporter.clone(), Arc::clone(&cache_backend), cli.jobs).await?;
+        let containerd = containerd::Client::new(
+            reporter.clone(),
+            Arc::clone(&cache_backend),
+            cli.jobs,
+            "serpentine",
+        )
+        .await?;
         let cache = cache::Cache::new(cache_backend).await?;
 
         Ok(Self {

@@ -15,10 +15,9 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::net::Ipv4Addr;
 use std::ops::Deref;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::sync::Arc;
 
-use async_fs::unix::DirEntryExt;
 use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
 use rand::TryRng;
@@ -36,7 +35,7 @@ const SOCKET_LOCATION: &str = "/run/containerd.sock";
 
 /// The size of container subnets
 // 30 leaves 2 ips for hosts, which is all we need for each bridge.
-// Internet bridge is gateway,container.
+// Internet bridge ips are (gateway, container).
 // Inter container bridges are just the two containers.
 const SUBNET_SIZE: u8 = 30;
 
@@ -598,16 +597,38 @@ async fn export_layer(
     remote_socket: impl AsyncWrite + Unpin + Send + Sync,
     mount: Mount,
 ) -> Result<(), Box<dyn Error>> {
-    let upperdir_path = extract_overlayfs_uppder(mount)?;
+    let upperdir_path = extract_overlayfs_uppdir(mount)?;
+    log::debug!("Extracting info from {}", upperdir_path.display());
     let mut tar = async_tar::Builder::new(remote_socket);
 
     tar.follow_symlinks(false);
     tar.mode(async_tar::HeaderMode::Complete);
 
-    let mut walker = async_walkdir::WalkDir::new(platform_to_std(&upperdir_path));
-    while let Some(Ok(entry)) = walker.next().await {
+    let appended = append_upperdir(&mut tar, &upperdir_path)
+        .await
+        .map_err(|err| err.to_string());
+    // The builder panics when dropped unfinalized, so finish before surfacing any walk error.
+    let finished = tar.finish().await;
+    appended?;
+    finished?;
+
+    Ok(())
+}
+
+/// Append every entry under `upperdir_path` to `tar`, translating overlayfs whiteouts and opaque
+/// directory markers into their OCI equivalents.
+async fn append_upperdir<W>(
+    tar: &mut async_tar::Builder<W>,
+    upperdir_path: &PlatformPath,
+) -> Result<(), Box<dyn Error>>
+where
+    W: AsyncWrite + Unpin + Send + Sync,
+{
+    let mut walker = async_walkdir::WalkDir::new(platform_to_std(upperdir_path));
+    while let Some(entry) = walker.next().await {
+        let entry = entry?;
         let absolute_path = entry.path();
-        let relative_path = absolute_path.strip_prefix(platform_to_std(&upperdir_path))?;
+        let relative_path = absolute_path.strip_prefix(platform_to_std(upperdir_path))?;
 
         if is_whiteout(&entry).await? {
             if let Some(original_name) = relative_path.file_name() {
@@ -636,8 +657,6 @@ async fn export_layer(
         }
     }
 
-    tar.finish().await?;
-
     Ok(())
 }
 
@@ -651,15 +670,18 @@ async fn export_layer(
 async fn is_whiteout(entry: &async_walkdir::DirEntry) -> Result<bool, Box<dyn Error>> {
     let file_type = entry.file_type().await?;
     if file_type.is_char_device() {
-        let inode = entry.ino();
-        let is_whiteout = nix::sys::stat::minor(inode) == 0 && nix::sys::stat::major(inode) == 0;
+        let device = entry.metadata().await?.rdev();
+        let is_whiteout = nix::sys::stat::minor(device) == 0 && nix::sys::stat::major(device) == 0;
 
         Ok(is_whiteout)
     } else if file_type.is_file() {
         let path = entry.path();
         let is_whiteout = tokio::task::spawn_blocking(move || {
-            let result = xattr::get(path, "trusted.overlay.whiteout").map_err(|x| x.to_string())?;
-            Ok::<_, String>(result.is_some())
+            let trusted =
+                xattr::get(&path, "trusted.overlay.whiteout").map_err(|x| x.to_string())?;
+            let user = xattr::get(path, "user.overlay.whiteout").map_err(|x| x.to_string())?;
+
+            Ok::<_, String>(trusted.is_some() || user.is_some())
         })
         .await??;
 
@@ -678,9 +700,13 @@ async fn is_opaque(entry: &async_walkdir::DirEntry) -> Result<bool, Box<dyn Erro
     if file_type.is_dir() {
         let path = entry.path();
         let is_opaque = tokio::task::spawn_blocking(move || {
-            let value = xattr::get(path, "trusted.overlay.opaque").map_err(|x| x.to_string())?;
-            let is_opaque = value.is_some_and(|value| value == b"y");
-            Ok::<_, String>(is_opaque)
+            let trusted = xattr::get(&path, "trusted.overlay.opaque").map_err(|x| x.to_string())?;
+            let trusted = trusted.is_some_and(|value| value == b"y");
+
+            let user = xattr::get(path, "user.overlay.opaque").map_err(|x| x.to_string())?;
+            let user = user.is_some_and(|value| value == b"y");
+
+            Ok::<_, String>(trusted || user)
         })
         .await??;
 
@@ -691,14 +717,27 @@ async fn is_opaque(entry: &async_walkdir::DirEntry) -> Result<bool, Box<dyn Erro
 }
 
 /// Extract the path to the mounts upperdir
-fn extract_overlayfs_uppder(mount: Mount) -> Result<PlatformPathBuf, Box<dyn Error>> {
-    for option in mount.options {
-        if let Some(path) = option.strip_prefix("upperdir=") {
-            return Ok(PlatformPathBuf::from(path));
-        }
-    }
+fn extract_overlayfs_uppdir(mount: Mount) -> Result<PlatformPathBuf, Box<dyn Error>> {
+    log::debug!("Extracting upperdir from {mount:#?}");
 
-    Err("upperdir option not found".into())
+    match &*mount.type_ {
+        "bind" => {
+            log::debug!("Root layer (bind mount), returning source.");
+            Ok(mount.source.with_platform_encoding())
+        }
+        "overlay" => {
+            for option in mount.options {
+                log::trace!("Checking: {option:?}");
+                if let Some(path) = option.strip_prefix("lowerdir=") {
+                    let top_layer = path.split_once(':').map_or(path, |(first, _others)| first);
+                    return Ok(PlatformPathBuf::from(top_layer));
+                }
+            }
+
+            Err("upperdir option not found".into())
+        }
+        _ => Err(format!("Unknown mount type {}", mount.type_).into()),
+    }
 }
 
 /// Call `nix::mount::unmount` on drop
