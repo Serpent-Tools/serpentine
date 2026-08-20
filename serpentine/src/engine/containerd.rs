@@ -421,22 +421,26 @@ fn platform_resolver(manifests: &[oci_client::manifest::ImageIndexEntry]) -> Opt
 }
 
 /// Thin wrapper around `containerd_client::Client` to apply namespace interceptor
-struct ContainerdRootClient(containerd_client::Client);
+struct ContainerdRootClient {
+    /// The underlying containerd client
+    client: containerd_client::Client,
+    /// The containerd namespace all requests through this client are scoped to
+    namespace: String,
+}
 
-/// Injects the serpentine namespace into all requests
-#[expect(clippy::expect_used, reason = "constant value")]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "This is the signature needed by tonic"
-)]
+/// Build an interceptor that injects the given namespace into all requests
 fn inject_namespace(
-    mut request: containerd_client::tonic::Request<()>,
-) -> containerd_client::tonic::Result<containerd_client::tonic::Request<()>> {
-    request.metadata_mut().insert(
-        "containerd-namespace",
-        "serpentine".parse().expect("Invalid namespace"),
-    );
-    Ok(request)
+    namespace: String,
+) -> impl containerd_client::tonic::service::Interceptor + Clone {
+    move |mut request: containerd_client::tonic::Request<()>| {
+        request.metadata_mut().insert(
+            "containerd-namespace",
+            namespace.parse().map_err(|_err| {
+                containerd_client::tonic::Status::invalid_argument("Invalid namespace")
+            })?,
+        );
+        Ok(request)
+    }
 }
 
 /// Generate the getter wrappers for `ContainerdRootClient`
@@ -451,7 +455,10 @@ macro_rules! sub_client_wrapper {
                 impl containerd_client::tonic::service::interceptor::Interceptor,
             >,
         > {
-            containerd_services::$($type)::+::with_interceptor(self.0.channel(), inject_namespace)
+            containerd_services::$($type)::+::with_interceptor(
+                self.client.channel(),
+                inject_namespace(self.namespace.clone()),
+            )
         }
     };
 }
@@ -558,10 +565,15 @@ impl Client {
     }
 
     /// Create a new containerd client
+    ///
+    /// `namespace` scopes every containerd request this client makes (snapshots, content,
+    /// images, leases, ...) so that clients using different namespaces never observe each
+    /// other's state, even when talking to the same containerd daemon.
     pub async fn new(
         reporter: Reporter,
         cache: Arc<dyn CacheBackend + Send + Sync>,
         exec_permits: usize,
+        namespace: impl Into<String>,
     ) -> Result<Self, RuntimeError> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
             user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
@@ -590,7 +602,10 @@ impl Client {
 
         Ok(Self {
             sidecar,
-            containerd: ContainerdRootClient(containerd),
+            containerd: ContainerdRootClient {
+                client: containerd,
+                namespace: namespace.into(),
+            },
             oci,
             reporter,
             cache,
@@ -601,6 +616,8 @@ impl Client {
     }
 
     /// Export the given snapshot to the caching backend
+    // TODO: This is slow and blocks further execution, which it really shouldnt. its hard to clone
+    // the self from here tho...
     async fn export_snapshot(&self, snapshot: &str) -> Result<(), RuntimeError> {
         log::debug!("Exporting snapshot {snapshot} to cache");
 
@@ -610,13 +627,21 @@ impl Client {
             return Ok(());
         };
 
+        let view_name = format!("{snapshot}/view/{}", uuid::Uuid::new_v4());
+        let lease = self.new_lease().await?;
+
         let mounts = self
             .containerd
             .snapshot()
-            .mounts(containerd_services::snapshots::MountsRequest {
-                snapshotter: SNAPSHOTTER.into(),
-                key: snapshot.into(),
-            })
+            .view(
+                containerd_services::snapshots::ViewSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.into(),
+                    key: view_name,
+                    parent: snapshot.into(),
+                    labels: HashMap::new(),
+                }
+                .with_lease(&lease),
+            )
             .await?
             .into_inner()
             .mounts;
@@ -648,6 +673,7 @@ impl Client {
         tokio::io::copy(&mut tar_stream, &mut writer).await?;
 
         log::debug!("Finished exporting layer");
+        self.drop_lease(lease).await?;
 
         if !parent.is_empty() {
             Box::pin(self.export_snapshot(&parent)).await?;
@@ -669,7 +695,13 @@ impl Client {
         };
 
         let parent: String = serpentine_internal::read_postcard_frame(&mut reader).await?;
-        Box::pin(self.import_layer(&parent)).await?;
+
+        if !parent.is_empty() {
+            let was_found = Box::pin(self.import_layer(&parent)).await?;
+            if !was_found {
+                return Ok(false);
+            }
+        }
 
         let lease = self.new_lease().await?;
 
@@ -753,6 +785,7 @@ impl Client {
                         let previous_offset =
                             current_offset_clone.fetch_add(layer_data.len(), Ordering::SeqCst);
 
+                        // log::trace!("Writing {layer_data:?} at {previous_offset}");
                         containerd_services::WriteContentRequest {
                             action: containerd_services::WriteAction::Write.into(),
                             r#ref: upload_ref_clone.clone(),
@@ -770,13 +803,14 @@ impl Client {
             .try_for_each(async |_| Ok(()))
             .await?;
         let total_size = current_offset.load(Ordering::SeqCst);
+        log::debug!("Commiting {total_size} bytes to the store");
         let digest = self
             .containerd
             .content()
             .write(
                 futures_util::stream::once(async move {
                     containerd_services::WriteContentRequest {
-                        action: containerd_services::WriteAction::Write.into(),
+                        action: containerd_services::WriteAction::Commit.into(),
                         r#ref: upload_ref,
                         total: total_size.try_into().unwrap_or(0),
                         expected: String::new(),
@@ -821,6 +855,7 @@ impl Client {
                 Ok(imported) => imported,
                 Err(err) => {
                     log::error!("Failed to import layer: {err}");
+                    debug_assert!(false, "Failed to import layer");
                     false
                 }
             }
@@ -969,6 +1004,8 @@ impl Client {
             layer_stack_hash.update(layer.digest.as_bytes());
             snapshot_name = layer_stack_hash.finalize().to_hex().to_string();
 
+            let pull_guard = acquire_file_lock(&snapshot_name).await?;
+
             let layer_exists = self
                 .containerd
                 .snapshot()
@@ -1052,6 +1089,8 @@ impl Client {
                     return Err(status.into());
                 }
             }
+
+            pull_guard.unlock();
 
             self.reporter
                 .task_layer_progress(task.id(), index.saturating_add(1), layer_count);
@@ -1848,6 +1887,7 @@ impl Client {
 
         if let Err(err) = self.export_snapshot(&final_snapshot).await {
             log::error!("Failed to export snapshot: {err}");
+            debug_assert!(false, "Failed to export snapshot");
         }
 
         let stdout = handle
@@ -1972,8 +2012,9 @@ impl Client {
             .await?;
         self.drop_lease(lease).await?;
 
-        if let Err(err) = self.export_snapshot(&snapshot).await {
+        if let Err(err) = self.export_snapshot(&new_snapshot).await {
             log::error!("Failed to export snapshot: {err}");
+            debug_assert!(false, "Failed to export snapshot");
         }
 
         Ok(ContainerState {
@@ -2174,6 +2215,7 @@ mod tests {
 #[expect(clippy::expect_used, reason = "Tests")]
 mod integration_tests {
     use rstest::{fixture, rstest};
+    use typed_path::PlatformPathBuf;
 
     use super::*;
 
@@ -2185,6 +2227,7 @@ mod integration_tests {
             Reporter::none(),
             Arc::new(crate::engine::cache::NoneCacheBackend),
             1,
+            "serpentine-test",
         )
         .await
         .expect("Failed to create Docker client")
@@ -2661,5 +2704,121 @@ mod integration_tests {
             .exec(&image, "curl https://google.com".to_owned())
             .await
             .expect("Exec failed");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn export_import_cache() {
+        let caching_dir = tempfile::TempDir::new().unwrap();
+        let caching_dir = PlatformPathBuf::from(caching_dir.path().as_os_str().as_encoded_bytes());
+        let cache = crate::engine::cache::LocalCacheBackend::new(caching_dir)
+            .await
+            .unwrap();
+        let cache = Arc::new(cache) as Arc<dyn CacheBackend + Send + Sync>;
+
+        let first_client = Client::new(
+            Reporter::none(),
+            Arc::clone(&cache),
+            1,
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+
+        let image = first_client
+            .pull_image(TEST_IMAGE)
+            .await
+            .expect("Faield to create image");
+        let first_layer = first_client
+            .exec(
+                &image,
+                String::from(
+                    "
+mkdir -p foo/bar &&
+touch foo/bar/test1.txt &&
+touch foo/bar/test2.txt &&
+ln -s foo bar_sym &&
+ln foo/bar/test1.txt test1.txt &&
+
+mkdir -p mov_source &&
+touch mov_source/test1.txt &&
+
+mkdir -p copy_source &&
+touch copy_source/test1.txt &&
+
+mkdir -p whiteout &&
+touch whiteout/test1.txt &&
+
+mkdir -p opaque &&
+touch opaque/test1.txt
+",
+                ),
+            )
+            .await
+            .expect("Failed to run exec");
+
+        let second_layer = first_client
+            .exec(
+                &first_layer,
+                String::from(
+                    "
+ln -s foo parent_sym &&
+ln foo/bar/test1.txt parent_hard &&
+rm foo/bar/test2.txt &&
+
+mv mov_source mov_parent &&
+cp -r copy_source copy_parent &&
+rm -r whiteout &&
+
+rm -r opaque &&
+mkdir -p opaque &&
+touch opaque/test2.txt
+",
+                ),
+            )
+            .await
+            .expect("Failed to run exec");
+
+        let test_command = String::from(
+            "
+! cat foo/bar/test2.txt &&
+cat foo/bar/test1.txt &&
+cat bar_sym/bar/test1.txt &&
+cat test1.txt &&
+cat parent_sym/bar/test1.txt &&
+cat parent_hard &&
+
+! ls mov_source &&
+cat mov_parent/test1.txt &&
+
+cat copy_source/test1.txt &&
+cat copy_parent/test1.txt &&
+
+! ls whiteout &&
+
+! cat opaque/test1.txt &&
+cat opaque/test2.txt
+",
+        );
+
+        first_client
+            .exec(&second_layer, test_command.clone())
+            .await
+            .expect("Failed to run test command on original containerd.");
+
+        let second_client = Client::new(
+            Reporter::none(),
+            Arc::clone(&cache),
+            1,
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+
+        second_client.healthcheck_value(&second_layer).await;
+        second_client
+            .exec(&second_layer, test_command.clone())
+            .await
+            .expect("Failed to run test command on new containerd.");
     }
 }

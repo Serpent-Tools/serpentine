@@ -4,7 +4,7 @@ run entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}}
 
 test filter="": build_container
-    RUST_LOG="serpentine=trace" cargo nextest run --no-fail-fast --jobs num-cpus --features _test_docker {{filter}} 
+    RUST_LOG="serpentine=trace" cargo nextest run --no-fail-fast --jobs num-cpus --features _test_docker --retries 0 {{filter}} 
 
 update_snapshots: build_container
     cargo insta test --features _test_docker --review --unreferenced delete --test-runner nextest
