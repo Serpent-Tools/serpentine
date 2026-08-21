@@ -6,7 +6,7 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION
     echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum -c - && \
     chmod +x /tini
 
-FROM docker.io/library/golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go_base
+FROM docker.io/library/golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS go_base
 
 FROM go_base AS cni
 
