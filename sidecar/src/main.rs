@@ -588,7 +588,7 @@ async fn import_files(
     Ok(())
 }
 
-/// Export a overlayfs upperdir to a tar stream.
+/// Export a overlayfs upperdir (or well the highest 'lowerdir' as the mounts are read only) to a tar stream.
 ///
 /// # Based on
 /// * Linux overlayfs: <https://www.kernel.org/doc/html/latest/filesystems/overlayfs.html>
@@ -716,7 +716,8 @@ async fn is_opaque(entry: &async_walkdir::DirEntry) -> Result<bool, Box<dyn Erro
     }
 }
 
-/// Extract the path to the mounts upperdir
+/// Extract the path to the mounts upperdir (or the source with a bind mount, or highest lowerdir
+/// with read only mounts.)
 fn extract_overlayfs_uppdir(mount: Mount) -> Result<PlatformPathBuf, Box<dyn Error>> {
     log::debug!("Extracting upperdir from {mount:#?}");
 
@@ -734,7 +735,7 @@ fn extract_overlayfs_uppdir(mount: Mount) -> Result<PlatformPathBuf, Box<dyn Err
                 }
             }
 
-            Err("upperdir option not found".into())
+            Err("lowerdir option not found".into())
         }
         _ => Err(format!("Unknown mount type {}", mount.type_).into()),
     }

@@ -317,7 +317,7 @@ impl RuntimeContext {
             reporter.clone(),
             Arc::clone(&cache_backend),
             cli.jobs,
-            "serpentine",
+            cli.containerd_namespace.clone(),
             cli.standalone_cache,
         )
         .await?;
