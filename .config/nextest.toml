@@ -1,6 +1,3 @@
-[profile.integration_tests]
-default-filter = "test(tests::live_examples::)"
-
 [[profile.default.overrides]]
 filter = 'test(tests::live_examples::) | test(tests::live_fails::) | test(engine::containerd::integration_tests::)'
 retries = { backoff = "fixed", count = 2, delay = "5s" }

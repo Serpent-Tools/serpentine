@@ -398,7 +398,7 @@ mod tests {
                     // Redact file paths
                     (r#"(?:\\\\[?.]\\)?(?:[A-Za-z]:)?(?:[/\\][^/\\\s:"'\]]+){2,}"#, "<redacted-path>"),
                     // Redact OS error messages, they can be different on different systems
-                    (r"(?i)os error \d+: [^\n]+", "OS error <redacted>"),
+                    (r"(?m)^(\s*[`|].*?-> ).+ \(os error \d+\)$", "${1}OS error <redacted>")
                 ],
             }, {
             insta::assert_snapshot!(

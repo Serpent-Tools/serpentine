@@ -10,7 +10,7 @@ Error:
   |   
   |     x Could not read file <redacted-path>
   |   
-  `-> No such file or directory (os error 2)
+  `-> OS error <redacted>
    ,-[<redacted-path>:2:19]
  1 | def Foo() {
  2 |     export import "../lib.snek" as lib;

@@ -164,15 +164,15 @@ jobs:
       # `--test-threads=1`: CI runners can't sustain several pipelines driving the shared
       # containerd at once (fifo copy deadlines), so run them serially here. Local runs stay
       # parallel to keep surfacing cross-process races.
-      - name: Run tests (Linux/Docker)
-        if: matrix.platform == 'linux' && matrix.runtime != 'podman'
+      - name: Run tests (Linux)
+        if: matrix.platform == 'linux'
         run: cargo nextest run --features _test_docker --fail-fast --test-threads=1
         env:
           RUST_LOG: serpentine=trace
 
-      - name: Run integration tests (macOS/Windows/Podman)
-        if: matrix.platform != 'linux' || matrix.runtime == 'podman'
-        run: cargo nextest run -p serpentine --features _test_docker --profile integration_tests --fail-fast --test-threads=1
+      - name: Run host side tests (macOS/Windows)
+        if: matrix.platform != 'linux'
+        run: cargo nextest run -p serpentine --features _test_docker --fail-fast --test-threads=1
         env:
           RUST_LOG: serpentine=trace
 
