@@ -788,7 +788,9 @@ impl Client {
     ) -> Result<(usize, String), RuntimeError> {
         let upload_ref = uuid::Uuid::new_v4().to_string();
         let upload_ref_clone = upload_ref.clone();
-        let reader = tokio_util::io::ReaderStream::new(reader);
+        // Give it a 1MiB buffer instead of the default 4KiB because h2 has a ddos protection that
+        // a lot of small writes trips.
+        let reader = tokio_util::io::ReaderStream::with_capacity(reader, 1024 * 1024);
         let current_offset = Arc::new(AtomicUsize::new(0));
         let current_offset_clone = Arc::clone(&current_offset);
         self.containerd
