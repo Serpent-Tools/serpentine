@@ -176,6 +176,31 @@ jobs:
         env:
           RUST_LOG: serpentine=trace
 
+      - name: Dump sidecar container logs (Linux/macOS)
+        if: failure() && matrix.platform != 'windows'
+        run: |
+          echo "::group::sidecar container state"
+          docker ps -a --filter name=serpent-tools.containerd || true
+          echo "::endgroup::"
+          echo "::group::sidecar container logs"
+          docker logs --timestamps --tail 2000 serpent-tools.containerd \
+            || echo "no sidecar container to dump logs from"
+          echo "::endgroup::"
+
+      # The daemon holding the sidecar lives inside WSL, so ask it there rather than over the
+      # TCP listener, which is itself a suspect whenever the tests fail on Windows.
+      - name: Dump sidecar container logs (Windows)
+        if: failure() && matrix.platform == 'windows'
+        shell: wsl-bash {0}
+        run: |
+          echo "::group::sidecar container state"
+          docker ps -a --filter name=serpent-tools.containerd || true
+          echo "::endgroup::"
+          echo "::group::sidecar container logs"
+          docker logs --timestamps --tail 2000 serpent-tools.containerd \
+            || echo "no sidecar container to dump logs from"
+          echo "::endgroup::"
+
       - name: Dump WSL Docker state (Windows)
         if: failure() && matrix.platform == 'windows'
         run: |
