@@ -195,7 +195,7 @@ impl<'arena> Tokenizer<'arena> {
             }
             character => {
                 return Err(super::CompileError::UnknownCharacter {
-                    location: self.span(1),
+                    location: self.span(character.len_utf8()),
                     char: character,
                 });
             }
