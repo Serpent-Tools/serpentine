@@ -58,8 +58,8 @@ RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # renovate: datasource=github-tags depName=containerd/containerd
-ARG CONTAINERD_VERSION=v2.3.3
-ARG CONTAINERD_COMMIT=aad11006b869517fcd3009450b6f82da282e1a9b
+ARG CONTAINERD_VERSION=v2.3.4
+ARG CONTAINERD_COMMIT=db8809540e1a7a9da5d518876894933ff55692ab
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
@@ -104,7 +104,7 @@ RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
 FROM docker.io/library/rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa as chef
-RUN cargo install cargo-chef@=0.1.77 --locked
+RUN cargo install cargo-chef@=0.1.78 --locked
 WORKDIR /app
 
 FROM chef as planner
