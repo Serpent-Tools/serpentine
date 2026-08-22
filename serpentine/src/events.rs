@@ -66,6 +66,13 @@ pub enum Lifecycle {
         /// The tag of the serpentine engine image in use.
         image_tag: Box<str>,
     },
+    /// The pipeline was fully parsed
+    PipelineParsed {
+        /// The number of nodes
+        total_nodes: usize,
+        /// The name of the file name
+        pipeline: Box<str>,
+    },
     /// The engine has started shutting down: saving the cache and tearing down containers.
     ShuttingDown,
     /// The run is over and the consumer should leave its event loop.

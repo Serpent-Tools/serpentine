@@ -128,11 +128,11 @@ struct UiState {
 
 impl UiState {
     /// Create a new ui state for a run of `total_nodes` nodes.
-    fn new(total_nodes: usize, pipeline: Box<str>) -> Self {
+    fn new() -> Self {
         Self {
             start: Instant::now(),
-            pipeline,
-            total_nodes,
+            pipeline: "".into(),
+            total_nodes: 0,
             queued: 0,
             active: 0,
             done: 0,
@@ -214,6 +214,13 @@ impl UiState {
                 label: "engine ready".into(),
                 value: format!("{runtime} · {image_tag}").into(),
             }),
+            Lifecycle::PipelineParsed {
+                total_nodes,
+                pipeline,
+            } => {
+                self.total_nodes = total_nodes;
+                self.pipeline = pipeline;
+            }
             Lifecycle::ShuttingDown => self.shutting_down = true,
             // Stop is intercepted in the event loop before update() is called; never reaches here.
             Lifecycle::Stop => {}
@@ -502,7 +509,7 @@ fn format_timer(duration: Duration) -> String {
     clippy::needless_pass_by_value,
     reason = "Receiver is deliberately owned by the consumer thread"
 )]
-pub fn start_tui(events: Receiver<SerpentineEvent>, total_nodes: usize, pipeline: Box<str>) {
+pub fn start_tui(events: Receiver<SerpentineEvent>) {
     log::info!("Starting TUI");
 
     std::panic::set_hook(Box::new(|info| {
@@ -510,9 +517,7 @@ pub fn start_tui(events: Receiver<SerpentineEvent>, total_nodes: usize, pipeline
         eprintln!("Tui panicked: {info}");
     }));
 
-    // Reserve enough lines for: milestones (up to 4) + blank + live header + tasks (capped) +
-    // blank + engine logs.
-    let max_tasks = total_nodes.min(10);
+    let max_tasks = 10_usize;
     let reserved = max_tasks
         .saturating_add(7)
         .saturating_add(LOG_LINES.saturating_add(1));
@@ -528,7 +533,7 @@ pub fn start_tui(events: Receiver<SerpentineEvent>, total_nodes: usize, pipeline
         return;
     };
 
-    let mut ui_state = UiState::new(total_nodes, pipeline);
+    let mut ui_state = UiState::new();
 
     'draw_loop: loop {
         let draw_result = terminal.draw(|frame| {

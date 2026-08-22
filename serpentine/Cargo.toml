@@ -55,6 +55,7 @@ nohash = { version = "0.2.0", default-features = false, features = ["std"] }
 # bench
 divan = { version = "0.1", default-features = false, optional = true }
 tempfile = { version = "3.27.0", default-features = false, optional = true }
+ci_info = "0.14.15"
 
 [dev-dependencies]
 bolero.workspace = true
