@@ -46,7 +46,7 @@ deny = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
-trivy = Image("aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c") 
+trivy = Image("aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969") 
     > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
     > With(lib::container_image, "containerd.tar")
     > Exec("trivy image --input containerd.tar --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml");
