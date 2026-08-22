@@ -103,12 +103,66 @@ struct Run {
     jobs: usize,
 }
 
+/// How serpentine produces output
+enum OutputMode {
+    /// Plain output, just logs to stdout.
+    Plain,
+    /// The tui interface
+    Tui {
+        /// Handle to the tui task
+        handle: std::thread::JoinHandle<()>,
+        /// A handle to the reporter
+        reporter: Reporter,
+    },
+}
+
+impl OutputMode {
+    /// Create a tui output mode
+    fn tui() -> Self {
+        let (reporter, receiver) = events::Reporter::channel();
+        let handle = std::thread::spawn(move || tui::start_tui(receiver));
+
+        Self::Tui { handle, reporter }
+    }
+
+    /// Should the logger directly print to stdout itself?
+    fn output_logs_to_stdout(&self) -> bool {
+        match self {
+            Self::Plain => true,
+            Self::Tui { .. } => false,
+        }
+    }
+
+    /// Get the reporter to use if any
+    fn get_reporter(&self) -> Reporter {
+        match self {
+            Self::Plain => Reporter::none(),
+            Self::Tui { reporter, .. } => reporter.clone(),
+        }
+    }
+
+    /// Shutdown this output mode
+    fn shuwdown(self) {
+        match self {
+            Self::Plain => {}
+            Self::Tui { handle, reporter } => {
+                reporter.lifecycle(events::Lifecycle::Stop);
+                let _ = handle.join();
+                ratatui::restore();
+            }
+        }
+    }
+}
+
 impl Run {
-    /// Should we use the tui?
-    ///
-    /// This checks the `--ci` flag and whether we are in an interactive terminal
-    fn use_tui(&self) -> bool {
-        !self.ci && std::io::stdout().is_terminal()
+    /// Get the output mode to use
+    fn get_output_mode(&self) -> OutputMode {
+        let ci = ci_info::get();
+        if ci.ci || self.ci || !std::io::stdout().is_terminal() {
+            OutputMode::Plain
+        } else {
+            OutputMode::tui()
+        }
     }
 
     /// Get the cache to use
@@ -147,12 +201,7 @@ enum SerpentineError {
 }
 
 /// Setup logging using `fern`.
-///
-/// Only logs `Info` or higher levels from non-serpentine sources.
-/// Logs to file in `~/.local/share/serpentine/logs` (or equivalent on other platforms), at TRACE level.
-/// If `non_tui` is false sends logs at DEBUG level to `tui`.
-/// If `non_tui` is true sends logs at TRACE level to stdout.
-fn setup_logging(reporter: events::Reporter, non_tui: bool) -> miette::Result<()> {
+fn setup_logging(reporter: events::Reporter, report_to_stdout: bool) -> miette::Result<()> {
     let project_dirs = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
         .ok_or_else(|| miette::miette!("Failed to determine log directory"))?;
 
@@ -173,7 +222,7 @@ fn setup_logging(reporter: events::Reporter, non_tui: bool) -> miette::Result<()
         )
     })?;
 
-    fern::Dispatch::new()
+    let mut log_dispatch = fern::Dispatch::new()
         .filter(|metadata| {
             // Filter out noisy docker logs
             if metadata.target().starts_with("serpentine") {
@@ -198,7 +247,19 @@ fn setup_logging(reporter: events::Reporter, non_tui: bool) -> miette::Result<()
                         .map_err(|error| miette::miette!("Failed to open log file: {}", error))?,
                 ),
         )
-        .chain(fern::Dispatch::new().chain(if non_tui {
+        .chain(
+            fern::Dispatch::new().chain(
+                fern::Dispatch::new()
+                    .level(log::LevelFilter::Debug)
+                    .chain(fern::Output::call(move |record| {
+                        let message = record.args().to_string();
+                        reporter.log(message.into_boxed_str());
+                    })),
+            ),
+        );
+
+    if report_to_stdout {
+        log_dispatch = log_dispatch.chain(
             fern::Dispatch::new()
                 .format(|out, message, record| {
                     out.finish(format_args!(
@@ -209,15 +270,11 @@ fn setup_logging(reporter: events::Reporter, non_tui: bool) -> miette::Result<()
                     ));
                 })
                 .level(log::LevelFilter::Trace)
-                .chain(std::io::stdout())
-        } else {
-            fern::Dispatch::new()
-                .level(log::LevelFilter::Debug)
-                .chain(fern::Output::call(move |record| {
-                    let message = record.args().to_string();
-                    reporter.log(message.into_boxed_str());
-                }))
-        }))
+                .chain(std::io::stdout()),
+        );
+    }
+
+    log_dispatch
         .apply()
         .map_err(|error| miette::miette!("Failed to initialize logging: {}", error))?;
     Ok(())
@@ -274,42 +331,39 @@ fn clean_caches(cache: &PlatformPath) -> Result<(), RuntimeError> {
 fn handle_run(command: &Run) -> Result<(), miette::Error> {
     println!("Storing cache in {}", command.get_cache().display());
 
-    if command.use_tui() {
-        let (reporter, receiver) = events::Reporter::channel();
-        let res = setup_logging(reporter.clone(), false);
-        if let Err(error) = res {
-            eprintln!("Failed to initialize logging: {error}");
-        }
-
-        log::info!("Compiling pipeline: {}", command.pipeline.display());
-        let result = snek::compile_graph(&command.pipeline, &command.entry_point)?;
-
-        log::info!("Executing pipeline");
-        let total_nodes = result.graph.len();
-        let pipeline = command.pipeline.display().to_string().into_boxed_str();
-        let tui = std::thread::spawn(move || tui::start_tui(receiver, total_nodes, pipeline));
-        let result = engine::run(result, reporter.clone(), command);
-
-        log::info!("Executor returned, waiting for TUI to exit");
-        reporter.lifecycle(events::Lifecycle::Stop);
-        let _ = tui.join();
-        ratatui::restore();
-
-        result.map_err(Into::into)
-    } else {
-        let res = setup_logging(events::Reporter::none(), true);
-        if let Err(error) = res {
-            eprintln!("Failed to initialize logging: {error}");
-        }
-
-        log::info!("Compiling pipeline: {}", command.pipeline.display());
-        let result = snek::compile_graph(&command.pipeline, &command.entry_point)?;
-
-        log::info!("Executing pipeline");
-        let result = engine::run(result, events::Reporter::none(), command);
-
-        result.map_err(Into::into)
+    let output_mode = command.get_output_mode();
+    let res = setup_logging(
+        output_mode.get_reporter(),
+        output_mode.output_logs_to_stdout(),
+    );
+    if let Err(error) = res {
+        eprintln!("Failed to initialize logging: {error}");
     }
+
+    log::info!("Compiling pipeline: {}", command.pipeline.display());
+    let result = match snek::compile_graph(&command.pipeline, &command.entry_point) {
+        Ok(result) => result,
+        Err(err) => {
+            output_mode.shuwdown();
+            return Err(err.into());
+        }
+    };
+
+    log::info!("Executing pipeline");
+    let total_nodes = result.graph.len();
+    let pipeline = command.pipeline.display().to_string().into_boxed_str();
+    output_mode
+        .get_reporter()
+        .lifecycle(events::Lifecycle::PipelineParsed {
+            total_nodes,
+            pipeline,
+        });
+    let result = engine::run(result, output_mode.get_reporter(), command);
+
+    log::info!("Executor returned, waiting for output mode to exit");
+    output_mode.shuwdown();
+
+    result.map_err(Into::into)
 }
 
 #[cfg(test)]
