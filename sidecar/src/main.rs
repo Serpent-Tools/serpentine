@@ -88,6 +88,11 @@ fn spawn_containerd() {
 
     // WARN: We specifically disable the more efficient overlayfs options for now as exporting them
     // to a OCI layer requires walking the lowerdirs as well as the upperdir, which is more complex.
+    // Kernels disagree on the defaults, so pin them here instead of inheriting whatever the host
+    // enables. Without redirects a rename of a lower or merged directory reports EXDEV, which `mv`
+    // handles by copying the tree into the upperdir. `nofollow` rather than `off` because kernels
+    // built with CONFIG_OVERLAY_FS_REDIRECT_ALWAYS_FOLLOW read `off` as "still follow existing
+    // redirects", which an unprivileged overlay mount is refused permission to do.
     std::fs::write(
         "/etc/containerd/config.toml",
         r#"
@@ -125,6 +130,9 @@ disabled_plugins = [
     "io.containerd.internal.v1.tracing",
     "io.containerd.ttrpc.v1.otelttrpc",
 ]
+
+[plugins.'io.containerd.snapshotter.v1.overlayfs']
+mount_options = ["redirect_dir=nofollow", "metacopy=off"]
 "#,
     )
     .expect("Failed to create containerd config");
