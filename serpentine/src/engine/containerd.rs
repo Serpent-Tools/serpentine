@@ -853,6 +853,8 @@ impl Client {
     async fn ensure_snapshot(&self, snapshot: &str) -> bool {
         log::debug!("Ensuring {snapshot} exists");
 
+        let lock = crate::engine::acquire_file_lock(&format!("import/{snapshot}")).await;
+
         if self
             .containerd
             .snapshot()
@@ -864,10 +866,12 @@ impl Client {
             .is_ok()
         {
             log::debug!("{snapshot} exists");
+            drop(lock);
             true
         } else {
             let result = self.import_layer(snapshot).await;
 
+            drop(lock);
             match result {
                 Ok(imported) => imported,
                 Err(err) => {
