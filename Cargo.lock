@@ -3287,7 +3287,6 @@ dependencies = [
  "log",
  "netns-rs",
  "nix 0.31.3",
- "rand 0.10.2",
  "rust-cni",
  "serpentine_internal",
  "simple_logger",

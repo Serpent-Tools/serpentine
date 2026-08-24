@@ -800,7 +800,7 @@ impl Client {
                     .filter_map(async |layer_data| layer_data.ok())
                     .map(move |layer_data| {
                         let previous_offset =
-                            current_offset_clone.fetch_add(layer_data.len(), Ordering::SeqCst);
+                            current_offset_clone.fetch_add(layer_data.len(), Ordering::Relaxed);
 
                         // log::trace!("Writing {layer_data:?} at {previous_offset}");
                         containerd_services::WriteContentRequest {
@@ -819,7 +819,7 @@ impl Client {
             .into_inner()
             .try_for_each(async |_| Ok(()))
             .await?;
-        let total_size = current_offset.load(Ordering::SeqCst);
+        let total_size = current_offset.load(Ordering::Relaxed);
         log::debug!("Committing {total_size} bytes to the store");
         let digest = self
             .containerd
