@@ -356,17 +356,15 @@ pub fn resolve<'arena>(
 }
 
 /// A `Write`-er that writes into a Bumpalo string
-struct BumpaloStringWriter<'arena>(bumpalo::collections::String<'arena>);
+struct BumpaloVecWriter<'arena>(bumpalo::collections::Vec<'arena, u8>);
 
-impl std::io::Write for BumpaloStringWriter<'_> {
+impl std::io::Write for BumpaloVecWriter<'_> {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // This is a simple utf-8 check (not a clone/copy)
-        let buf = str::from_utf8(buf).map_err(std::io::Error::other)?;
-        self.0.push_str(buf);
+        self.0.extend_from_slice(buf);
         Ok(buf.len())
     }
 }
@@ -439,16 +437,19 @@ impl<'arena> Resolver<'arena> {
         let code = std::fs::File::open(module)
             .and_then(|mut file| {
                 let code = if let Ok(length) = file.metadata().map(|metadata| metadata.len()) {
-                    bumpalo::collections::String::with_capacity_in(
+                    bumpalo::collections::Vec::with_capacity_in(
                         length.try_into().unwrap_or(usize::MAX),
                         self.arena,
                     )
                 } else {
-                    bumpalo::collections::String::new_in(self.arena)
+                    bumpalo::collections::Vec::new_in(self.arena)
                 };
-                let mut code = BumpaloStringWriter(code);
+                let mut code = BumpaloVecWriter(code);
                 std::io::copy(&mut file, &mut code)?;
-                Ok(code.0.into_bump_str())
+
+                let code =
+                    str::from_utf8(code.0.into_bump_slice()).map_err(std::io::Error::other)?;
+                Ok(code)
             })
             .map_err(|io_err| CompileError::FileReading {
                 file: module.into(),

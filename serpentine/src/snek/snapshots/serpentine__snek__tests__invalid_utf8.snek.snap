@@ -1,0 +1,10 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: err
+---
+  x Compile Error
+
+Error: file_error
+
+  x Could not read file <redacted-path>
+  `-> invalid utf-8 sequence of 1 bytes from index 0
