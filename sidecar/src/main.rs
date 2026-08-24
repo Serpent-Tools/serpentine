@@ -17,10 +17,10 @@ use std::net::Ipv4Addr;
 use std::ops::Deref;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
-use rand::TryRng;
 use rust_cni::libcni as cni;
 use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, PORT, Request};
@@ -34,10 +34,10 @@ use typed_path::{PlatformPath, PlatformPathBuf};
 const SOCKET_LOCATION: &str = "/run/containerd.sock";
 
 /// The size of container subnets
-// 30 leaves 2 ips for hosts, which is all we need for each bridge.
+// 31 leaves 2 ips for hosts, which is all we need for each bridge.
 // Internet bridge ips are (gateway, container).
 // Inter container bridges are just the two containers.
-const SUBNET_SIZE: u8 = 30;
+const SUBNET_SIZE: u8 = 31;
 
 /// Prefix to use for container subnets
 const SUBNET_PREFIX: Ipv4Addr = Ipv4Addr::from_octets([198, 18, 0, 0]);
@@ -260,7 +260,7 @@ fn realize_topology(
     for child in children {
         let mut bridge_name = uuid::Uuid::new_v4().to_string();
         bridge_name.truncate(15);
-        let (_subnet, my_side, child_side) = pick_random_subnet()?;
+        let (_subnet, my_side, child_side) = pick_random_subnet();
 
         bridges.push(BridgeDefinition {
             name: bridge_name.clone(),
@@ -335,7 +335,7 @@ fn create_network_namespace(
         config_json: loopback_json.into(),
     });
 
-    let (subnet, gateway, _ip2) = pick_random_subnet()?;
+    let (_subnet, gateway, host) = pick_random_subnet();
     let internet_bridge_json = format!(
         r#"{{
             "cniVersion": "1.1.0",
@@ -346,9 +346,10 @@ fn create_network_namespace(
               "ipMasq": true,
               "bridge": "cni-{}",
               "ipam": {{
-                "type": "host-local",
-                "subnet": "{subnet}",
-                "gateway": "{gateway}",
+                "type": "static",
+                "addresses": [
+                  {{ "address": "{host}/{SUBNET_SIZE}", "gateway": "{gateway}" }}
+                ],
                 "routes": [
                     {{ "dst": "0.0.0.0/0" }}
                 ]
@@ -425,55 +426,34 @@ fn apply_network(
     Ok(())
 }
 
-// FIX: This is thread local while we have moved to a multi threading runtime
-thread_local! {
-    /// A hashset of the subnets that have already been used, to avoid collisions.
-    #[expect(
-        clippy::disallowed_types,
-        reason = "(RefCell vs tokio::Mutex) This is a thread local variable used in non-async code, so we dont need the overhead of a mutex, and RefCell is much easier to use."
-    )]
-    static USED_SUBNETS: std::cell::RefCell<std::collections::HashSet<u32>> = std::cell::RefCell::default();
-}
+/// A counter for the amount of subnets created, used to pick unique subnets.
+///
+/// we have 15 bits of usable subnets, hence a u16
+static SUBNET_COUNTER: AtomicU16 = AtomicU16::new(0);
 
 /// Pick a random non-internet subnet that's unlikely to be used already on the LAN/Host
 ///
 /// Returns the subnet definition, as well as two usable ips in it.
-fn pick_random_subnet() -> Result<(String, Ipv4Addr, Ipv4Addr), Box<dyn Error>> {
+fn pick_random_subnet() -> (String, Ipv4Addr, Ipv4Addr) {
     const {
         assert!(
             SUBNET_SIZE > SUBNET_PREFIX_LENGTH,
             "subnet must be sub-set of prefix."
         );
-        assert!(SUBNET_SIZE <= 30, "Subnet is too small to be usable");
     }
 
-    let prefix_mask = subnet_mask(SUBNET_PREFIX_LENGTH);
-    let target_mask = subnet_mask(SUBNET_SIZE);
-    let random_mask = target_mask ^ prefix_mask;
+    let subnet_free_bits = u32::from(SUBNET_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let subnet_free_bits = subnet_free_bits << (32 - SUBNET_SIZE);
+    let subnet = SUBNET_PREFIX.to_bits() | subnet_free_bits;
 
-    let subnet = loop {
-        let random_ip: u32 = rand::rngs::SysRng.try_next_u32()?;
-        let candidate = SUBNET_PREFIX.to_bits() | (random_ip & random_mask);
-        let was_new = USED_SUBNETS.with_borrow_mut(|used_subnets| used_subnets.insert(candidate));
-        if was_new {
-            break candidate;
-        }
-        log::warn!("Subnet collision detected for {candidate}, retrying");
-    };
-
-    let ip1 = subnet | 0b01;
-    let ip2 = subnet | 0b10;
+    let ip1 = subnet;
+    let ip2 = subnet | 0b1;
 
     let subnet = Ipv4Addr::from_bits(subnet);
     let ip1 = Ipv4Addr::from_bits(ip1);
     let ip2 = Ipv4Addr::from_bits(ip2);
 
-    Ok((format!("{subnet}/{SUBNET_SIZE}"), ip1, ip2))
-}
-
-/// Generate a subnet mask from a subnet length, for example `18` -> `11111111 11111111 11000000 00000000`
-fn subnet_mask(mask_length: u8) -> u32 {
-    u32::MAX << (32_u8.saturating_sub(mask_length))
+    (format!("{subnet}/{SUBNET_SIZE}"), ip1, ip2)
 }
 
 /// Delete the given network interface.
@@ -830,15 +810,4 @@ fn parse_containerd_mount_options(options: &[Box<str>]) -> (MsFlags, String) {
     }
 
     (flags, data.join(","))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn subnet_mask_works() {
-        assert_eq!(subnet_mask(16), 0b1111_1111_1111_1111_0000_0000_0000_0000);
-        assert_eq!(subnet_mask(18), 0b1111_1111_1111_1111_1100_0000_0000_0000);
-    }
 }

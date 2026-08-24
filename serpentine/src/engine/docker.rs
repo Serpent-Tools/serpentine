@@ -200,7 +200,7 @@ async fn spin_up_containerd(
                     tty: Some(false),
                     open_stdin: Some(false),
                     host_config: Some(bollard::plugin::HostConfig {
-                        auto_remove: Some(false),
+                        auto_remove: Some(true),
                         privileged: Some(true),
                         pids_limit: Some(-1),
                         binds: Some(vec![format!("{volume}:/var/lib/containerd")]),

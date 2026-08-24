@@ -15,7 +15,6 @@ nix = { workspace = true, features = ["fs", "mount"] }
 uuid.workspace = true
 rust-cni = { version = "0.1.2", default-features = false }
 netns-rs = { version = "0.2.0", default-features = false }
-rand = { version = "0.10.2", default-features = false, features = ["sys_rng", "std"] }
 typed-path.workspace = true
 async-tar = { version = "0.6.1", default-features = false, features = ["tokio", "xattr", "runtime-tokio"] }
 async-walkdir = "2.1.0"
