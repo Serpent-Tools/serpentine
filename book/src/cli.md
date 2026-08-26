@@ -45,11 +45,14 @@ Enables serpentines standalone cache mode, making the cache fully portable betwe
 
 Delete caches left over from older runs, by default serpentine treats the cache as append only, but especially in CI you might want to clean out unused stuff.
 
+> [!NOTE]
+> Serpentine will do its best to also cleanout the containerd state in a similar manner, but may sometimes miss stuff. In CI with empherial runners this is not a concern, but locally you might want to run a `serpentine clean` once in a while.
+
 ## `clean`
 
 Cleans out the serpentine cache.
 
 > [!IMPORTANT]
-> This is not just deleting the file on disk (while it does do that), it also cleans up any referenced data from serpentines docker volumes.
+> This is not just deleting the file on disk (while it does do that), it also deletes serpentines docker volume for its containerd side state.
 
 Takes an optional argument which is the cache file to clean.
