@@ -9,10 +9,10 @@ Running serpentine in CI is as simple as ensuring a docker or podman daemon is a
 serpentine run --ci
 ```
 
-Now caching is where it gets fun, to persist serpentines layer caches between runners you just need to cache *one file*, however your CI platform does that.
+Now caching is where it gets fun, to persist serpentines layer caches between runners you just need to cache *one folder*, however your CI platform does that.
 Specifically if you use the following command:
 ```bash
-serpentine run --cache /tmp/cache.serpentine --clean-old --standalone-cache --ci
+serpentine run --cache /tmp/serpentine_cache --clean-old --standalone-cache --ci
 ```
 You must restore `/tmp/cache.serpentine` before running it, and save it afterwards. 
 
@@ -28,19 +28,19 @@ test:
       - uses: actions/cache/restore
         id: cache-restore
         with:
-          path: /tmp/cache.serpentine
+          path: /tmp/serpentine_cache
           key: serpentine_cache-${{ github.sha }}
           restore-keys: serpentine_cache-
 
       - name: Install serpentine
         run: TODO_FOR_v1.0.0
       - name: Run serpentine pipeline
-        run: serpentine run --cache /tmp/cache.serpentine --standalone-cache --clean-old --ci
+        run: serpentine run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci
 
       - uses: actions/cache/save
         if: always()
         with:
-          path: /tmp/cache.serpentine
+          path: /tmp/serpentine_cache
           key: ${{ steps.cache-restore.outputs.cache-primary-key }}
 ```
 

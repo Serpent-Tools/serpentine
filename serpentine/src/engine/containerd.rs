@@ -765,9 +765,6 @@ impl Client {
                 snapshotter: SNAPSHOTTER.into(),
                 key: temp_snapshot,
                 name: snapshot.to_owned(),
-                // FIX: When importing cached image layers this will mark them all as root which
-                // makes cleanup fail to remove them as we only remove gc.root from snapshots
-                // directly named by serpentine.
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
             .await?;
@@ -1041,11 +1038,6 @@ impl Client {
 
             if layer_exists {
                 log::debug!("Snapshot {snapshot_name} already exists.");
-
-                if is_final_layer {
-                    self.label_as_image(&snapshot_name, image_name, lease)
-                        .await?;
-                }
             } else {
                 self.pull_layer(image, &layer, lease, task.id()).await?;
 
@@ -1084,10 +1076,7 @@ impl Client {
 
                 log::debug!("Committing {key} to {snapshot_name}");
                 let labels = if is_final_layer {
-                    HashMap::from([
-                        ("containerd.io/gc.root".to_owned(), "1".to_owned()),
-                        ("serpentine/image".to_owned(), image_name.to_owned()),
-                    ])
+                    HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())])
                 } else {
                     HashMap::new()
                 };
@@ -1119,38 +1108,6 @@ impl Client {
         }
 
         Ok(snapshot_name)
-    }
-
-    /// Update the labels on a snapshot to mark it as the final layer of an image.
-    async fn label_as_image(
-        &self,
-        snapshot_name: &str,
-        image_name: &str,
-        lease: &str,
-    ) -> Result<(), RuntimeError> {
-        log::debug!("Updating final layer {snapshot_name} labels for {image_name}");
-        let labels = HashMap::from([
-            ("containerd.io/gc.root".to_owned(), "1".to_owned()),
-            ("serpentine/image".to_owned(), image_name.to_owned()),
-        ]);
-        self.containerd
-            .snapshot()
-            .update(
-                containerd_services::snapshots::UpdateSnapshotRequest {
-                    snapshotter: SNAPSHOTTER.into(),
-                    update_mask: Some(prost_types::FieldMask {
-                        paths: vec!["labels".to_owned()],
-                    }),
-                    info: Some(containerd_services::snapshots::Info {
-                        labels,
-                        name: snapshot_name.to_owned(),
-                        ..Default::default()
-                    }),
-                }
-                .with_lease(lease),
-            )
-            .await?;
-        Ok(())
     }
 
     /// Pull the given layer into containerd.
