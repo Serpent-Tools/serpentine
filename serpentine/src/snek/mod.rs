@@ -29,6 +29,8 @@ use miette::Diagnostic;
 use span::Span;
 use thiserror::Error;
 
+use crate::snek::span::VirtualFile;
+
 /// An error occurred while building the graph.
 #[derive(Debug, Error, Diagnostic)]
 pub enum CompileError {
@@ -221,11 +223,11 @@ impl CompileError {
 
 /// Compile the given file into a compile result
 pub fn compile_graph(
+    virtual_file: &VirtualFile,
     file: &Path,
     entry_point: &str,
-) -> Result<CompileResult, crate::SerpentineError> {
-    let arena = bumpalo::Bump::new();
-    let resolved = resolver::resolve(&arena, file, entry_point)?;
+) -> Result<CompileResult, CompileError> {
+    let resolved = resolver::resolve(virtual_file, file, entry_point)?;
     let compiled = compiler::compile(resolved)?;
     Ok(compiled)
 }
@@ -233,14 +235,16 @@ pub fn compile_graph(
 /// Benchmarks for the snek compiler.
 #[cfg(feature = "_bench")]
 mod benchmarks {
+
     /// Benchmark for the snek compiler.
     #[divan::bench(args = [
         "../test_cases/bench/small.snek",
         "../test_cases/bench/large.snek",
     ])]
     fn compile(path: &str) {
+        let virtual_file = super::VirtualFile::new();
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
-        let _ = super::compile_graph(&path, "DEFAULT");
+        let _ = super::compile_graph(&virtual_file, &path, "DEFAULT");
     }
 }
 
@@ -254,7 +258,7 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn compile_positive(#[files("../test_cases/positive/**/*.snek")] path: PathBuf) {
-        let res = compile_graph(&path, "DEFAULT");
+        let res = compile_graph(&VirtualFile::new(), &path, "DEFAULT");
         match res {
             Ok(_) => {}
             Err(err) => {
@@ -268,7 +272,9 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn compile_negative(#[files("../test_cases/negative/**/*.snek")] path: PathBuf) {
-        let res = compile_graph(&path, "DEFAULT");
+        let virtual_file = VirtualFile::new();
+        let res = compile_graph(&virtual_file, &path, "DEFAULT");
+
         match res {
             Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),
             Err(err) => {
@@ -280,6 +286,10 @@ mod tests {
                     Box::new(config)
                 }));
 
+                let err = crate::SerpentineError::Compile {
+                    source_code: virtual_file.into_readonly(),
+                    error: vec![err],
+                };
                 let err = miette::Report::new(err);
                 let err = format!("{err:?}");
 

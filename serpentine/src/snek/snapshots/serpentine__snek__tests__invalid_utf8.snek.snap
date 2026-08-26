@@ -7,4 +7,4 @@ expression: err
 Error: file_error
 
   x Could not read file <redacted-path>
-  `-> invalid utf-8 sequence of 1 bytes from index 0
+  `-> stream did not contain valid UTF-8

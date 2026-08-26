@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use super::resolver::ResolveResult;
 use super::{CompileError, ir};
 use crate::engine::data_model::{DataType, Graph, Node, NodeInstanceId, NodeKindId, NodeStorage};
-use crate::snek::span::{OwnedVirtualFile, Span, Spanned};
+use crate::snek::span::{Span, Spanned};
 
 /// The result of compiling
 pub struct CompileResult {
@@ -15,8 +15,6 @@ pub struct CompileResult {
     pub graph: Graph,
     /// The id of the starting node
     pub start_node: NodeInstanceId,
-    /// The source code of the compiled files
-    pub source_code: OwnedVirtualFile,
 }
 
 /// Value pointed to by a symbol
@@ -52,7 +50,7 @@ struct Compiler {
 }
 
 /// Compile the given resolved ir to a graph
-pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::SerpentineError> {
+pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, CompileError> {
     let ResolveResult {
         ir:
             ir::Pipeline {
@@ -61,7 +59,6 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::Se
                 start_point,
             },
         nodes,
-        files,
         noop,
     } = resolve_result;
 
@@ -77,12 +74,7 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::Se
     };
 
     for node in top_level.0 {
-        if let Err(err) = compiler.compile_node(&context, &node) {
-            return Err(crate::SerpentineError::Compile {
-                source_code: files.into_owned(),
-                error: vec![err],
-            });
-        }
+        compiler.compile_node(&context, &node)?;
     }
 
     let start_node = compiler.get_symbol(start_point).node;
@@ -90,7 +82,6 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, crate::Se
         nodes: context.nodes,
         graph: compiler.graph,
         start_node,
-        source_code: files.into_owned(),
     })
 }
 

@@ -21,7 +21,7 @@ pub enum Statement<'arena> {
         /// A optional export keyword
         export: Option<Span>,
         /// The relative path to the file to import
-        path: Spanned<&'arena str>,
+        path: Spanned<Box<str>>,
         /// The name to put the module under.
         name: Ident<'arena>,
     },
@@ -54,7 +54,7 @@ pub enum Expression<'arena> {
     /// A number
     Number(Spanned<i128>),
     /// A string
-    String(Spanned<&'arena str>),
+    String(Spanned<Box<str>>),
     /// A node label
     Label(Spanned<ItemPath<'arena>>),
     /// The value is the result of this no input node
