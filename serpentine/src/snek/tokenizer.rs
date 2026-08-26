@@ -6,17 +6,18 @@ use crate::snek::CompileError;
 use crate::snek::span::{FileId, Span, Spanned};
 
 /// a token is a small unit of the input stream.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(
     test,
     derive(strum::EnumDiscriminants),
     strum_discriminants(derive(strum::EnumIter))
 )]
-pub enum Token<'arena> {
+pub enum Token<'file> {
     /// A identifier
-    Ident(&'arena str),
+    Ident(&'file str),
     /// A string,
-    String(&'arena str),
+    // PERF: Look into using `Cow`, the tokenizing code just gets more tricky, but not hard.
+    String(Box<str>),
     /// A number
     Numeric(i128),
     /// `(`
@@ -81,26 +82,22 @@ impl Token<'_> {
 }
 
 /// the tokenizer handles turning a input stream into tokens
-pub struct Tokenizer<'arena> {
-    /// The arena to allocate token data in
-    arena: &'arena bumpalo::Bump,
+pub struct Tokenizer<'file> {
     /// File id for the file
     file_id: FileId,
     /// The code to parse into tokens
-    code: &'arena str,
+    code: &'file str,
     /// Current byte we are on
     byte: usize,
 }
 
-impl<'arena> Tokenizer<'arena> {
+impl<'file> Tokenizer<'file> {
     /// tokenize the given string and return the spanned tokens
     pub fn tokenize(
-        arena: &'arena bumpalo::Bump,
         file_id: FileId,
-        code: &'arena str,
-    ) -> Result<Box<[Spanned<Token<'arena>>]>, CompileError> {
+        code: &'file str,
+    ) -> Result<Box<[Spanned<Token<'file>>]>, CompileError> {
         let mut tokenizer = Self {
-            arena,
             file_id,
             code,
             byte: 0,
@@ -116,7 +113,7 @@ impl<'arena> Tokenizer<'arena> {
     }
 
     /// read the next token from the input string.
-    fn read_next_token(&mut self) -> Result<Option<Spanned<Token<'arena>>>, CompileError> {
+    fn read_next_token(&mut self) -> Result<Option<Spanned<Token<'file>>>, CompileError> {
         self.advance_while(char::is_whitespace)?;
 
         let Some(character) = self.advance()? else {
@@ -203,14 +200,14 @@ impl<'arena> Tokenizer<'arena> {
     }
 
     /// Handle the tokenization of a string
-    fn handle_string(&mut self) -> Result<Spanned<Token<'arena>>, CompileError> {
+    fn handle_string(&mut self) -> Result<Spanned<Token<'file>>, CompileError> {
         enum ParsingState {
             Normal,
             Escape,
         }
 
         let mut consumed = 1_usize; // initial "
-        let mut content = bumpalo::collections::String::new_in(self.arena);
+        let mut content = String::new();
         let mut state = ParsingState::Normal;
 
         loop {
@@ -244,7 +241,7 @@ impl<'arena> Tokenizer<'arena> {
         }
 
         let string_span = self.span(consumed);
-        Ok(string_span.with(Token::String(content.into_bump_str())))
+        Ok(string_span.with(Token::String(content.into())))
     }
 
     /// Consume characters that satisfy the predicate, returning the number of bytes consumed
@@ -289,7 +286,7 @@ impl<'arena> Tokenizer<'arena> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, clippy::panic, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use rstest::rstest;
 
@@ -299,7 +296,7 @@ mod tests {
     #[test]
     fn doesnt_panic() {
         bolero::check!().with_type().for_each(|code: &String| {
-            let _ = Tokenizer::tokenize(&bumpalo::Bump::new(), FileId(0), code);
+            let _ = Tokenizer::tokenize(FileId(0), code);
         });
     }
 
@@ -307,8 +304,7 @@ mod tests {
     #[case::simple_number("123")]
     #[case::string(r#""hello""#)]
     fn tokenize(#[case] code: String) {
-        let arena = bumpalo::Bump::new();
-        let res = Tokenizer::tokenize(&arena, FileId(0), &code);
+        let res = Tokenizer::tokenize(FileId(0), &code);
         assert!(res.is_ok(), "Failed to tokenize {code:?}: {res:?}");
     }
 
@@ -320,24 +316,24 @@ mod tests {
     #[case::quote_end(r#""hello\"""#, r#"hello""#)]
     #[case::unknown_escape(r#""\v""#, r"\v")]
     fn string_parsing(#[case] code: String, #[case] expected: String) {
-        let arena = bumpalo::Bump::new();
-        let res = Tokenizer::tokenize(&arena, FileId(0), &code).expect("Failed to tokenize");
+        let res = Tokenizer::tokenize(FileId(0), &code).expect("Failed to tokenize");
 
         assert_eq!(res.len(), 2, "Expected 2 tokens, string, EOF");
-        let Some(string_token) = res.first() else {
-            panic!("Expected first token to be a string, got EOF");
-        };
+        let string_token = res
+            .into_iter()
+            .next()
+            .expect("Already checked we got 2 tokens");
 
+        let token_dbg = format!("{string_token:?}");
         assert!(
-            matches!(string_token.take(), Token::String(value) if value == expected),
-            "Expected first token to be a string with value {expected:?}, got {string_token:?}",
+            matches!(string_token.take(), Token::String(value) if *value == *expected),
+            "Expected first token to be a string with value {expected:?}, got {token_dbg}",
         );
     }
 
     #[test]
     fn empty_comment() {
-        let arena = bumpalo::Bump::new();
-        let res = Tokenizer::tokenize(&arena, FileId(0), "/**/123").expect("Failed to tokenize");
+        let res = Tokenizer::tokenize(FileId(0), "/**/123").expect("Failed to tokenize");
         assert_eq!(res.len(), 2, "Expected 2 tokens, number, EOF");
     }
 
@@ -348,8 +344,7 @@ mod tests {
     #[case::double_colon_with_whitespace(": :")]
     #[case::overflow_digit("222222222222222222222222222222222222222")]
     fn edge_case_fails(#[case] code: String) {
-        let arena = bumpalo::Bump::new();
-        let res = Tokenizer::tokenize(&arena, FileId(0), &code);
+        let res = Tokenizer::tokenize(FileId(0), &code);
         assert!(res.is_err(), "Should fail to tokenize {code:?}: {res:?}");
     }
 }

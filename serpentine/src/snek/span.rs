@@ -1,65 +1,68 @@
 //! Spans represent a range in the code
 
+use std::cell::Cell;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
+
+use typed_arena::Arena;
 
 use crate::snek::CompileError;
 
 /// A virtual file that can hold multiple files for error reporting
 /// But look like one big file to miette.
-#[derive(Debug)]
-pub struct VirtualFile<'arena> {
+pub struct VirtualFile {
     /// The actual files, with their content and paths.
-    files: Vec<(PathBuf, &'arena str)>,
+    files: Arena<(PathBuf, Box<str>)>,
     /// The current length of all values
-    length: usize,
+    length: Cell<usize>,
 }
 
 /// A unique identifier for a file in the virtual file system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId(pub usize);
 
-impl<'arena> VirtualFile<'arena> {
+impl VirtualFile {
     /// Create a new empty virtual file
     #[must_use]
     pub fn new() -> Self {
         Self {
-            files: Vec::new(),
-            length: 0,
+            files: Arena::new(),
+            length: Cell::new(0),
         }
     }
 
     /// Add a new file to this virtual file, returning its `FileId`.
-    pub fn push(&mut self, path: PathBuf, code: &'arena str) -> FileId {
-        let start_point = self.length;
+    pub fn push(&self, path: PathBuf, code: Box<str>) -> (FileId, &str) {
+        let start_point = self.length.get();
 
-        self.length = self.length.saturating_add(code.len());
-        self.files.push((path, code));
+        let code_length = code.len();
+        self.length
+            .update(move |length| length.saturating_add(code_length));
 
-        FileId(start_point)
+        let (_, code) = self.files.alloc((path, code));
+
+        (FileId(start_point), code)
     }
 
-    /// Clone the source code to report spans.
-    pub fn into_owned(self) -> OwnedVirtualFile {
-        OwnedVirtualFile {
-            files: self
-                .files
-                .into_iter()
-                .map(|(path, code)| (path, code.into()))
-                .collect(),
+    /// Convert this into a read-only owned file, which can be used for miette (A mutable owned file
+    /// cant be iterated over.)
+    pub fn into_readonly(self) -> ReadOnlyVirtualFile {
+        ReadOnlyVirtualFile {
+            files: self.files.into_vec().into_boxed_slice(),
         }
     }
 }
 
-/// A owned copy of `VirtualFile` for storing in errors, should be lazily created as needed.
+/// A read only version of `VirtualFile` for storing in errors, as it allows converting from spans
+/// to contents.
 #[derive(Debug)]
-pub struct OwnedVirtualFile {
+pub struct ReadOnlyVirtualFile {
     /// The files
     files: Box<[(PathBuf, Box<str>)]>,
 }
 
-impl miette::SourceCode for OwnedVirtualFile {
+impl miette::SourceCode for ReadOnlyVirtualFile {
     fn read_span<'this>(
         &'this self,
         span: &miette::SourceSpan,

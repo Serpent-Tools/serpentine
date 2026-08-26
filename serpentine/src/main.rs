@@ -15,6 +15,7 @@ use typed_path::{PlatformPath, PlatformPathBuf};
 
 use crate::engine::RuntimeError;
 use crate::events::Reporter;
+use crate::snek::span::VirtualFile;
 
 mod engine;
 mod events;
@@ -182,7 +183,7 @@ enum SerpentineError {
     Compile {
         /// The source code that produced the compile error
         #[source_code]
-        source_code: snek::span::OwnedVirtualFile,
+        source_code: snek::span::ReadOnlyVirtualFile,
         /// The compile Error
         #[related]
         error: Vec<snek::CompileError>,
@@ -193,7 +194,7 @@ enum SerpentineError {
     Runtime {
         /// The source code that produced the runtime error
         #[source_code]
-        source_code: snek::span::OwnedVirtualFile,
+        source_code: snek::span::ReadOnlyVirtualFile,
         /// The error that occurred at runtime
         #[related]
         error: Vec<engine::RuntimeError>,
@@ -341,11 +342,16 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
     }
 
     log::info!("Compiling pipeline: {}", command.pipeline.display());
-    let result = match snek::compile_graph(&command.pipeline, &command.entry_point) {
+    let virtual_file = VirtualFile::new();
+    let result = match snek::compile_graph(&virtual_file, &command.pipeline, &command.entry_point) {
         Ok(result) => result,
         Err(err) => {
             output_mode.shuwdown();
-            return Err(err.into());
+            return Err(SerpentineError::Compile {
+                source_code: virtual_file.into_readonly(),
+                error: vec![err],
+            }
+            .into());
         }
     };
 
@@ -358,7 +364,12 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
             total_nodes,
             pipeline,
         });
-    let result = engine::run(result, output_mode.get_reporter(), command);
+    let result = engine::run(
+        virtual_file.into_readonly(),
+        result,
+        output_mode.get_reporter(),
+        command,
+    );
 
     log::info!("Executor returned, waiting for output mode to exit");
     output_mode.shuwdown();
@@ -374,10 +385,14 @@ mod tests {
 
     use rstest::rstest;
 
+    use crate::SerpentineError;
+    use crate::snek::span::VirtualFile;
+
     #[rstest]
     #[test_log::test]
     fn live_examples(#[files("../test_cases/live/**/*.snek")] path: PathBuf) {
-        let graph = match crate::snek::compile_graph(&path, "DEFAULT") {
+        let virtual_file = VirtualFile::new();
+        let graph = match crate::snek::compile_graph(&virtual_file, &path, "DEFAULT") {
             Ok(graph) => graph,
             Err(err) => {
                 let err = miette::Report::new(err);
@@ -401,7 +416,13 @@ mod tests {
             jobs: 1,
             containerd_namespace: "serpentine-test".into(),
         };
-        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
+
+        if let Err(err) = crate::engine::run(
+            virtual_file.into_readonly(),
+            graph,
+            crate::events::Reporter::none(),
+            &cli,
+        ) {
             let err = miette::Report::new(err);
             let err = format!("{err:?}");
             panic!("Failed to run {path:?}\n{err}")
@@ -411,10 +432,14 @@ mod tests {
     #[rstest]
     #[test_log::test]
     fn live_fails(#[files("../test_cases/live_negative/**/*.snek")] path: PathBuf) {
-        let graph = match crate::snek::compile_graph(&path, "DEFAULT") {
+        let virtual_file = VirtualFile::new();
+        let graph = match crate::snek::compile_graph(&virtual_file, &path, "DEFAULT") {
             Ok(graph) => graph,
             Err(err) => {
-                let err = miette::Report::new(err);
+                let err = miette::Report::new(SerpentineError::Compile {
+                    source_code: virtual_file.into_readonly(),
+                    error: vec![err],
+                });
                 let err = format!("{err:?}");
                 panic!("Failed to compile {path:?}\n{err}")
             }
@@ -435,7 +460,12 @@ mod tests {
             jobs: 1,
             containerd_namespace: "serpentine-test".into(),
         };
-        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
+        if let Err(err) = crate::engine::run(
+            virtual_file.into_readonly(),
+            graph,
+            crate::events::Reporter::none(),
+            &cli,
+        ) {
             let _ = miette::set_hook(Box::new(|_| {
                 let config = miette::GraphicalReportHandler::default();
                 let config = config

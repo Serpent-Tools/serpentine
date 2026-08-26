@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::engine::cache::CacheBackend;
 use crate::events::{Lifecycle, Reporter};
 use crate::snek::CompileResult;
+use crate::snek::span::ReadOnlyVirtualFile;
 
 /// An error encountered while running the source code
 #[derive(Debug, Error, Diagnostic)]
@@ -358,6 +359,7 @@ impl RuntimeContext {
 
 /// Run the given compilation result
 pub fn run(
+    source_code: ReadOnlyVirtualFile,
     compile_result: CompileResult,
     reporter: Reporter,
     cli: &crate::Run,
@@ -372,7 +374,7 @@ pub fn run(
         .build();
     let Ok(runtime) = runtime else {
         return Err(crate::SerpentineError::Runtime {
-            source_code: compile_result.source_code,
+            source_code,
             error: vec![RuntimeError::internal("Failed to start tokio")],
         });
     };
@@ -426,7 +428,7 @@ pub fn run(
             result
         })
         .map_err(|err| crate::SerpentineError::Runtime {
-            source_code: compile_result.source_code,
+            source_code,
             error: vec![err],
         })?;
 
@@ -439,6 +441,8 @@ pub fn run(
 mod benchmarks {
     use std::path::{Path, PathBuf};
 
+    use crate::snek::span::VirtualFile;
+
     /// Compile and run a full pipeline from a snek file.
     fn run_pipeline(
         snek_path: &Path,
@@ -446,7 +450,8 @@ mod benchmarks {
         standalone_cache: bool,
         namespace: String,
     ) {
-        let graph = crate::snek::compile_graph(snek_path, "DEFAULT").unwrap();
+        let virtual_file = VirtualFile::new();
+        let graph = crate::snek::compile_graph(&virtual_file, snek_path, "DEFAULT").unwrap();
         let cli = crate::Run {
             pipeline: snek_path.to_path_buf(),
             ci: true,
@@ -458,7 +463,13 @@ mod benchmarks {
             containerd_namespace: namespace,
         };
 
-        super::run(graph, crate::events::Reporter::none(), &cli).unwrap();
+        super::run(
+            virtual_file.into_readonly(),
+            graph,
+            crate::events::Reporter::none(),
+            &cli,
+        )
+        .unwrap();
     }
 
     /// Benchmark a cold pipeline run (no cache).
