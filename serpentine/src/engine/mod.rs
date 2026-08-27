@@ -489,7 +489,7 @@ mod benchmarks {
     }
 
     /// Benchmark a warm pipeline run (with primed cache).
-    #[divan::bench(threads = false, args = ["bench/small.snek", "bench/large.snek"])]
+    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
     fn live_warm(bencher: divan::Bencher, snek: &str) {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../test_cases")
@@ -521,7 +521,7 @@ mod benchmarks {
     }
 
     /// Benchmark a warm pipeline run with standalone cache.
-    #[divan::bench(threads = false, args = ["bench/small.snek", "bench/large.snek"])]
+    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
     fn live_warm_standalone(bencher: divan::Bencher, snek: &str) {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../test_cases")
