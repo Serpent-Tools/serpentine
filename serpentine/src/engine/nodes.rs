@@ -263,6 +263,8 @@ struct Wrap<F, P> {
     /// Uses `fn() -> P` so `Wrap` is unconditionally `Send + Sync` regardless of `P` (it never
     /// actually owns a `P`).
     phantom: PhantomData<fn() -> P>,
+    /// can this node be cached
+    cache: bool,
 }
 
 impl<F, P> Wrap<F, P> {
@@ -272,16 +274,20 @@ impl<F, P> Wrap<F, P> {
             function: func,
             passthrough_return: false,
             phantom: PhantomData,
+            cache: true,
         }
     }
 
     /// Create a new wrapped node whose return type passes through from the first argument.
-    fn passthrough(func: F) -> Self {
-        Self {
-            function: func,
-            passthrough_return: true,
-            phantom: PhantomData,
-        }
+    fn passthrough(mut self) -> Self {
+        self.passthrough_return = true;
+        self
+    }
+
+    /// Mark this node as uncahacble
+    fn uncached(mut self) -> Self {
+        self.cache = false;
+        self
     }
 }
 
@@ -297,7 +303,7 @@ macro_rules! impl_node_impl {
               $($arg: RawData),*
         {
             fn should_be_cached(&self) -> bool {
-                R::KIND.is_cacheable()
+                self.cache && R::KIND.is_cacheable()
             }
 
             fn describe(&self) -> Cow<'static, str> {
@@ -695,7 +701,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ),
         (
             "Exec",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(exec)),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(exec).passthrough()),
         ),
         (
             "ExecOutput",
@@ -703,32 +709,40 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
                 exec_output,
             )),
         ),
-        ("FromHost", Box::new(Wrap::<_, Arc<str>>::new(from_host))),
+        (
+            "FromHost",
+            Box::new(Wrap::<_, Arc<str>>::new(from_host).uncached()),
+        ),
         (
             "Export",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
-                export,
-            )),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(export).uncached()),
         ),
         (
             "ToHost",
-            Box::new(Wrap::<_, (FileSystem, Arc<str>)>::new(to_host)),
+            Box::new(Wrap::<_, (FileSystem, Arc<str>)>::new(to_host).uncached()),
         ),
         (
             "With",
             Box::new(
-                Wrap::<_, (containerd::ContainerLike, FileSystem, Arc<str>)>::passthrough(with),
+                Wrap::<_, (containerd::ContainerLike, FileSystem, Arc<str>)>::new(with)
+                    .passthrough(),
             ),
         ),
         (
             "WorkingDir",
             Box::new(
-                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(with_working_dir),
+                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(with_working_dir)
+                    .passthrough()
+                    .uncached(),
             ),
         ),
         (
             "Env",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>, Arc<str>)>::passthrough(env)),
+            Box::new(
+                Wrap::<_, (containerd::ContainerLike, Arc<str>, Arc<str>)>::new(env)
+                    .passthrough()
+                    .uncached(),
+            ),
         ),
         (
             "GetEnv",
@@ -738,7 +752,11 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ),
         (
             "User",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::passthrough(set_user)),
+            Box::new(
+                Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(set_user)
+                    .passthrough()
+                    .uncached(),
+            ),
         ),
         ("Join", Box::new(Join)),
         (
@@ -749,20 +767,23 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ),
         (
             "WithService",
-            Box::new(Wrap::<
-                _,
-                (
-                    containerd::ContainerLike,
-                    containerd::ServiceState,
-                    Arc<str>,
-                ),
-            >::passthrough(with_service)),
+            Box::new(
+                Wrap::<
+                    _,
+                    (
+                        containerd::ContainerLike,
+                        containerd::ServiceState,
+                        Arc<str>,
+                    ),
+                >::new(with_service)
+                .passthrough(),
+            ),
         ),
         (
             "HealthCheck",
-            Box::new(Wrap::<_, (containerd::ServiceState, Arc<str>, i128)>::new(
-                healthcheck,
-            )),
+            Box::new(
+                Wrap::<_, (containerd::ServiceState, Arc<str>, i128)>::new(healthcheck).uncached(),
+            ),
         ),
     ]
 }
