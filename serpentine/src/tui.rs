@@ -11,7 +11,7 @@ use ratatui::widgets::Paragraph;
 use crate::events::{Lifecycle, NodeTransition, SerpentineEvent, TaskId, TaskKind, TaskUpdate};
 
 /// Frames of the activity spinner, advanced by elapsed time.
-const SPINNER: [char; 4] = ['│', '╱', '─', '╲'];
+const SPINNER: [char; 8] = ['⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇'];
 /// The shell prompt glyph.
 const PROMPT: char = '>';
 /// Marker shown beside a scrollback milestone.
@@ -555,8 +555,16 @@ pub fn start_tui(events: Receiver<SerpentineEvent>) {
         }
     }
 
+    let _ = terminal.clear();
+    let _ = terminal.draw(|frame| {
+        let area = frame.area();
+        frame.set_cursor_position((area.left(), area.top()));
+    });
+    ratatui::restore();
     drop(terminal);
+
     println!();
     ui_state.print_summary();
+
     log::info!("TUI terminated");
 }
