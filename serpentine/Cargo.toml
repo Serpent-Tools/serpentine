@@ -52,7 +52,7 @@ ci_info = "0.14.15"
 typed-arena = { version = "2.0.2", default-features = false }
 
 # bench
-divan = { version = "0.1", default-features = false, optional = true }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"], optional = true }
 tempfile = { version = "3.27.0", default-features = false, optional = true }
 
 [dev-dependencies]
@@ -67,7 +67,7 @@ tempfile = { version = "3.27.0", default-features = false }
 [features]
 default = []
 _test_docker = []
-_bench = ["dep:divan", "dep:tempfile"]
+_bench = ["dep:criterion", "dep:tempfile"]
 
 [lints]
 workspace = true

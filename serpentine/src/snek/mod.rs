@@ -235,17 +235,40 @@ pub fn compile_graph(
 
 /// Benchmarks for the snek compiler.
 #[cfg(feature = "_bench")]
-mod benchmarks {
+#[expect(clippy::unwrap_used, reason = "benchmarks")]
+pub(crate) mod benchmarks {
+    use std::path::PathBuf;
 
-    /// Benchmark for the snek compiler.
-    #[divan::bench(args = [
-        "../test_cases/bench/small.snek",
-        "../test_cases/bench/large.snek",
-    ])]
-    fn compile(path: &str) {
-        let virtual_file = super::VirtualFile::new();
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
-        let _ = super::compile_graph(&virtual_file, &path, "DEFAULT");
+    /// Every pipeline under `test_cases/positive`, in a stable order.
+    fn cases() -> Vec<PathBuf> {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_cases/positive");
+        let mut cases: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "snek")
+            })
+            .collect();
+        cases.sort();
+        cases
+    }
+
+    /// Register the snek compiler benchmarks.
+    pub(crate) fn register(criterion: &mut criterion::Criterion) {
+        let mut group = criterion.benchmark_group("snek");
+
+        for path in cases() {
+            let id = path.file_stem().unwrap().to_string_lossy().into_owned();
+            group.bench_function(id, |bencher| {
+                bencher.iter(|| {
+                    let virtual_file = super::VirtualFile::new();
+                    let _ = super::compile_graph(&virtual_file, &path, "DEFAULT");
+                });
+            });
+        }
+
+        group.finish();
     }
 }
 

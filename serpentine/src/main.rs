@@ -285,7 +285,11 @@ fn setup_logging(reporter: events::Reporter, report_to_stdout: bool) -> miette::
 fn main() -> miette::Result<()> {
     #[cfg(feature = "_bench")]
     {
-        divan::main();
+        let mut criterion = criterion::Criterion::default().configure_from_args();
+        snek::benchmarks::register(&mut criterion);
+        #[cfg(feature = "_test_docker")]
+        engine::benchmarks::register(&mut criterion);
+        criterion.final_summary();
         return Ok(());
     }
 

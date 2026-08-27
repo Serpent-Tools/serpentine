@@ -9,8 +9,15 @@ test filter="": build_container
 update_snapshots: build_container
     cargo insta test --features _test_docker --review --unreferenced delete --test-runner nextest
 
-bench: build_container
-    cargo run --release -p serpentine --features _test_docker,_bench -- --bench
+bench filter="": build_container
+    cargo run --release -p serpentine --features _test_docker,_bench -- --bench {{filter}}
+
+# Pin a reference point to measure a round of optimisation against.
+bench_save name filter="": build_container
+    cargo run --release -p serpentine --features _test_docker,_bench -- --bench {{filter}} --save-baseline {{name}}
+
+bench_compare name filter="": build_container
+    cargo run --release -p serpentine --features _test_docker,_bench -- --bench {{filter}} --baseline {{name}}
 
 build_container:
     docker container rm -f serpent-tools.containerd
