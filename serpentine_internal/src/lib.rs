@@ -107,14 +107,16 @@ pub struct TypedPathSerdeWrapper<T: typed_path::Encoding>(
 /// Files and Folders specify the relative path relative to the previous folder.
 /// i.e
 ///
-/// * Folder(name="foo", length=2) -> /foo
-/// * Folder(name="bar", length=1) -> /foo/bar
-/// * File(name="a") -> /foo/bar/a
+/// * Folder(name="foo", entries=3) -> /foo
+/// * Folder(name="bar", entries=1) -> /foo/bar
+/// * File(name="a", length=..) -> /foo/bar/a
 /// * <a data ...>
-/// * File(name="b") -> /foo/b
+/// * File(name="b", length=..) -> /foo/b
 /// * <b data ...>
-/// * File(name="c") -> /foo/c
+/// * File(name="c", length=..) -> /foo/c
 /// * <c data ...>
+///
+/// A file's header is always immediately followed by exactly `length` bytes of its contents.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum FileSystemEntryHeader {
     /// A file
@@ -209,7 +211,7 @@ pub async fn read_disk_to_filesystem_stream(
 
 /// Read the given file system stream onto the disk
 ///
-/// if `permissive_permissions` is set than all permission bits will be set on unix (read, write,
+/// if `permissive_permissions` is set then all permission bits will be set on unix (read, write,
 /// executable), if not set then the platform defaults will be used.
 ///
 /// # Errors

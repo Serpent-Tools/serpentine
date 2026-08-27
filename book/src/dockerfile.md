@@ -157,12 +157,12 @@ For an example of a call site take this part of serpentine's own CI:
 ```snek
 clippy_hack = lib::rust
     > Exec("rustup component add clippy")
-    > lib::Cooked("--clippy")
-    > lib::Binstall("cargo-hack", "cargo-hack")
-    > Exec("cargo hack --locked --feature-powerset --all clippy -- -Dwarnings");
+    > lib::Binstall("cargo-hack@=0.6.45", "cargo-hack")
+    > lib::CookedCustom("cargo hack --locked --all clippy --all-targets || true")
+    > Exec("cargo hack --locked --all clippy --all-targets -- -Dwarnings");
 ```
 
-Which shows how complex CI/Container patterns can be encoded and used as ergonomic functions, as this CI step now reads nicely as "install clippy, pre-cook clippy on dependencies, install cargo-hack, run cargo-hack", but internally this is spawning up multiple parallel sub graphs.
+Which shows how complex CI/Container patterns can be encoded and used as ergonomic functions, as this CI step now reads nicely as "install clippy, install cargo-hack, pre-warm the dependency build, run cargo-hack", but internally this is spawning up multiple parallel sub graphs.
 
 ## Values/Labels aren't just containers
 Another neat thing is that labels/arguments/return values aren't just for containers, but any value, this seems obvious, but it gives a similar power to what `ENV` in dockerfiles are sometimes used for, avoiding magic numbers.

@@ -111,7 +111,7 @@ By default the serpentine cache is purely additive, but this can result in a lot
 
 As noted above serpentine simply caches snapshot names, this means the cache cannot be moved between machines as the containerd volumes would not be moved along with it.
 
-This is where the "standalone" mode comes in, it will write the actual layer diffs to the cache file which can then be moved between systems.
+This is where the "standalone" mode comes in, it will write the actual layer diffs into the cache, which can then be moved between systems.
 
 > [!IMPORTANT]
 > The hash is still just based on the names, this simply makes it so the cache is portable between systems and should not change any runtime semantics.

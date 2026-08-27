@@ -92,8 +92,8 @@ impl Data {
 
     /// Construct a `Data` from a `CacheableData`.
     #[must_use]
-    pub fn from_cacheable(chaceable_data: CacheableData) -> Self {
-        match chaceable_data {
+    pub fn from_cacheable(cacheable_data: CacheableData) -> Self {
+        match cacheable_data {
             CacheableData::Int(value) => Data::Int(value),
             CacheableData::String(string) => Data::String(string),
             CacheableData::Container(container) => Data::Container(container),

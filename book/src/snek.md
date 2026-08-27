@@ -175,8 +175,8 @@ example = module::bar > module::Foo() > module::abc::SomethingElse();
 The std-lib is imported in the same way, with the caveat that `@` is used as a alias to the stdlibs installation path, for example `import "@/rust.snek" as rust;`
 
 ## Naming conventions 
-Snek identifiers must consist of a alphabetic character followed by a mix of alphanumeric and `-` and `_` values.
-In other words they must match the following regex, `[a-zA-Z][a-zA-Z0-9_-]+`.
+Snek identifiers must consist of a alphabetic character followed by any number of alphanumeric, `-` and `_` values.
+Alphabetic and alphanumeric are the unicode categories, so `caffè` is a valid identifier while `€` is not.
 
 While not a requirement, in general snek code should use snake_case for labels and modules, and PascalCase for functions, these are the conventions the stdlib uses.
 

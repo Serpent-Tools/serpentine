@@ -49,12 +49,13 @@ enum Command {
     Run(Run),
     /// Clear out serpentine's cache.
     ///
-    /// This will delete the specified cache volume, as well as deleting serpentines docker volume.
+    /// This will delete the specified cache directory, as well as deleting serpentines docker volume.
     ///
-    /// NOTE: This will invalidate most caches, not only those pointed to in this command (unless
-    /// those caches)
+    /// NOTE: Dropping the docker volume takes the containerd snapshots with it, so this invalidates
+    /// every cache on the system and not just the one named here. Standalone caches are the
+    /// exception, as they carry the layer diffs themselves and can re-import them.
     Clean {
-        /// The cache file to clean
+        /// The cache directory to clean
         cache: Option<PathBuf>,
     },
 }
@@ -71,7 +72,7 @@ struct Run {
     /// CI mode, disables TUI and logs directly to stdout.
     #[arg(long)]
     ci: bool,
-    /// Location of the cache file
+    /// Location of the cache directory
     ///
     /// This can be useful to set in CI, or per project if you are running multiple serpentine
     /// instances at once as some caching features are racing (this will only ever lead to cache
@@ -143,7 +144,7 @@ impl OutputMode {
     }
 
     /// Shutdown this output mode
-    fn shuwdown(self) {
+    fn shutdown(self) {
         match self {
             Self::Plain => {}
             Self::Tui { handle, reporter } => {
@@ -346,7 +347,7 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
     let result = match snek::compile_graph(&virtual_file, &command.pipeline, &command.entry_point) {
         Ok(result) => result,
         Err(err) => {
-            output_mode.shuwdown();
+            output_mode.shutdown();
             return Err(SerpentineError::Compile {
                 source_code: virtual_file.into_readonly(),
                 error: vec![err],
@@ -372,7 +373,7 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
     );
 
     log::info!("Executor returned, waiting for output mode to exit");
-    output_mode.shuwdown();
+    output_mode.shutdown();
 
     result.map_err(Into::into)
 }

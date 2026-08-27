@@ -127,7 +127,8 @@ struct UiState {
 }
 
 impl UiState {
-    /// Create a new ui state for a run of `total_nodes` nodes.
+    /// Create an empty ui state; the pipeline name and node count arrive with
+    /// [`Lifecycle::PipelineParsed`].
     fn new() -> Self {
         Self {
             start: Instant::now(),
