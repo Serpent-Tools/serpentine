@@ -438,10 +438,15 @@ pub fn run(
 /// Benchmarks for the engine pipeline.
 #[cfg(all(feature = "_bench", feature = "_test_docker"))]
 #[expect(clippy::unwrap_used, reason = "benchmarks")]
-mod benchmarks {
+pub(crate) mod benchmarks {
     use std::path::{Path, PathBuf};
 
+    use criterion::{BatchSize, Criterion};
+
     use crate::snek::span::VirtualFile;
+
+    /// Pipeline run by the benchmarks, relative to `test_cases`.
+    const CASE: &str = "bench/large.snek";
 
     /// Compile and run a full pipeline from a snek file.
     fn run_pipeline(
@@ -472,65 +477,74 @@ mod benchmarks {
         .unwrap();
     }
 
-    /// Benchmark a cold pipeline run (no cache).
-    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
-    fn live_cold(bencher: divan::Bencher, snek: &str) {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    /// Absolute path to the benchmark pipeline.
+    fn case_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../test_cases")
-            .join(snek);
-        bencher
-            .with_inputs(|| {
-                (
-                    tempfile::TempDir::new().unwrap(),
-                    uuid::Uuid::new_v4().to_string(),
-                )
-            })
-            .bench_values(|(cache, namespace)| run_pipeline(&path, cache.path(), false, namespace));
+            .join(CASE)
     }
 
-    /// Benchmark a warm pipeline run (with primed cache).
-    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
-    fn live_warm(bencher: divan::Bencher, snek: &str) {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../test_cases")
-            .join(snek);
-        let cache = tempfile::TempDir::new().unwrap();
-        let namespace = uuid::Uuid::new_v4().to_string();
-        run_pipeline(&path, cache.path(), false, namespace.clone());
+    /// Register the engine pipeline benchmarks.
+    pub(crate) fn register(criterion: &mut Criterion) {
+        let mut group = criterion.benchmark_group("engine");
 
-        bencher
-            .with_inputs(|| namespace.clone())
-            .bench_values(|namespace| run_pipeline(&path, cache.path(), false, namespace));
-    }
+        group.sample_size(10).noise_threshold(0.10);
 
-    /// Benchmark a cold pipeline run (no cache).
-    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
-    fn live_cold_standalone(bencher: divan::Bencher, snek: &str) {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../test_cases")
-            .join(snek);
+        let path = case_path();
 
-        bencher
-            .with_inputs(|| {
-                (
-                    tempfile::TempDir::new().unwrap(),
-                    uuid::Uuid::new_v4().to_string(),
-                )
-            })
-            .bench_values(|(cache, namespace)| run_pipeline(&path, cache.path(), true, namespace));
-    }
+        group.bench_function("live_cold", |bencher| {
+            bencher.iter_batched(
+                || {
+                    (
+                        tempfile::TempDir::new().unwrap(),
+                        uuid::Uuid::new_v4().to_string(),
+                    )
+                },
+                |(cache, namespace)| run_pipeline(&path, cache.path(), false, namespace),
+                BatchSize::PerIteration,
+            );
+        });
 
-    /// Benchmark a warm pipeline run with standalone cache.
-    #[divan::bench(threads = false, sample_count = 5, args = ["bench/small.snek", "bench/large.snek"])]
-    fn live_warm_standalone(bencher: divan::Bencher, snek: &str) {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../test_cases")
-            .join(snek);
-        let cache = tempfile::TempDir::new().unwrap();
-        run_pipeline(&path, cache.path(), true, uuid::Uuid::new_v4().to_string());
+        {
+            let cache = tempfile::TempDir::new().unwrap();
+            let namespace = uuid::Uuid::new_v4().to_string();
+            run_pipeline(&path, cache.path(), false, namespace.clone());
 
-        bencher
-            .with_inputs(|| uuid::Uuid::new_v4().to_string())
-            .bench_values(|namespace| run_pipeline(&path, cache.path(), true, namespace));
+            group.bench_function("live_warm", |bencher| {
+                bencher.iter_batched(
+                    || namespace.clone(),
+                    |namespace| run_pipeline(&path, cache.path(), false, namespace),
+                    BatchSize::PerIteration,
+                );
+            });
+        }
+
+        group.bench_function("live_cold_standalone", |bencher| {
+            bencher.iter_batched(
+                || {
+                    (
+                        tempfile::TempDir::new().unwrap(),
+                        uuid::Uuid::new_v4().to_string(),
+                    )
+                },
+                |(cache, namespace)| run_pipeline(&path, cache.path(), true, namespace),
+                BatchSize::PerIteration,
+            );
+        });
+
+        {
+            let cache = tempfile::TempDir::new().unwrap();
+            run_pipeline(&path, cache.path(), true, uuid::Uuid::new_v4().to_string());
+
+            group.bench_function("live_warm_standalone", |bencher| {
+                bencher.iter_batched(
+                    || uuid::Uuid::new_v4().to_string(),
+                    |namespace| run_pipeline(&path, cache.path(), true, namespace),
+                    BatchSize::PerIteration,
+                );
+            });
+        }
+
+        group.finish();
     }
 }
