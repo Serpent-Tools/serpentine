@@ -9,7 +9,7 @@ Run a serpentine pipeline, takes no positional arguments. By default this will w
 For example CI systems will likely want some variation on:
 
 ```bash
-serpentine run --cache /tmp/cache.serpentine --clean-old --standalone-cache --ci
+serpentine run --cache /tmp/serpentine_cache --clean-old --standalone-cache --ci
 ```
 
 ### `--pipeline` / `-p`
@@ -35,7 +35,13 @@ Switches serpentines output to "CI mode", in practice this means disabling the f
 ### `--cache` / `-c`
 * default: platform specific, printed to stdout at the start of a run.
 
-Specifies the location to store caches, by default it will store it in the systems default cache location, this flag should be used in CI to store the cache file at a deterministic location.
+Specifies the directory to store caches in, by default it will store it in the systems default cache location, this flag should be used in CI to store the cache at a deterministic location.
+The directory is created if it doesn't exist.
+
+### `--containerd-namespace`
+* default: `serpentine`
+
+The containerd namespace to scope every snapshot, layer and lease to. Serpentine already makes concurrent instances cooperate within a namespace, so the main use for this is temporarily throwing away the snapshot caches by running under a fresh name (note that with `--standalone-cache` the layers are still recoverable from the cache directory).
 
 ### `--standalone-cache`
 
@@ -53,6 +59,6 @@ Delete caches left over from older runs, by default serpentine treats the cache 
 Cleans out the serpentine cache.
 
 > [!IMPORTANT]
-> This is not just deleting the file on disk (while it does do that), it also deletes serpentines docker volume for its containerd side state.
+> This is not just deleting the directory on disk (while it does do that), it also deletes serpentines docker volume for its containerd side state.
 
-Takes an optional argument which is the cache file to clean.
+Takes an optional argument which is the cache directory to clean.

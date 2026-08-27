@@ -14,6 +14,14 @@ These nodes are available at all times in the global scope.
 This node takes any number of string arguments and join them together.
 For example `Join("hello ", "world")` results in `"hello world"`
 
+### `Noop`
+
+Takes exactly one value of any type and returns it unchanged.
+Paired with phantom inputs this is how you group nodes, as the group needs something to hang the phantom inputs off:
+```snek
+tests = !(unit_tests, integration_tests) Noop(0);
+```
+
 ## Container nodes
 
 "Containers" in serpentine, or more accurately containerd snapshots (essentially docker layers) are immutable values, the below nodes take in a container and return a new one.
@@ -52,6 +60,18 @@ def AddPath(container, folder) {
     new_path = Join(GetEnv(container, "PATH"), ":", folder);
     return container > Env("PATH", new_path);
 }
+```
+
+### `User`
+
+Sets the user that `Exec`/`ExecOutput` run as, using the same syntax as the docker `USER` directive:
+`user`, `uid`, `user:group`, `uid:gid`, `uid:group` or `user:gid`.
+
+The name (or id) is resolved against the container's own `/etc/passwd` and `/etc/group`, so it must already exist in the image.
+Serpentine also picks up the user's home directory from `/etc/passwd` and sets `HOME` accordingly.
+
+```snek
+... > Exec("adduser -D builder") > User("builder");
 ```
 
 ### `Export`

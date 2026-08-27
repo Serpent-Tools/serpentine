@@ -14,7 +14,7 @@ Specifically if you use the following command:
 ```bash
 serpentine run --cache /tmp/serpentine_cache --clean-old --standalone-cache --ci
 ```
-You must restore `/tmp/cache.serpentine` before running it, and save it afterwards. 
+You must restore `/tmp/serpentine_cache` before running it, and save it afterwards. 
 
 ## Github Actions
 

@@ -340,7 +340,7 @@ impl<'arena> Parser<'arena> {
         }
     }
 
-    /// If the next token is a identifier return it, otherwiser return a error.
+    /// If the next token is a identifier return it, otherwise return a error.
     fn expect_ident(&mut self) -> Result<ast::Ident<'arena>, CompileError> {
         let token = self.next()?;
         if let Token::Ident(ident) = *token {
@@ -354,7 +354,7 @@ impl<'arena> Parser<'arena> {
         }
     }
 
-    /// If the next token is a string return it, otherwiser return a error.
+    /// If the next token is a string return it, otherwise return a error.
     fn expect_str(&mut self) -> Result<Spanned<Box<str>>, CompileError> {
         let token = self.next()?;
         let span = token.span();

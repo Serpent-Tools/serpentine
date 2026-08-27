@@ -3,14 +3,15 @@
 //! You define nodes, and their connections.
 //!
 //! ```snek
-//! Image("...") .> Exec("cargo install nextest") .= base_image;
+//! base_image = Image("...") > Exec("cargo install cargo-nextest");
 //!
-//! base_image > Exec("cargo nextest run") 'tests;
-//! base_image > Exec("cargo clippy") 'clippy;
+//! tests = base_image > Exec("cargo nextest run");
+//! clippy = base_image > Exec("cargo clippy");
 //!
-//! base_image > !'tests !'clippy Exec("cargo build") .> File("/target/...") .> Export("./bin/app") 'export;
-//!
-//! !'export RESULT;
+//! export DEFAULT = base_image
+//!     > !(tests, clippy) Exec("cargo build")
+//!     > Export("/target/release/app")
+//!     > ToHost("./bin/app");
 //! ```
 
 mod ast;

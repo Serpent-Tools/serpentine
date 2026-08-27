@@ -20,12 +20,18 @@ use crate::snek::span::{Span, Spanned};
 /// `Send + Sync` because node implementations live in the shared `Arc<Scheduler>` and their futures
 /// run on spawned tasks across worker threads.
 pub trait NodeImpl: Send + Sync {
-    /// Should this node be cached?
-    /// In general quick to execute pure nodes should not be cached.
-    /// As well as nodes that read external resources should not be cached.
+    /// Should the result of this node be looked up in, and written to, the data cache?
+    ///
+    /// The derived implementations answer from the return type alone: a node is cached whenever
+    /// its output is one the cache can store, see [`DataType::is_cacheable`]. Implement this by
+    /// hand and return `false` for nodes cheap enough that a cache round trip costs more than
+    /// recomputing them, which is why `Noop`, `Join` and literals opt out.
+    ///
+    /// Because the derived answer only looks at the return type, a node whose real work is a side
+    /// effect rather than its return value must implement this by hand and return `false`.
     fn should_be_cached(&self) -> bool;
 
-    /// Describe this node, used by the graph builder.
+    /// A human readable name for this node, used in log lines.
     fn describe(&self) -> Cow<'static, str>;
 
     /// Given the input types return the return type of the node.
@@ -38,11 +44,15 @@ pub trait NodeImpl: Send + Sync {
 
     /// Execute this node
     ///
-    /// The default implementation calls `get_output` in parallel on the scheduler,
-    /// And talks with the cache to cache the result of `execute`.
+    /// The default implementation resolves every input through the scheduler, each on its own task
+    /// so independent branches of the graph run in parallel, reports the node's transitions to the
+    /// reporter, and wraps `execute` in the data cache when `should_be_cached` allows it.
+    ///
+    /// A cache hit is health-checked before it is handed back, so a value naming containerd state
+    /// that has since been dropped falls through to a real execution instead of being trusted.
     ///
     /// If you want to have lazy inputs (i.e the node might not always need all its inputs),
-    /// You should overwrite this and leave `execute` empty.
+    /// You should overwrite this and resolve the inputs yourself.
     fn execute_raw<'scheduler>(
         &'scheduler self,
         kind: NodeKindId,
@@ -104,8 +114,10 @@ pub trait NodeImpl: Send + Sync {
         })
     }
 
-    /// Execute the node with pre-given inputs.
-    /// This is called by `execute_raw` and can be set to empty if overwriting it.
+    /// Execute the node with its inputs already resolved.
+    ///
+    /// Called by `execute_raw`, which is also where caching happens, so an implementation that
+    /// overrides `execute_raw` never has this called and can stub it out.
     fn execute<'scheduler>(
         &'scheduler self,
         context: &'scheduler Arc<RuntimeContext>,

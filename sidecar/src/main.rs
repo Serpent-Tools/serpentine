@@ -260,7 +260,7 @@ fn realize_topology(
     for child in children {
         let mut bridge_name = uuid::Uuid::new_v4().to_string();
         bridge_name.truncate(15);
-        let (_subnet, my_side, child_side) = pick_random_subnet();
+        let (_subnet, my_side, child_side) = pick_subnet();
 
         bridges.push(BridgeDefinition {
             name: bridge_name.clone(),
@@ -335,7 +335,7 @@ fn create_network_namespace(
         config_json: loopback_json.into(),
     });
 
-    let (_subnet, gateway, host) = pick_random_subnet();
+    let (_subnet, gateway, host) = pick_subnet();
     let internet_bridge_json = format!(
         r#"{{
             "cniVersion": "1.1.0",
@@ -428,13 +428,13 @@ fn apply_network(
 
 /// A counter for the amount of subnets created, used to pick unique subnets.
 ///
-/// we have 15 bits of usable subnets, hence a u16
+/// A `SUBNET_SIZE` subnet inside a `SUBNET_PREFIX_LENGTH` prefix leaves 16 bits to enumerate, hence a u16.
 static SUBNET_COUNTER: AtomicU16 = AtomicU16::new(0);
 
-/// Pick a random non-internet subnet that's unlikely to be used already on the LAN/Host
+/// Hand out the next non-internet subnet, from a range unlikely to be in use already on the LAN/Host.
 ///
 /// Returns the subnet definition, as well as two usable ips in it.
-fn pick_random_subnet() -> (String, Ipv4Addr, Ipv4Addr) {
+fn pick_subnet() -> (String, Ipv4Addr, Ipv4Addr) {
     const {
         assert!(
             SUBNET_SIZE > SUBNET_PREFIX_LENGTH,
@@ -585,7 +585,7 @@ async fn export_layer(
     remote_socket: impl AsyncWrite + Unpin + Send + Sync,
     mount: Mount,
 ) -> Result<(), Box<dyn Error>> {
-    let upperdir_path = extract_overlayfs_uppdir(mount)?;
+    let upperdir_path = extract_overlayfs_upperdir(mount)?;
     log::debug!("Extracting info from {}", upperdir_path.display());
     let mut tar = async_tar::Builder::new(remote_socket);
 
@@ -706,7 +706,7 @@ async fn is_opaque(entry: &async_walkdir::DirEntry) -> Result<bool, Box<dyn Erro
 
 /// Extract the path to the mounts upperdir (or the source with a bind mount, or highest lowerdir
 /// with read only mounts.)
-fn extract_overlayfs_uppdir(mount: Mount) -> Result<PlatformPathBuf, Box<dyn Error>> {
+fn extract_overlayfs_upperdir(mount: Mount) -> Result<PlatformPathBuf, Box<dyn Error>> {
     log::debug!("Extracting upperdir from {mount:#?}");
 
     match &*mount.type_ {

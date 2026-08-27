@@ -15,7 +15,6 @@ use tokio::sync::Mutex;
 use typed_path::{UnixPath, UnixPathBuf};
 
 use crate::engine::cache::{CacheBackend, CacheHash, CacheScope};
-// use crate::engine::cache::ExternalCache;
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
 use crate::engine::{BoxedReader, RuntimeError, acquire_file_lock, sidecar_client, userdb};
 use crate::events::{Lifecycle, Reporter, TaskHandle, TaskId, TaskKind};
@@ -535,7 +534,7 @@ pub struct Client {
     exec_lock: tokio::sync::Semaphore,
     /// Should snapshots be exported to the serpentine cache as well.
     ///
-    /// This is required for portabiltiy.
+    /// This is required for portability.
     export_snapshots: bool,
     /// Dangling resources
     dangling: Mutex<Vec<DanglingResource>>,
@@ -1699,7 +1698,7 @@ impl Client {
         if success { Ok(result) } else { Err(result) }
     }
 
-    /// read the /etc/passwd file to supplmenet the info given by the container config and
+    /// read the /etc/passwd file to supplement the info given by the container config and
     /// construct a full user object.
     ///
     /// Also returns the home directory.

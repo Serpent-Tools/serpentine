@@ -1,6 +1,6 @@
 # Containerd
 
-Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [BuildKit](https://github.com/moby/buildkit) does, this page documents the high-level flow of the code in `src/engine/containerd.rs`.
+Serpentine uses [containerd](https://github.com/containerd/containerd) in much the same way [BuildKit](https://github.com/moby/buildkit) does, this page documents the high-level flow of the code in `serpentine/src/engine/containerd.rs`.
 
 ## Running containerd
 Serpentine uses its own containerd image that downloads the `containerd` and `runc` binaries from github, and a few other supporting tools.
