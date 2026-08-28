@@ -378,12 +378,32 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
         eprintln!("Failed to initialize logging: {error}");
     }
 
+    let result = run_pipeline(command, output_mode.get_reporter());
+
+    // Rendered here so a consumer can put the diagnostic somewhere durable; miette still prints it
+    // to stderr once this returns.
+    if let Err(report) = &result {
+        output_mode
+            .get_reporter()
+            .lifecycle(events::Lifecycle::Failed {
+                report: format!("{report:?}").into_boxed_str(),
+            });
+    }
+
+    log::info!("Executor returned, waiting for output mode to exit");
+    output_mode.shutdown();
+
+    result
+}
+
+/// Compile the pipeline and hand it to the executor
+fn run_pipeline(command: &Run, reporter: Reporter) -> Result<(), miette::Error> {
     log::info!("Compiling pipeline: {}", command.pipeline.display());
     let virtual_file = VirtualFile::new();
-    let result = match snek::compile_graph(&virtual_file, &command.pipeline, &command.entry_point) {
-        Ok(result) => result,
+    let compiled = match snek::compile_graph(&virtual_file, &command.pipeline, &command.entry_point)
+    {
+        Ok(compiled) => compiled,
         Err(err) => {
-            output_mode.shutdown();
             return Err(SerpentineError::Compile {
                 source_code: virtual_file.into_readonly(),
                 error: vec![err],
@@ -393,25 +413,14 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
     };
 
     log::info!("Executing pipeline");
-    let total_nodes = result.graph.len();
+    let total_nodes = compiled.graph.len();
     let pipeline = command.pipeline.display().to_string().into_boxed_str();
-    output_mode
-        .get_reporter()
-        .lifecycle(events::Lifecycle::PipelineParsed {
-            total_nodes,
-            pipeline,
-        });
-    let result = engine::run(
-        virtual_file.into_readonly(),
-        result,
-        output_mode.get_reporter(),
-        command,
-    );
+    reporter.lifecycle(events::Lifecycle::PipelineParsed {
+        total_nodes,
+        pipeline,
+    });
 
-    log::info!("Executor returned, waiting for output mode to exit");
-    output_mode.shutdown();
-
-    result.map_err(Into::into)
+    engine::run(virtual_file.into_readonly(), compiled, reporter, command).map_err(Into::into)
 }
 
 #[cfg(test)]

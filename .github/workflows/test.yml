@@ -239,18 +239,7 @@ jobs:
           mkdir -p target
           zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
       - name: Run serpentine pipeline
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point LINTS --jobs 1 2>/tmp/serpentine_stderr.log
-      - name: Surface pipeline errors
-        if: failure()
-        run: |
-          cat /tmp/serpentine_stderr.log >&2
-          {
-            echo "## Lint Pipeline Failed"
-            echo '```'
-            sed 's/\x1b\[[0-9;]*m//g' /tmp/serpentine_stderr.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Lint pipeline failed: $(head -1 /tmp/serpentine_stderr.log)"
+        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point LINTS --jobs 1
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always()
         with:
@@ -297,18 +286,7 @@ jobs:
           mkdir -p target
           zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
       - name: Run ${{ matrix.entry_point }} pipeline
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point ${{ matrix.entry_point }} --jobs 1 2>/tmp/serpentine_stderr.log
-      - name: Surface pipeline errors
-        if: failure()
-        run: |
-          cat /tmp/serpentine_stderr.log >&2
-          {
-            echo "## ${{ matrix.entry_point }} Pipeline Failed"
-            echo '```'
-            sed 's/\x1b\[[0-9;]*m//g' /tmp/serpentine_stderr.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::${{ matrix.entry_point }} pipeline failed: $(head -1 /tmp/serpentine_stderr.log)"
+        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point ${{ matrix.entry_point }} --jobs 1
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always()
         with:

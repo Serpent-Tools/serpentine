@@ -3297,6 +3297,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serpentine_internal",
+ "sha2",
  "shell-words",
  "static_assertions",
  "strip-ansi-escapes",

@@ -715,7 +715,7 @@ impl Client {
         let parent: String = serpentine_internal::read_postcard_frame(&mut reader).await?;
 
         if !parent.is_empty() {
-            let was_found = Box::pin(self.import_layer(&parent)).await?;
+            let was_found = Box::pin(self.ensure_snapshot(&parent)).await;
             if !was_found {
                 return Ok(false);
             }
