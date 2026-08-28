@@ -7,8 +7,9 @@
 use std::borrow::Cow;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use miette::Diagnostic;
 use thiserror::Error;
 use typed_path::{PlatformPath, PlatformPathBuf};
@@ -19,6 +20,8 @@ use crate::snek::span::VirtualFile;
 
 mod engine;
 mod events;
+mod github_reporter;
+mod plain;
 mod snek;
 #[cfg(test)]
 mod test_support;
@@ -71,9 +74,9 @@ struct Run {
     /// The entry point to use for the pipeline
     #[arg(short, long, default_value = "DEFAULT")]
     entry_point: String,
-    /// CI mode, disables TUI and logs directly to stdout.
-    #[arg(long)]
-    ci: bool,
+    /// How to render progress.
+    #[arg(long, value_enum, default_value = "auto")]
+    output: OutputKind,
     /// Location of the cache directory
     ///
     /// This can be useful to set in CI, or per project if you are running multiple serpentine
@@ -107,65 +110,101 @@ struct Run {
     jobs: usize,
 }
 
-/// How serpentine produces output
-enum OutputMode {
-    /// Plain output, just logs to stdout.
+/// How serpentine renders a run's progress.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OutputKind {
+    /// Pick from the environment: `github` under GitHub Actions at `--jobs 1`, `plain` under any
+    /// other CI or when stdout is not a terminal, and `tui` otherwise.
+    Auto,
+    /// The live progress view.
+    Tui,
+    /// Log lines and captured command output on stdout.
     Plain,
-    /// The tui interface
-    Tui {
-        /// Handle to the tui task
-        handle: std::thread::JoinHandle<()>,
-        /// A handle to the reporter
-        reporter: Reporter,
-    },
+    /// Stdout, with each command folded into a GitHub Actions log group.
+    ///
+    /// Requires `--jobs 1`.
+    Github,
+    /// Render nothing; the run still writes its log file.
+    None,
+}
+
+/// How serpentine produces output.
+///
+/// Every mode but [`OutputKind::None`] is a consumer draining the run's events on its own thread;
+/// they differ only in how they render them.
+struct OutputMode {
+    /// A handle to the reporter
+    reporter: Reporter,
+    /// Handle to the consumer thread
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl OutputMode {
-    /// Create a tui output mode
-    fn tui() -> Self {
+    /// Spawn `consumer` on its own thread to drain this run's events.
+    fn spawn(consumer: fn(Receiver<events::SerpentineEvent>)) -> Self {
         let (reporter, receiver) = events::Reporter::channel();
-        let handle = std::thread::spawn(move || tui::start_tui(receiver));
+        let handle = std::thread::spawn(move || consumer(receiver));
 
-        Self::Tui { handle, reporter }
-    }
-
-    /// Should the logger directly print to stdout itself?
-    fn output_logs_to_stdout(&self) -> bool {
-        match self {
-            Self::Plain => true,
-            Self::Tui { .. } => false,
+        Self {
+            reporter,
+            handle: Some(handle),
         }
     }
 
-    /// Get the reporter to use if any
+    /// Drop every event at the point it is emitted.
+    fn none() -> Self {
+        Self {
+            reporter: Reporter::none(),
+            handle: None,
+        }
+    }
+
+    /// Get the reporter to use
     fn get_reporter(&self) -> Reporter {
-        match self {
-            Self::Plain => Reporter::none(),
-            Self::Tui { reporter, .. } => reporter.clone(),
-        }
+        self.reporter.clone()
     }
 
     /// Shutdown this output mode
     fn shutdown(self) {
-        match self {
-            Self::Plain => {}
-            Self::Tui { handle, reporter } => {
-                reporter.lifecycle(events::Lifecycle::Stop);
-                let _ = handle.join();
-                ratatui::restore();
-            }
+        if let Some(handle) = self.handle {
+            self.reporter.lifecycle(events::Lifecycle::Stop);
+            let _ = handle.join();
         }
     }
 }
 
 impl Run {
+    /// Reject the flag combinations clap cannot express on its own.
+    fn validate(&self) -> Result<(), clap::Error> {
+        if self.output == OutputKind::Github && self.jobs != 1 {
+            return Err(Cli::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--output github renders one command at a time, so it requires --jobs 1",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The consumer suggested by the environment serpentine is running under.
+    fn detect_output(&self) -> fn(Receiver<events::SerpentineEvent>) {
+        let ci = ci_info::get();
+        if ci.vendor == Some(ci_info::types::Vendor::GitHubActions) && self.jobs == 1 {
+            github_reporter::start
+        } else if ci.ci || !std::io::stdout().is_terminal() {
+            plain::start
+        } else {
+            tui::start_tui
+        }
+    }
+
     /// Get the output mode to use
     fn get_output_mode(&self) -> OutputMode {
-        let ci = ci_info::get();
-        if ci.ci || self.ci || !std::io::stdout().is_terminal() {
-            OutputMode::Plain
-        } else {
-            OutputMode::tui()
+        match self.output {
+            OutputKind::Auto => OutputMode::spawn(self.detect_output()),
+            OutputKind::Tui => OutputMode::spawn(tui::start_tui),
+            OutputKind::Plain => OutputMode::spawn(plain::start),
+            OutputKind::Github => OutputMode::spawn(github_reporter::start),
+            OutputKind::None => OutputMode::none(),
         }
     }
 
@@ -205,7 +244,7 @@ enum SerpentineError {
 }
 
 /// Setup logging using `fern`.
-fn setup_logging(reporter: events::Reporter, report_to_stdout: bool) -> miette::Result<()> {
+fn setup_logging(reporter: events::Reporter) -> miette::Result<()> {
     let project_dirs = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
         .ok_or_else(|| miette::miette!("Failed to determine log directory"))?;
 
@@ -226,7 +265,7 @@ fn setup_logging(reporter: events::Reporter, report_to_stdout: bool) -> miette::
         )
     })?;
 
-    let mut log_dispatch = fern::Dispatch::new()
+    let log_dispatch = fern::Dispatch::new()
         .filter(|metadata| {
             // Filter out noisy docker logs
             if metadata.target().starts_with("serpentine") {
@@ -252,31 +291,16 @@ fn setup_logging(reporter: events::Reporter, report_to_stdout: bool) -> miette::
                 ),
         )
         .chain(
-            fern::Dispatch::new().chain(
-                fern::Dispatch::new()
-                    .level(log::LevelFilter::Debug)
-                    .chain(fern::Output::call(move |record| {
-                        let message = record.args().to_string();
-                        reporter.log(message.into_boxed_str());
-                    })),
-            ),
-        );
-
-    if report_to_stdout {
-        log_dispatch = log_dispatch.chain(
             fern::Dispatch::new()
-                .format(|out, message, record| {
-                    out.finish(format_args!(
-                        "[{}][{}] {}",
+                .level(log::LevelFilter::Debug)
+                .chain(fern::Output::call(move |record| {
+                    reporter.log(
                         record.level(),
                         record.target(),
-                        message
-                    ));
-                })
-                .level(log::LevelFilter::Trace)
-                .chain(std::io::stdout()),
+                        record.args().to_string().into_boxed_str(),
+                    );
+                })),
         );
-    }
 
     log_dispatch
         .apply()
@@ -298,7 +322,12 @@ fn main() -> miette::Result<()> {
     let command = Cli::parse();
 
     match command.command {
-        Command::Run(run) => handle_run(&run),
+        Command::Run(run) => {
+            if let Err(error) = run.validate() {
+                error.exit();
+            }
+            handle_run(&run)
+        }
         Command::Clean { cache } => clean_caches(&cache.map_or(get_default_cache_dir(), |path| {
             PlatformPathBuf::from(path.as_os_str().as_encoded_bytes())
         }))
@@ -308,31 +337,36 @@ fn main() -> miette::Result<()> {
 
 /// Clean out serpentine caches and docker state
 fn clean_caches(cache: &PlatformPath) -> Result<(), RuntimeError> {
-    if let Err(err) = setup_logging(Reporter::none(), true) {
+    let output_mode = OutputMode::spawn(plain::start);
+    if let Err(err) = setup_logging(output_mode.get_reporter()) {
         eprintln!("Failed to setup logging: {err}");
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
+
+    let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()?;
+        .build()
+        .map_err(RuntimeError::from)
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                log::info!("Deleting {}", cache.display());
+                let res = tokio::fs::remove_dir_all(
+                    serpentine_internal::platform_to_std(cache)
+                        .map_err(|err| RuntimeError::internal(err.to_string()))?,
+                )
+                .await;
 
-    runtime.block_on(async {
-        log::info!("Deleting {}", cache.display());
-        let res = tokio::fs::remove_dir_all(
-            serpentine_internal::platform_to_std(cache)
-                .map_err(|err| RuntimeError::internal(err.to_string()))?,
-        )
-        .await;
+                if let Err(err) = res {
+                    log::error!("Failed to delete folder: {err}");
+                }
 
-        if let Err(err) = res {
-            log::error!("Failed to delete folder: {err}");
-        }
+                engine::docker::delete_container_and_volume().await?;
 
-        engine::docker::delete_container_and_volume().await?;
+                Ok::<_, RuntimeError>(())
+            })
+        });
 
-        Ok::<_, RuntimeError>(())
-    })?;
-
-    Ok(())
+    output_mode.shutdown();
+    result
 }
 
 /// Handle the `run` subcommand
@@ -340,11 +374,7 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
     println!("Storing cache in {}", command.get_cache().display());
 
     let output_mode = command.get_output_mode();
-    let res = setup_logging(
-        output_mode.get_reporter(),
-        output_mode.output_logs_to_stdout(),
-    );
-    if let Err(error) = res {
+    if let Err(error) = setup_logging(output_mode.get_reporter()) {
         eprintln!("Failed to initialize logging: {error}");
     }
 
@@ -415,7 +445,7 @@ mod tests {
 
         let cli = crate::Run {
             pipeline: path.clone(),
-            ci: true,
+            output: crate::OutputKind::None,
             cache: Some(random_cache_dir),
             standalone_cache: false,
             clean_old: false,
@@ -459,7 +489,7 @@ mod tests {
 
         let cli = crate::Run {
             pipeline: path.clone(),
-            ci: true,
+            output: crate::OutputKind::None,
             cache: Some(random_cache_dir),
             standalone_cache: false,
             clean_old: false,

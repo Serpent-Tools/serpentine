@@ -239,7 +239,7 @@ jobs:
           mkdir -p target
           zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
       - name: Run serpentine pipeline
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point LINTS --jobs 1 2>/tmp/serpentine_stderr.log
+        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point LINTS --jobs 1 2>/tmp/serpentine_stderr.log
       - name: Surface pipeline errors
         if: failure()
         run: |
@@ -297,7 +297,7 @@ jobs:
           mkdir -p target
           zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
       - name: Run ${{ matrix.entry_point }} pipeline
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point ${{ matrix.entry_point }} --jobs 1 2>/tmp/serpentine_stderr.log
+        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point ${{ matrix.entry_point }} --jobs 1 2>/tmp/serpentine_stderr.log
       - name: Surface pipeline errors
         if: failure()
         run: |

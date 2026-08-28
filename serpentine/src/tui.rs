@@ -122,8 +122,8 @@ struct UiState {
     tasks: BTreeMap<TaskId, LiveTask>,
     /// Scrollback milestones, in the order they were reached.
     milestones: Vec<Milestone>,
-    /// Engine log lines.
-    logs: heapless::Deque<Box<str>, LOG_LINES>,
+    /// Engine log lines, with the level they were logged at.
+    logs: heapless::Deque<(log::Level, Box<str>), LOG_LINES>,
 }
 
 impl UiState {
@@ -178,11 +178,11 @@ impl UiState {
                 self.tasks.remove(&id);
             }
             SerpentineEvent::Lifecycle(lifecycle) => self.apply_lifecycle(lifecycle),
-            SerpentineEvent::Log(line) => {
+            SerpentineEvent::Log { level, message, .. } => {
                 if self.logs.is_full() {
                     self.logs.pop_front();
                 }
-                let _ = self.logs.push_back(line);
+                let _ = self.logs.push_back((level, message));
             }
         }
     }
@@ -264,11 +264,16 @@ impl UiState {
 
         if !self.logs.is_empty() {
             lines.push(Line::default());
-            for entry in &self.logs {
-                lines.push(Line::from(Span::styled(
-                    truncate(entry, width),
-                    Style::default().fg(Color::DarkGray),
-                )));
+            for &(level, ref message) in &self.logs {
+                let tag = level_span(level);
+                let remaining = width.saturating_sub(span_width(std::slice::from_ref(&tag)));
+                lines.push(Line::from(vec![
+                    tag,
+                    Span::styled(
+                        truncate(message, remaining),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
             }
         }
 
@@ -322,7 +327,7 @@ impl UiState {
     /// A single live task row.
     fn task_line(&self, task: &LiveTask, width: usize) -> Line<'static> {
         match task.kind {
-            TaskKind::Exec => {
+            TaskKind::Exec | TaskKind::Status => {
                 let elapsed = task.started.elapsed().as_secs();
                 let right = format!(
                     "{}:{:02} ",
@@ -389,6 +394,18 @@ impl UiState {
             format_timer(self.start.elapsed()),
         );
     }
+}
+
+/// The severity tag shown ahead of a log line, padded so the messages stay aligned.
+fn level_span(level: log::Level) -> Span<'static> {
+    let (label, color) = match level {
+        log::Level::Error => ("ERROR", Color::Red),
+        log::Level::Warn => ("WARN ", Color::Yellow),
+        log::Level::Info => ("INFO ", Color::Cyan),
+        log::Level::Debug => ("DEBUG", Color::Magenta),
+        log::Level::Trace => ("TRACE", Color::DarkGray),
+    };
+    Span::styled(format!(" {label} "), Style::default().fg(color))
 }
 
 /// Render a scrollback milestone line.
