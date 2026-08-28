@@ -1,6 +1,7 @@
 //! Wrapper around containerd API client and other container related operations
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,6 +12,7 @@ use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::future::BoxFuture;
 use futures_util::{StreamExt, TryStreamExt};
 use serpentine_internal::{FileSystemEntryHeader, network};
+use sha2::Digest as _;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use typed_path::{UnixPath, UnixPathBuf};
@@ -797,6 +799,10 @@ impl Client {
         let reader = tokio_util::io::ReaderStream::with_capacity(reader, 1024 * 1024);
         let current_offset = Arc::new(AtomicUsize::new(0));
         let current_offset_clone = Arc::clone(&current_offset);
+        // Containerd only reports the digest back on a successful commit, so it is hashed here to
+        // stay available when the commit finds the content already stored.
+        let hasher = Arc::new(std::sync::Mutex::new(sha2::Sha256::new()));
+        let hasher_clone = Arc::clone(&hasher);
         self.containerd
             .content()
             .write(
@@ -805,6 +811,9 @@ impl Client {
                     .map(move |layer_data| {
                         let previous_offset =
                             current_offset_clone.fetch_add(layer_data.len(), Ordering::Relaxed);
+                        if let Ok(mut digest) = hasher_clone.lock() {
+                            digest.update(&layer_data);
+                        }
 
                         // log::trace!("Writing {layer_data:?} at {previous_offset}");
                         containerd_services::WriteContentRequest {
@@ -824,30 +833,66 @@ impl Client {
             .try_for_each(async |_| Ok(()))
             .await?;
         let total_size = current_offset.load(Ordering::Relaxed);
-        log::debug!("Committing {total_size} bytes to the store");
-        let digest = self
+        let digest = {
+            let Ok(hasher) = hasher.lock() else {
+                return Err(RuntimeError::internal("Content hasher mutex was poisoned"));
+            };
+            let mut digest = String::from("sha256:");
+            for byte in hasher.clone().finalize() {
+                let _ = write!(digest, "{byte:02x}");
+            }
+            digest
+        };
+
+        log::debug!("Committing {total_size} bytes to the store as {digest}");
+        let committed = self
             .containerd
             .content()
             .write(
-                futures_util::stream::once(async move {
-                    containerd_services::WriteContentRequest {
-                        action: containerd_services::WriteAction::Commit.into(),
-                        r#ref: upload_ref,
-                        total: total_size.try_into().unwrap_or(0),
-                        expected: String::new(),
-                        offset: (total_size).try_into().unwrap_or(0),
-                        data: Vec::new(),
-                        labels: HashMap::new(),
+                futures_util::stream::once({
+                    let digest = digest.clone();
+                    async move {
+                        containerd_services::WriteContentRequest {
+                            action: containerd_services::WriteAction::Commit.into(),
+                            r#ref: upload_ref,
+                            total: total_size.try_into().unwrap_or(0),
+                            expected: digest,
+                            offset: (total_size).try_into().unwrap_or(0),
+                            data: Vec::new(),
+                            labels: HashMap::new(),
+                        }
                     }
                 })
                 .with_lease(lease),
             )
-            .await?
-            .into_inner()
-            .try_next()
-            .await?
-            .ok_or_else(|| RuntimeError::internal("No response for commit"))?
-            .digest;
+            .await;
+
+        match committed {
+            Ok(response) => {
+                response
+                    .into_inner()
+                    .try_next()
+                    .await?
+                    .ok_or_else(|| RuntimeError::internal("No response for commit"))?;
+            }
+            // The store is content addressed, so this says the bytes are already there. They are
+            // held by whichever lease stored them first, so ours is given a reference of its own.
+            Err(status) if status.code() == containerd_client::tonic::Code::AlreadyExists => {
+                log::warn!("Content {digest} ({total_size} bytes) was already in the store");
+                self.containerd
+                    .leases()
+                    .add_resource(containerd_services::AddResourceRequest {
+                        id: lease.to_owned(),
+                        resource: Some(containerd_services::Resource {
+                            id: digest.clone(),
+                            r#type: "content".to_owned(),
+                        }),
+                    })
+                    .await?;
+            }
+            Err(status) => return Err(status.into()),
+        }
+
         Ok((total_size, digest))
     }
 
