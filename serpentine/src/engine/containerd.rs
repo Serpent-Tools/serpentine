@@ -639,7 +639,9 @@ impl Client {
             return Ok(());
         };
 
-        let task = self.reporter.start_task(TaskKind::Exec, "exporting layer");
+        let task = self
+            .reporter
+            .start_task(TaskKind::Status, "exporting layer");
 
         let view_name = format!("{snapshot}/view/{}", uuid::Uuid::new_v4());
         let lease = self.new_lease().await?;
@@ -720,7 +722,9 @@ impl Client {
 
         let lease = self.new_lease().await?;
 
-        let task = self.reporter.start_task(TaskKind::Exec, "importing layer");
+        let task = self
+            .reporter
+            .start_task(TaskKind::Status, "importing layer");
         log::debug!("Importing {snapshot} into content store");
         let (total_size, digest) = self
             .import_reader_into_content_store(reader, &lease)
@@ -1453,7 +1457,7 @@ impl Client {
 
         let task = self
             .reporter
-            .start_task(TaskKind::Exec, format!("[healthcheck] {command}"));
+            .start_task(TaskKind::Status, format!("[healthcheck] {command}"));
 
         let start_time = std::time::Instant::now();
         loop {

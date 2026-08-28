@@ -35,7 +35,7 @@ jobs:
           mkdir -p target
           docker save serpent-tools/containerd:dev -o target/containerd.tar
       - name: Run security scan
-        run: cargo run -p serpentine --locked -- run --ci --entry-point SECURITY --jobs 1 2>/tmp/serpentine_stderr.log
+        run: cargo run -p serpentine --locked -- run --entry-point SECURITY --jobs 1 2>/tmp/serpentine_stderr.log
       - name: Surface security scan errors
         if: failure()
         run: |

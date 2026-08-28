@@ -1,7 +1,7 @@
 //! Run events emitted by the engine as a pipeline executes.
 //!
-//! Producers emit [`SerpentineEvent`]s through a [`Reporter`]. The [`crate::tui`] consumer drains
-//! them to render progress.
+//! Producers emit [`SerpentineEvent`]s through a [`Reporter`]. Exactly one consumer drains them to
+//! render progress.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,10 +16,12 @@ pub struct TaskId(u64);
 pub enum TaskKind {
     /// Pulling an image layer from a registry.
     Pull,
-    /// Running a command inside a container.
+    /// Running a pipeline node's command inside a container.
     ///
-    /// Or any other misc status update.
+    /// These are the tasks `--jobs` bounds, and the only ones producing [`TaskUpdate::Line`].
     Exec,
+    /// Any other work worth showing progress for, such as moving layers or a healthcheck.
+    Status,
 }
 
 /// A progress update for an in-flight task.
@@ -108,7 +110,14 @@ pub enum SerpentineEvent {
     /// The run reached a lifecycle stage.
     Lifecycle(Lifecycle),
     /// An engine log line.
-    Log(Box<str>),
+    Log {
+        /// The severity the line was logged at.
+        level: log::Level,
+        /// The module path the line came from.
+        target: Box<str>,
+        /// The formatted message.
+        message: Box<str>,
+    },
 }
 
 /// A handle the engine sends [`SerpentineEvent`]s through.
@@ -161,8 +170,12 @@ impl Reporter {
     }
 
     /// Report an engine log line.
-    pub fn log(&self, line: Box<str>) {
-        self.emit(SerpentineEvent::Log(line));
+    pub fn log(&self, level: log::Level, target: &str, message: Box<str>) {
+        self.emit(SerpentineEvent::Log {
+            level,
+            target: target.into(),
+            message,
+        });
     }
 
     /// Start tracking a task, returning a handle that finishes it when dropped.

@@ -459,7 +459,7 @@ pub(crate) mod benchmarks {
         let graph = crate::snek::compile_graph(&virtual_file, snek_path, "DEFAULT").unwrap();
         let cli = crate::Run {
             pipeline: snek_path.to_path_buf(),
-            ci: true,
+            output: crate::OutputKind::None,
             cache: Some(cache_path.to_path_buf()),
             standalone_cache,
             clean_old: false,

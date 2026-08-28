@@ -9,7 +9,7 @@ Run a serpentine pipeline, takes no positional arguments. By default this will w
 For example CI systems will likely want some variation on:
 
 ```bash
-serpentine run --cache /tmp/serpentine_cache --clean-old --standalone-cache --ci
+serpentine run --cache /tmp/serpentine_cache --clean-old --standalone-cache
 ```
 
 ### `--pipeline` / `-p`
@@ -28,9 +28,20 @@ One can for example have a exported label that just runs tests, while the defaul
 
 Limits the number of *`Exec`/`ExecOutput` nodes* that can run in parallel, in other words it limits meaningful CPU heavy workloads, while file copying and similar is allowed to happen fully parallel. Its recommended to only increase this value after warming caches, as a high value on cold caches will often lead to no gain due to build systems like cargo already using a large number of cores.
 
-### `--ci`
+### `--output`
+* default: `auto`
 
-Switches serpentines output to "CI mode", in practice this means disabling the fancy TUI and instead just emitting logs to stdout, some users might also prefer this when running locally. In addition this mode will be automatically enabled if ran in a non interactive terminal (but its preferable to specify it explicitly in ci runners).
+Selects how serpentine renders a run:
+
+| value | behaviour |
+| --- | --- |
+| `auto` | Picks from the environment, as described below. |
+| `tui` | The fancy live progress view. |
+| `plain` | Log lines and captured command output straight to stdout. |
+| `github` | Stdout, with each command folded into a collapsible [github actions log group](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands). Requires `--jobs 1`, serpentine errors out otherwise. |
+| `none` | Renders nothing, the run still writes its log file. |
+
+Under `auto` serpentine uses `github` when it detects github actions with `--jobs 1`, `plain` under any other CI runner or when stdout is not an interactive terminal, and `tui` otherwise. This means CI runners generally need no flag at all, though setting it explicitly is harmless.
 
 ### `--cache` / `-c`
 * default: platform specific, printed to stdout at the start of a run.
