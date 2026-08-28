@@ -337,6 +337,7 @@ impl Cache {
 
         let mut writer = backend.get_data_cache_writer().await?;
         let removed_resource_keys = data_cache.write(keep_old_cache, &mut writer).await?;
+        writer.shutdown().await?;
 
         for key in &removed_resource_keys {
             if let Err(err) = Self::delete_resource_key(&*backend, key).await {
