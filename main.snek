@@ -7,5 +7,3 @@ export FULL = lib::Chain(lints::full_lints, lib::Chain(tests::fuzz, lints::secur
 export LINTS = lints::full_lints;
 export SECURITY = lints::security;
 export FUZZ = tests::fuzz;
-
-export FIX = lints::fix;

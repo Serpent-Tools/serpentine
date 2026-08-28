@@ -106,7 +106,7 @@ impl Data {
         match self {
             Self::Container(state) => ctx.containerd.healthcheck_value(state).await,
             Self::Service(state) => ctx.containerd.healthcheck_value(state).await,
-            _ => true,
+            Self::Int(_) | Self::String(_) | Self::FileSystem(_) => true,
         }
     }
 }
@@ -125,7 +125,7 @@ impl CacheableData {
                 state.collect_snapshots(&mut snapshots);
                 snapshots.into_iter().map(ResourceKey::Snapshot).collect()
             }
-            _ => Vec::new(),
+            Self::Int(_) | Self::String(_) => Vec::new(),
         }
     }
 }

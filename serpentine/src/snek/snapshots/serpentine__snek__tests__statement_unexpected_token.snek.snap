@@ -1,0 +1,14 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: "$crate :: test_support :: render_error(error)"
+---
+  x Compile Error
+
+Error: parsing::unexpected_token
+
+  x Expected `import, export, return, def or ident`
+   ,-[<redacted-path>:1:1]
+ 1 | 5;
+   : |
+   : `-- Got `5`
+   `----

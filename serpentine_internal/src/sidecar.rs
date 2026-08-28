@@ -12,7 +12,10 @@ pub const MAGIC_NUMBER: &str = "danger noodle";
 /// The port the sidecar listens on
 pub const PORT: u16 = 8000;
 
-/// The kind of events the sidecar supports.
+/// The opening frame serpentine sends the sidecar, naming the operation and its parameters.
+///
+/// Most operations continue past this frame with data streamed over the same connection, in one or
+/// both directions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Request {
     /// Proxy the containerd socket

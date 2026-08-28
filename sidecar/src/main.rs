@@ -77,7 +77,7 @@ fn main() -> ! {
         })
 }
 
-/// Spawn the containerd process as a sub-process of serpentine
+/// Spawn the containerd process as a sub-process of the sidecar
 #[expect(
     clippy::zombie_processes,
     reason = "This needs to run for the duration of serpentine"
@@ -155,9 +155,9 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
         return Err(format!("magic number {magic_number:?} != {MAGIC_NUMBER:?}").into());
     }
 
-    let event = read_postcard_frame(&mut remote_socket).await?;
+    let request = read_postcard_frame(&mut remote_socket).await?;
 
-    match event {
+    match request {
         Request::Proxy => proxy_containerd(remote_socket).await,
         Request::CreateFifo => setup_fifo(remote_socket).await,
         Request::CreateNetwork(network) => create_network(remote_socket, network).await,
@@ -292,7 +292,7 @@ fn realize_topology(
     Ok(result)
 }
 
-/// Create a cni network namespace with a random subnet.
+/// Create a cni network namespace with its own subnet.
 ///
 /// Also creates the inter namespace bridges as defined by the `bridges` parameters
 ///
@@ -431,7 +431,7 @@ fn apply_network(
 /// A `SUBNET_SIZE` subnet inside a `SUBNET_PREFIX_LENGTH` prefix leaves 16 bits to enumerate, hence a u16.
 static SUBNET_COUNTER: AtomicU16 = AtomicU16::new(0);
 
-/// Hand out the next non-internet subnet, from a range unlikely to be in use already on the LAN/Host.
+/// Hand out the next subnet, from a range unlikely to be in use already on the LAN/Host.
 ///
 /// Returns the subnet definition, as well as two usable ips in it.
 fn pick_subnet() -> (String, Ipv4Addr, Ipv4Addr) {
@@ -456,7 +456,7 @@ fn pick_subnet() -> (String, Ipv4Addr, Ipv4Addr) {
     (format!("{subnet}/{SUBNET_SIZE}"), ip1, ip2)
 }
 
-/// Delete the given network interface.
+/// Tear down every namespace in the given topology.
 async fn delete_network(network: ConcreteTopology) -> Result<(), Box<dyn Error>> {
     for namespace in network {
         let path = namespace.path.clone();

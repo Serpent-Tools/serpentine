@@ -111,7 +111,7 @@ pub enum RuntimeError {
 
     /// Attempted to capture non-utf8 output
     #[error("Failed to capture stdout of command as non-utf8 was found: \n{output}")]
-    #[diagnostic(code(command_execution_error))]
+    #[diagnostic(code(non_utf8_capture))]
     NonUtf8Capture {
         /// The stdout/stderr of the command
         output: String,
@@ -133,7 +133,7 @@ pub enum RuntimeError {
 
     /// Could not parse / could not find user info in /etc/passwd
     #[error("Could not resolve user {user:?}: {msg}")]
-    #[diagnostic(code(execution_interrupted))]
+    #[diagnostic(code(user_not_found))]
     UserNotFound {
         /// Which user couldnt be found
         user: userdb::OciUser,
@@ -297,7 +297,7 @@ async fn acquire_file_lock(key: &str) -> Result<FileLockGuard, RuntimeError> {
 
 /// The various providers and interfaces used by the runtime
 pub struct RuntimeContext {
-    /// The docker client
+    /// The containerd client
     containerd: containerd::Client,
     /// The channel run events are reported through
     reporter: Reporter,

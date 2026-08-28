@@ -60,7 +60,7 @@ pub trait FileSystemProvider: Send + Sync {
 }
 
 /// New type wrapper around a `dyn FileSystemProvider` with a cached content hash,
-/// as well as an implementation of `CacheData`
+/// as well as an implementation of `ContentHash`
 pub struct FileSystem {
     /// The inner filesystem provider
     provider: Box<dyn FileSystemProvider>,
@@ -115,35 +115,6 @@ impl ContentHash for FileSystem {
         Ok(())
     }
 }
-
-// /// Copy the following file system stream from reader to writer.
-// /// Leaving the data after the filesystem in the reader.
-// pub async fn copy_filesystem_stream(
-//     reader: &mut (impl AsyncRead + Unpin + Send),
-//     writer: &mut (impl AsyncWrite + Unpin + Send),
-// ) -> Result<(), RuntimeError> {
-//     let mut folder_stack = vec![1_u64];
-//     while let Some(current_folder) = folder_stack.last_mut() {
-//         if *current_folder == 0 {
-//             folder_stack.pop();
-//         } else {
-//             *current_folder = current_folder.saturating_sub(1);
-//
-//             let header = serpentine_internal::read_postcard_frame(reader).await?;
-//             serpentine_internal::write_postcard_frame(&header, writer).await?;
-//             match header {
-//                 FileSystemEntryHeader::File { length, .. } => {
-//                     tokio::io::copy(&mut reader.take(length), writer).await?;
-//                 }
-//                 FileSystemEntryHeader::Folder { entries, .. } => {
-//                     folder_stack.push(entries);
-//                 }
-//             }
-//         }
-//     }
-//
-//     Ok(())
-// }
 
 /// The size of the in-process pipe buffer bridging a producer to its reader.
 const PIPE_BUFFER: usize = 64 * 1024;

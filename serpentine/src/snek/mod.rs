@@ -302,34 +302,15 @@ mod tests {
         match res {
             Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),
             Err(err) => {
-                let _ = miette::set_hook(Box::new(|_| {
-                    let config = miette::GraphicalReportHandler::default();
-                    let config = config
-                        .with_width(usize::MAX)
-                        .with_theme(miette::GraphicalTheme::none());
-                    Box::new(config)
-                }));
-
-                let err = crate::SerpentineError::Compile {
+                let error = crate::SerpentineError::Compile {
                     source_code: virtual_file.into_readonly(),
                     error: vec![err],
                 };
-                let err = miette::Report::new(err);
-                let err = format!("{err:?}");
 
-                insta::with_settings! { {
-                    filters => vec![
-                        // Redact file paths
-                        (r#"(?:\\\\[?.]\\)?(?:[A-Za-z]:)?(?:[/\\][^/\\\s:"'\]]+){2,}"#, "<redacted-path>"),
-                        // Redact OS error messages, they can be different on different systems
-                        (r"(?m)^(\s*[`|].*?-> ).+ \(os error \d+\)$", "${1}OS error <redacted>")
-                    ],
-                }, {
-                insta::assert_snapshot!(
+                crate::test_support::assert_error_snapshot!(
                     path.file_name().unwrap().to_string_lossy().into_owned(),
-                    err
+                    error
                 );
-                }};
             }
         }
     }

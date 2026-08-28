@@ -36,9 +36,14 @@ These tests require being able to build the local Docker image. By default the `
 
 Serpentine's integration tests and linting can be run locally:
 
-* `just test [filter]` — run integration tests, optionally with a filter argument.
-* `just run` — run a small linting stage.
-* `just run FULL` — run the full linting stage.
-* `just run FUZZ` — smoke-fuzz every [`bolero`](https://github.com/camshaft/bolero) property test under libfuzzer for a bounded time (also part of `FULL`).
-* `just check` — closely matches CI (tests + full lint), with the exception of only testing on the current platform.
+* `just test [filter]` — run the whole test suite including the integration tests, optionally narrowed to test names containing `filter`.
+* `just update_snapshots` — review and accept changed [`insta`](https://insta.rs/) snapshots.
+* `just run` — the quick tests plus the light lint set.
+* `just run FULL` — the full lint set, the fuzzers and the security checks.
+* `just run LINTS` — the full lint set on its own.
+* `just run SECURITY` — `cargo-deny` plus a `trivy` scan of the sidecar image.
+* `just run FUZZ` — smoke-fuzz every [`bolero`](https://github.com/camshaft/bolero) property test under libfuzzer for a bounded time.
+* `just check` — `just test` followed by `just run FULL`, the closest local equivalent to CI.
+* `just sidecar_logs` — dump the containerd sidecar's logs, useful when an integration test fails.
+* `just clean` — drop serpentine's cache along with its containerd volume.
 
