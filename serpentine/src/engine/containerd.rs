@@ -687,6 +687,7 @@ impl Client {
         serpentine_internal::write_postcard_frame(&parent, &mut writer).await?;
         let mut tar_stream = self.sidecar.export_layer(mount).await?;
         tokio::io::copy(&mut tar_stream, &mut writer).await?;
+        writer.shutdown().await?;
 
         log::debug!("Finished exporting layer");
         self.drop_lease(lease).await?;
