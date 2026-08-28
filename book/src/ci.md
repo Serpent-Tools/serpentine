@@ -18,7 +18,7 @@ You must restore `/tmp/serpentine_cache` before running it, and save it afterwar
 
 ## Github Actions
 
-Using serpentine in github actions is no more special than any other runner, we use `actions/cache` to cache serpentines own cache file, and then simply run serpentine. 
+Using serpentine in github actions is no more special than any other runner, we use `actions/cache` to cache serpentines own cache directory, and then simply run serpentine. 
 
 ```yaml
 test:

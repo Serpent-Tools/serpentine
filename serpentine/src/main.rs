@@ -20,9 +20,11 @@ use crate::snek::span::VirtualFile;
 mod engine;
 mod events;
 mod snek;
+#[cfg(test)]
+mod test_support;
 mod tui;
 
-/// Serpentine is a build system and programming language.
+/// Serpentine is a workflow runner driven by its own DSL, snek.
 #[derive(clap::Parser)]
 struct Cli {
     /// Action to take
@@ -30,8 +32,8 @@ struct Cli {
     command: Command,
 }
 
-/// Return the path to the cache folder to use
-fn get_default_cache_file() -> PlatformPathBuf {
+/// Return the path to the cache directory to use
+fn get_default_cache_dir() -> PlatformPathBuf {
     if let Some(project_dirs) = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
     {
         let cache_dir = project_dirs.cache_dir();
@@ -51,7 +53,7 @@ enum Command {
     ///
     /// This will delete the specified cache directory, as well as deleting serpentines docker volume.
     ///
-    /// NOTE: Dropping the docker volume takes the containerd snapshots with it, so this invalidates
+    /// NOTE: Dropping the docker volume takes the container layers with it, so this invalidates
     /// every cache on the system and not just the one named here. Standalone caches are the
     /// exception, as they carry the layer diffs themselves and can re-import them.
     Clean {
@@ -79,8 +81,8 @@ struct Run {
     /// misses, never corruption).
     #[arg(short, long)]
     cache: Option<PathBuf>,
-    /// Also export docker layers, and any other external data referenced by the cache to the cache
-    /// file.
+    /// Also export container layers, and any other external data referenced by the cache to the
+    /// cache directory.
     ///
     /// This is intended for use with CI, or generally when the cache needs to be transferred
     /// between systems.
@@ -94,7 +96,7 @@ struct Run {
     /// NOTE: Serpentine already ensures that multiple instance cooperate in regards to containerd.
     #[arg(long, default_value = "serpentine")]
     containerd_namespace: String,
-    /// Delete old cache entries (also cleans out stale docker images).
+    /// Delete old cache entries (also cleans out stale container layers).
     #[arg(long)]
     clean_old: bool,
     /// Limit of the number of parallel exec jobs allowed to run
@@ -172,7 +174,7 @@ impl Run {
         if let Some(cache) = &self.cache {
             Cow::Borrowed(PlatformPath::new(cache.as_os_str().as_encoded_bytes()))
         } else {
-            Cow::Owned(get_default_cache_file())
+            Cow::Owned(get_default_cache_dir())
         }
     }
 }
@@ -297,7 +299,7 @@ fn main() -> miette::Result<()> {
 
     match command.command {
         Command::Run(run) => handle_run(&run),
-        Command::Clean { cache } => clean_caches(&cache.map_or(get_default_cache_file(), |path| {
+        Command::Clean { cache } => clean_caches(&cache.map_or(get_default_cache_dir(), |path| {
             PlatformPathBuf::from(path.as_os_str().as_encoded_bytes())
         }))
         .map_err(Into::into),
@@ -406,7 +408,7 @@ mod tests {
             }
         };
 
-        let random_cache_file = std::env::temp_dir().join(format!(
+        let random_cache_dir = std::env::temp_dir().join(format!(
             "serpentine_test_cache_{}.serpentine_cache",
             uuid::Uuid::new_v4()
         ));
@@ -414,7 +416,7 @@ mod tests {
         let cli = crate::Run {
             pipeline: path.clone(),
             ci: true,
-            cache: Some(random_cache_file),
+            cache: Some(random_cache_dir),
             standalone_cache: false,
             clean_old: false,
             entry_point: "DEFAULT".into(),
@@ -450,7 +452,7 @@ mod tests {
             }
         };
 
-        let random_cache_file = std::env::temp_dir().join(format!(
+        let random_cache_dir = std::env::temp_dir().join(format!(
             "serpentine_test_cache_{}.serpentine_cache",
             uuid::Uuid::new_v4()
         ));
@@ -458,7 +460,7 @@ mod tests {
         let cli = crate::Run {
             pipeline: path.clone(),
             ci: true,
-            cache: Some(random_cache_file),
+            cache: Some(random_cache_dir),
             standalone_cache: false,
             clean_old: false,
             entry_point: "DEFAULT".into(),
@@ -471,29 +473,10 @@ mod tests {
             crate::events::Reporter::none(),
             &cli,
         ) {
-            let _ = miette::set_hook(Box::new(|_| {
-                let config = miette::GraphicalReportHandler::default();
-                let config = config
-                    .with_width(usize::MAX)
-                    .with_theme(miette::GraphicalTheme::none());
-                Box::new(config)
-            }));
-
-            let err = miette::Report::new(err);
-            let err = format!("{err:?}");
-
-            insta::with_settings! { {
-                filters => vec![
-                    // Redact file paths
-                    (r#"(?:\\\\[?.]\\)?(?:[A-Za-z]:)?(?:[/\\][^/\\\s:"'\]]+){2,}"#, "<redacted-path>"),
-                    // Redact OS error messages, they can be different on different systems
-                    (r"(?m)^(\s*[`|].*?-> ).+ \(os error \d+\)$", "${1}OS error <redacted>")
-                ],
-            }, {
-            insta::assert_snapshot!(
+            crate::test_support::assert_error_snapshot!(
                 path.file_name().unwrap().to_string_lossy().into_owned(),
                 err
-            );} };
+            );
         } else {
             panic!("Expected failure when running {path:?}, but it succeeded");
         }

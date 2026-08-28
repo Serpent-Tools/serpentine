@@ -51,7 +51,7 @@ const STRATEGIES: &[ConnectionStrategy] = &[
 
 /// Attempt to connect to docker or podman, trying each strategy in order.
 ///
-/// Returns the name of the strategy that succeeded alongside the client.
+/// Returns the name of the runtime that answered alongside the client.
 async fn connect_docker() -> Result<(&'static str, bollard::Docker), RuntimeError> {
     log::info!("Connecting to Docker daemon");
     log::debug!("DOCKER_HOST={:?}", std::env::var("DOCKER_HOST"));
@@ -65,7 +65,8 @@ async fn connect_docker() -> Result<(&'static str, bollard::Docker), RuntimeErro
         match client.ping().await {
             Ok(_) => {
                 log::info!("{name}: connected");
-                return Ok((name, client));
+                let runtime = detect_runtime(&client).await.unwrap_or(name);
+                return Ok((runtime, client));
             }
             Err(err) => {
                 log::warn!("{name}: ping failed: {err}");
@@ -78,6 +79,31 @@ async fn connect_docker() -> Result<(&'static str, bollard::Docker), RuntimeErro
             "no working Docker or Podman connection found",
         )),
     })
+}
+
+/// Ask the daemon which runtime it is, returning `None` when it does not say.
+///
+/// The strategy that reached the daemon cannot answer this, since both bollard's defaults and
+/// `DOCKER_HOST` reach either runtime. Podman names itself in the platform and component fields of
+/// its version response, so anything else is treated as docker.
+async fn detect_runtime(client: &bollard::Docker) -> Option<&'static str> {
+    let version = client.version().await.ok()?;
+
+    let platform = version
+        .platform
+        .iter()
+        .map(|platform| platform.name.as_str());
+    let components = version
+        .components
+        .iter()
+        .flatten()
+        .map(|component| component.name.as_str());
+
+    let is_podman = platform
+        .chain(components)
+        .any(|name| name.to_ascii_lowercase().contains("podman"));
+
+    Some(if is_podman { "podman" } else { "docker" })
 }
 
 /// Try connecting via bollard's defaults (respects `DOCKER_HOST` env var).
@@ -135,8 +161,8 @@ fn is_docker_status(err: &bollard::errors::Error, status: u16) -> bool {
 
 /// Delete the container and docker volume in order to fully reset the sidecar
 pub async fn delete_container_and_volume() -> Result<(), RuntimeError> {
-    let (engine, docker) = connect_docker().await?;
-    log::info!("Cleaning out serpentine container from {engine}");
+    let (runtime, docker) = connect_docker().await?;
+    log::info!("Cleaning out serpentine container from {runtime}");
 
     log::info!("Deleting container {CONTAINER_NAME}");
     let res_container = docker
@@ -169,7 +195,7 @@ pub async fn delete_container_and_volume() -> Result<(), RuntimeError> {
 
 /// Spin up a containerd instance using the given docker client.
 ///
-/// Returns the URI to connect to
+/// Returns the address to connect to
 async fn spin_up_containerd(
     docker: bollard::Docker,
     reporter: &Reporter,

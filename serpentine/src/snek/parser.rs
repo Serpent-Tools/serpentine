@@ -64,14 +64,14 @@ impl<'arena> Parser<'arena> {
                     }
                     Token::Import => self.parse_import(Some(token_span)),
                     next_token => Err(CompileError::UnexpectedToken {
-                        expected: "def/ident".into(),
+                        expected: "import, def or ident".into(),
                         got: next_token.describe(),
                         location: next_token_span,
                     }),
                 }
             }
             token => Err(CompileError::UnexpectedToken {
-                expected: "import/export/return/def/ident".into(),
+                expected: "import, export, return, def or ident".into(),
                 got: token.describe(),
                 location: token_span,
             }),
@@ -293,7 +293,6 @@ impl<'arena> Parser<'arena> {
         separator: Option<&Token<'static>>,
         parser: impl Fn(&mut Self) -> Result<T, CompileError>,
     ) -> Result<Vec<T>, CompileError> {
-        let separator = separator.as_ref();
         let mut result = Vec::new();
 
         let mut first = true;

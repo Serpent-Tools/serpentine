@@ -135,11 +135,11 @@ pub enum FileSystemEntryHeader {
     },
 }
 
-/// Read the given path into the given reader according to the filesystem format.
+/// Write the given path to the given writer according to the filesystem format.
 ///
 /// The absolute path specifies the file location of the structure being written.
-/// the relative path specifies the specific sub item being written right now (in most cases this
-/// should be `.`)
+/// The relative path specifies the specific sub item being written right now; a caller starting a
+/// stream passes an empty path, which emits `absolute_path` itself under an empty name.
 ///
 /// The given filter is given each path and bool indicating whether it is a directory, if the
 /// returned value is false the item is not emitted.

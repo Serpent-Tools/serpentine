@@ -12,7 +12,6 @@ update_snapshots: build_container
 bench filter="": build_container
     cargo run --release -p serpentine --features _test_docker,_bench -- --bench {{filter}}
 
-# Pin a reference point to measure a round of optimisation against.
 bench_save name filter="": build_container
     cargo run --release -p serpentine --features _test_docker,_bench -- --bench {{filter}} --save-baseline {{name}}
 
@@ -37,13 +36,3 @@ run_sidecar: build_container
 
 pull_images:
     grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | grep / | sort -u | xargs -n1 docker pull || exit 0
-
-size_benchmark: build_container
-    cargo build --release -p serpentine
-    docker images --filter reference=containerd
-    docker history localhost/serpent-tools/containerd:dev
-    ls ./target/release/serpentine --size --human-readable
-
-count_deps:
-    cargo tree --depth 999 --prefix none -p serpentine --edges normal | sort -u | wc -l
-    cargo tree --depth 999 --prefix none -p sidecar --edges normal | sort -u | wc -l

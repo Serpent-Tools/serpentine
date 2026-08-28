@@ -22,13 +22,13 @@ use crate::snek::span::{Span, Spanned};
 pub trait NodeImpl: Send + Sync {
     /// Should the result of this node be looked up in, and written to, the data cache?
     ///
-    /// The derived implementations answer from the return type alone: a node is cached whenever
-    /// its output is one the cache can store, see [`DataType::is_cacheable`]. Implement this by
-    /// hand and return `false` for nodes cheap enough that a cache round trip costs more than
-    /// recomputing them, which is why `Noop`, `Join` and literals opt out.
+    /// The `Wrap` implementations cache whenever the output is one the cache can store (see
+    /// [`DataType::is_cacheable`]) and `Wrap::uncached` was not applied. Reach for `uncached` when
+    /// a round trip through the cache costs more than recomputing the node, or when the node's
+    /// real work is a side effect rather than its return value, as with `ToHost`.
     ///
-    /// Because the derived answer only looks at the return type, a node whose real work is a side
-    /// effect rather than its return value must implement this by hand and return `false`.
+    /// Hand written implementations answer directly; `Noop`, `Join` and literals return `false`
+    /// for the same "cheaper to recompute" reason.
     fn should_be_cached(&self) -> bool;
 
     /// A human readable name for this node, used in log lines.
@@ -667,7 +667,7 @@ async fn to_service(
 
 /// Attach a service to a container
 async fn with_service(
-    _content: Arc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
     service: containerd::ServiceState,
     hostname: Arc<str>,
@@ -677,7 +677,7 @@ async fn with_service(
 
 /// Set the healthcheck to run for a service
 async fn healthcheck(
-    _content: Arc<RuntimeContext>,
+    _context: Arc<RuntimeContext>,
     service: containerd::ServiceState,
     command: Arc<str>,
     timeout_seconds: i128,

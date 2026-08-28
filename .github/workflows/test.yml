@@ -257,8 +257,16 @@ jobs:
           path: /tmp/serpentine_cache
           key: ${{ steps.cache-restore.outputs.cache-primary-key }}
 
-  security-scan:
+  advisory:
     needs: [build-docker]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - entry_point: SECURITY
+            cache_prefix: security_cache
+          - entry_point: FUZZ
+            cache_prefix: fuzz_cache
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -273,8 +281,8 @@ jobs:
         id: cache-restore
         with:
           path: /tmp/serpentine_cache
-          key: security_cache-${{ github.sha }}
-          restore-keys: security_cache-
+          key: ${{ matrix.cache_prefix }}-${{ github.sha }}
+          restore-keys: ${{ matrix.cache_prefix }}-
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           version: '34.1'
@@ -283,23 +291,24 @@ jobs:
         with:
           name: containerd-image
           path: /tmp
+      # SECURITY scans the image tarball with trivy, so it has to land on disk as well as be loaded.
       - name: Load Docker image
         run: |
           mkdir -p target
           zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
-      - name: Run security scan
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point SECURITY --jobs 1 2>/tmp/serpentine_stderr.log
-      - name: Surface security scan errors
+      - name: Run ${{ matrix.entry_point }} pipeline
+        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --ci --entry-point ${{ matrix.entry_point }} --jobs 1 2>/tmp/serpentine_stderr.log
+      - name: Surface pipeline errors
         if: failure()
         run: |
           cat /tmp/serpentine_stderr.log >&2
           {
-            echo "## Security Scan Failed"
+            echo "## ${{ matrix.entry_point }} Pipeline Failed"
             echo '```'
             sed 's/\x1b\[[0-9;]*m//g' /tmp/serpentine_stderr.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::Security scan failed: $(head -1 /tmp/serpentine_stderr.log)"
+          echo "::warning::${{ matrix.entry_point }} pipeline failed: $(head -1 /tmp/serpentine_stderr.log)"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always()
         with:
@@ -308,10 +317,11 @@ jobs:
 
   all-checks:
     if: always()
-    needs: [test, lint, security-scan]
+    needs: [test, lint, advisory]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
-          allowed-failures: security-scan
+          # These being red might or might not be caused by the given PR, so a reviewer decides.
+          allowed-failures: advisory
           jobs: ${{ toJSON(needs) }}

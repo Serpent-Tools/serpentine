@@ -61,7 +61,7 @@ pub enum NodeTransition {
 pub enum Lifecycle {
     /// The container engine connected.
     EngineReady {
-        /// The host runtime that answered, such as `podman` or `docker`.
+        /// The container runtime that answered, such as `podman` or `docker`.
         runtime: Box<str>,
         /// The tag of the serpentine engine image in use.
         image_tag: Box<str>,

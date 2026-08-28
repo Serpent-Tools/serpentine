@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
+use futures_util::future::BoxFuture;
 use futures_util::{StreamExt, TryStreamExt};
 use serpentine_internal::{FileSystemEntryHeader, network};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -94,7 +95,10 @@ impl ContainerConfig {
         self.env.get(env)
     }
 
-    /// Set the working directory of the container
+    /// Resolve `dir` against the current working directory of the container.
+    ///
+    /// Joining rather than replacing is what makes `WorkingDir("./a") > WorkingDir("./b")` land in
+    /// `a/b`; an absolute `dir` still replaces the whole path.
     pub fn set_working_dir(&mut self, dir: &UnixPath) {
         self.working_dir = self.working_dir.join(dir);
     }
@@ -493,7 +497,6 @@ where
 }
 
 /// A resource that might be left hanging on operation abort, should be cleared out at shutdown
-#[derive(PartialEq, Eq)]
 enum DanglingResource {
     /// A lease, this dangling would lead to gc holding onto unneeded data
     Lease(Box<str>),
@@ -518,7 +521,7 @@ struct ContainerHandle {
     exec_task: TaskHandle,
 }
 
-/// A docker client wrapper
+/// A containerd client wrapper
 pub struct Client {
     /// Containerd client
     containerd: ContainerdRootClient,
@@ -849,7 +852,10 @@ impl Client {
     async fn ensure_snapshot(&self, snapshot: &str) -> bool {
         log::debug!("Ensuring {snapshot} exists");
 
-        let lock = crate::engine::acquire_file_lock(&format!("import/{snapshot}")).await;
+        let lock = acquire_file_lock(&format!("import/{snapshot}")).await;
+        if let Err(err) = &lock {
+            log::warn!("Proceeding without an import lock for {snapshot}: {err}");
+        }
 
         if self
             .containerd
@@ -1483,7 +1489,7 @@ impl Client {
                             type_url: "types.containerd.io/opencontainers/runtime-spec/1/Process"
                                 .to_owned(),
                             value: serde_json::to_vec(&base_process)
-                                .map_err(|err| RuntimeError::internal(format!("{err}")))?,
+                                .map_err(|err| RuntimeError::internal(err.to_string()))?,
                         }),
                     }
                     .with_lease(lease),
@@ -1640,7 +1646,7 @@ impl Client {
                             type_url: "types.containerd.io/opencontainers/runtime-spec/1/Spec"
                                 .to_owned(),
                             value: serde_json::to_vec(&spec)
-                                .map_err(|err| RuntimeError::internal(format!("{err}")))?,
+                                .map_err(|err| RuntimeError::internal(err.to_string()))?,
                         }),
                         sandbox: String::new(),
                         updated_at: None,
@@ -2004,14 +2010,14 @@ impl Client {
     pub async fn export_path(
         &self,
         state: &ContainerState,
-        docker_path: &UnixPath,
+        container_path: &UnixPath,
     ) -> Result<FileSystem, RuntimeError> {
-        log::debug!("Creating file system provider for {state:?} at {docker_path}");
+        log::debug!("Creating file system provider for {state:?} at {container_path}");
         let snapshot = format!("{}/view/{}", state.snapshot, uuid::Uuid::new_v4());
-        let docker_path = if docker_path.as_bytes() == b"." {
+        let container_path = if container_path.as_bytes() == b"." {
             UnixPath::new("")
         } else {
-            docker_path
+            container_path
         };
 
         let lease = self.new_lease().await?;
@@ -2031,12 +2037,12 @@ impl Client {
             .into_inner()
             .mounts;
 
-        let docker_path = state.config.working_dir.join(docker_path);
+        let container_path = state.config.working_dir.join(container_path);
 
         Ok(ContainerFileExport {
             sidecar: self.sidecar,
             mounts: mounts.into(),
-            path: docker_path,
+            path: container_path,
         }
         .into())
     }
@@ -2122,10 +2128,7 @@ struct ContainerFileExport {
 }
 
 impl FileSystemProvider for ContainerFileExport {
-    fn get_reader<'this>(
-        &'this self,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<BoxedReader, RuntimeError>> + Send + 'this>>
-    {
+    fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>> {
         Box::pin(async move {
             log::debug!("Creating reader for {} in container", self.path.display());
             let reader = self

@@ -431,7 +431,7 @@ fn justify(width: usize, mut left: Vec<Span<'static>>, right: Vec<Span<'static>>
     Line::from(left)
 }
 
-/// The total display width of a run of spans.
+/// The total character count of a run of spans.
 fn span_width(spans: &[Span]) -> usize {
     spans.iter().map(|span| span.content.chars().count()).sum()
 }
@@ -460,7 +460,7 @@ fn scaled(part: usize, whole: usize, width: usize) -> usize {
         .min(width)
 }
 
-/// Truncate `text` to at most `width` cells, appending an ellipsis when shortened.
+/// Truncate `text` to at most `width` characters, appending an ellipsis when shortened.
 fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() > width {
         let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
@@ -471,7 +471,7 @@ fn truncate(text: &str, width: usize) -> String {
     }
 }
 
-/// Pad `text` with spaces, or truncate it with an ellipsis, to exactly `width` cells.
+/// Pad `text` with spaces, or truncate it with an ellipsis, to exactly `width` characters.
 fn pad_truncate(text: &str, width: usize) -> String {
     let truncated = truncate(text, width);
     let count = truncated.chars().count();
