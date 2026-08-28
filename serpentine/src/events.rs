@@ -77,6 +77,11 @@ pub enum Lifecycle {
     },
     /// The engine has started shutting down: saving the cache and tearing down containers.
     ShuttingDown,
+    /// The run failed, carrying the diagnostic as it is rendered to stderr.
+    Failed {
+        /// The rendered report.
+        report: Box<str>,
+    },
     /// The run is over and the consumer should leave its event loop.
     Stop,
 }

@@ -223,8 +223,9 @@ impl UiState {
                 self.pipeline = pipeline;
             }
             Lifecycle::ShuttingDown => self.shutting_down = true,
-            // Stop is intercepted in the event loop before update() is called; never reaches here.
-            Lifecycle::Stop => {}
+            // Failed is left to miette, which renders it to stderr once the tui has torn down, and
+            // Stop is intercepted in the event loop before update() is called.
+            Lifecycle::Failed { .. } | Lifecycle::Stop => {}
         }
     }
 
