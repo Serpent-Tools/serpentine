@@ -1,10 +1,8 @@
 ---
-source: src/snek/mod.rs
-expression: err
+source: serpentine/src/snek/mod.rs
+expression: "$crate :: test_support :: render_error(& error)"
 ---
-  x Compile Error
-
-Error: compiler::invalid_statement
+compiler::invalid_statement
 
   x export not allowed in function
    ,-[<redacted-path>:2:5]

@@ -10,11 +10,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use clap::{CommandFactory, Parser};
-use miette::Diagnostic;
-use thiserror::Error;
+use miette::{Context, IntoDiagnostic};
 use typed_path::{PlatformPath, PlatformPathBuf};
 
-use crate::engine::RuntimeError;
 use crate::events::Reporter;
 use crate::snek::span::VirtualFile;
 
@@ -217,32 +215,6 @@ impl Run {
         }
     }
 }
-/// An error produced by serpentine
-#[derive(Debug, Error, Diagnostic)]
-enum SerpentineError {
-    /// We failed to compile the file.
-    #[error("Compile Error")]
-    Compile {
-        /// The source code that produced the compile error
-        #[source_code]
-        source_code: snek::span::ReadOnlyVirtualFile,
-        /// The compile Error
-        #[related]
-        error: Vec<snek::CompileError>,
-    },
-
-    /// Something failed at runtime.
-    #[error("Runtime Error")]
-    Runtime {
-        /// The source code that produced the runtime error
-        #[source_code]
-        source_code: snek::span::ReadOnlyVirtualFile,
-        /// The error that occurred at runtime
-        #[related]
-        error: Vec<engine::RuntimeError>,
-    },
-}
-
 /// Setup logging using `fern`.
 fn setup_logging(reporter: events::Reporter) -> miette::Result<()> {
     let project_dirs = directories::ProjectDirs::from("org", "serpent-tools", "serpentine")
@@ -330,13 +302,12 @@ fn main() -> miette::Result<()> {
         }
         Command::Clean { cache } => clean_caches(&cache.map_or(get_default_cache_dir(), |path| {
             PlatformPathBuf::from(path.as_os_str().as_encoded_bytes())
-        }))
-        .map_err(Into::into),
+        })),
     }
 }
 
 /// Clean out serpentine caches and docker state
-fn clean_caches(cache: &PlatformPath) -> Result<(), RuntimeError> {
+fn clean_caches(cache: &PlatformPath) -> miette::Result<()> {
     let output_mode = OutputMode::spawn(plain::start);
     if let Err(err) = setup_logging(output_mode.get_reporter()) {
         eprintln!("Failed to setup logging: {err}");
@@ -345,13 +316,15 @@ fn clean_caches(cache: &PlatformPath) -> Result<(), RuntimeError> {
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(RuntimeError::from)
+        .into_diagnostic()
+        .context("starting the tokio runtime")
         .and_then(|runtime| {
             runtime.block_on(async {
                 log::info!("Deleting {}", cache.display());
                 let res = tokio::fs::remove_dir_all(
                     serpentine_internal::platform_to_std(cache)
-                        .map_err(|err| RuntimeError::internal(err.to_string()))?,
+                        .into_diagnostic()
+                        .with_context(|| format!("cache path {} is not utf-8", cache.display()))?,
                 )
                 .await;
 
@@ -361,7 +334,7 @@ fn clean_caches(cache: &PlatformPath) -> Result<(), RuntimeError> {
 
                 engine::docker::delete_container_and_volume().await?;
 
-                Ok::<_, RuntimeError>(())
+                Ok(())
             })
         });
 
@@ -397,18 +370,14 @@ fn handle_run(command: &Run) -> Result<(), miette::Error> {
 }
 
 /// Compile the pipeline and hand it to the executor
-fn run_pipeline(command: &Run, reporter: Reporter) -> Result<(), miette::Error> {
+fn run_pipeline(command: &Run, reporter: Reporter) -> miette::Result<()> {
     log::info!("Compiling pipeline: {}", command.pipeline.display());
     let virtual_file = VirtualFile::new();
     let compiled = match snek::compile_graph(&virtual_file, &command.pipeline, &command.entry_point)
     {
         Ok(compiled) => compiled,
         Err(err) => {
-            return Err(SerpentineError::Compile {
-                source_code: virtual_file.into_readonly(),
-                error: vec![err],
-            }
-            .into());
+            return Err(miette::Report::new(err).with_source_code(virtual_file.into_readonly()));
         }
     };
 
@@ -420,7 +389,8 @@ fn run_pipeline(command: &Run, reporter: Reporter) -> Result<(), miette::Error> 
         pipeline,
     });
 
-    engine::run(virtual_file.into_readonly(), compiled, reporter, command).map_err(Into::into)
+    engine::run(compiled, reporter, command)
+        .map_err(|err| err.with_source_code(virtual_file.into_readonly()))
 }
 
 #[cfg(test)]
@@ -431,7 +401,6 @@ mod tests {
 
     use rstest::rstest;
 
-    use crate::SerpentineError;
     use crate::snek::span::VirtualFile;
 
     #[rstest]
@@ -463,13 +432,8 @@ mod tests {
             containerd_namespace: "serpentine-test".into(),
         };
 
-        if let Err(err) = crate::engine::run(
-            virtual_file.into_readonly(),
-            graph,
-            crate::events::Reporter::none(),
-            &cli,
-        ) {
-            let err = miette::Report::new(err);
+        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
+            let err = err.with_source_code(virtual_file.into_readonly());
             let err = format!("{err:?}");
             panic!("Failed to run {path:?}\n{err}")
         }
@@ -482,10 +446,7 @@ mod tests {
         let graph = match crate::snek::compile_graph(&virtual_file, &path, "DEFAULT") {
             Ok(graph) => graph,
             Err(err) => {
-                let err = miette::Report::new(SerpentineError::Compile {
-                    source_code: virtual_file.into_readonly(),
-                    error: vec![err],
-                });
+                let err = miette::Report::new(err).with_source_code(virtual_file.into_readonly());
                 let err = format!("{err:?}");
                 panic!("Failed to compile {path:?}\n{err}")
             }
@@ -506,12 +467,8 @@ mod tests {
             jobs: 1,
             containerd_namespace: "serpentine-test".into(),
         };
-        if let Err(err) = crate::engine::run(
-            virtual_file.into_readonly(),
-            graph,
-            crate::events::Reporter::none(),
-            &cli,
-        ) {
+        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
+            let err = err.with_source_code(virtual_file.into_readonly());
             crate::test_support::assert_error_snapshot!(
                 path.file_name().unwrap().to_string_lossy().into_owned(),
                 err
