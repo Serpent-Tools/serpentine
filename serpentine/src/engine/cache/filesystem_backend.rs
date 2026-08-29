@@ -43,6 +43,8 @@ impl LocalCacheBackend {
     ///
     /// This will create the directory if it does not exist.
     pub async fn new(cache_dir: PlatformPathBuf) -> Result<Self, std::io::Error> {
+        log::info!("Saving caches to {}", cache_dir.display());
+
         log::debug!("Creating local cache backend with directory: {cache_dir:?}");
         tokio::fs::create_dir_all(platform_to_std(&cache_dir).map_err(std::io::Error::other)?)
             .await?;
@@ -251,18 +253,16 @@ impl AsyncWrite for ScratchFile {
         }
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         // Each stage builds the next one's future, which has to be polled before we can yield, so
         // the state machine is driven here rather than across calls.
         loop {
-            this.state = match &mut this.state {
+            self.state = match &mut self.state {
                 State::Writing(file) => {
                     ready!(Pin::new(file).poll_shutdown(cx))?;
                     State::Renaming(Box::pin(tokio::fs::rename(
-                        this.scratch.clone(),
-                        this.destination.clone(),
+                        self.scratch.clone(),
+                        self.destination.clone(),
                     )))
                 }
                 State::Renaming(rename) => {

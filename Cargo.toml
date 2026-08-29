@@ -44,6 +44,7 @@ unused_assignments = "allow" # https://github.com/rust-lang/rust/issues/147648
 pedantic = {level = "warn", priority = 1}
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+module-name-repetitions = "allow" # This is not a public library, and we like importing the typed directly. 
 
 # robust code
 todo = "deny"
