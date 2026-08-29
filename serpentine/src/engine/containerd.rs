@@ -537,10 +537,6 @@ pub struct Client {
     cache: Arc<dyn CacheBackend + Send + Sync>,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
-    /// Should snapshots be exported to the serpentine cache as well.
-    ///
-    /// This is required for portability.
-    export_snapshots: bool,
     /// Dangling resources
     dangling: Mutex<Vec<DanglingResource>>,
     /// Networks that arent currently in use.
@@ -582,7 +578,6 @@ impl Client {
         cache: Arc<dyn CacheBackend + Send + Sync>,
         exec_permits: usize,
         namespace: impl Into<String>,
-        export_snapshots: bool,
     ) -> Result<Self, RuntimeError> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
             user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
@@ -618,7 +613,6 @@ impl Client {
             oci,
             reporter,
             cache,
-            export_snapshots,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
             dangling: Mutex::new(Vec::new()),
             free_networks: Mutex::new(HashMap::new()),
@@ -626,13 +620,7 @@ impl Client {
     }
 
     /// Export the given snapshot to the caching backend
-    // TODO: This is slow and blocks further execution, which it really shouldnt. its hard to clone
-    // the self from here tho...
     async fn export_snapshot(&self, snapshot: &str) -> Result<(), RuntimeError> {
-        if !self.export_snapshots {
-            return Ok(());
-        }
-
         log::debug!("Exporting snapshot {snapshot} to cache");
 
         let hash = CacheHash::from_data(CacheScope::Snapshot, snapshot).await?;
@@ -948,6 +936,17 @@ impl Client {
         }
 
         true
+    }
+
+    /// Export all the referenced snapshots from this config.
+    pub async fn export_snapshots_from(&self, config: &ContainerState) {
+        if let Err(err) = self.export_snapshot(&config.snapshot).await {
+            log::error!("Failed to export snapshot: {err}");
+        }
+
+        for service in config.config.services.values() {
+            Box::pin(self.export_snapshots_from(service)).await;
+        }
     }
 
     /// Create a new lease
@@ -1918,11 +1917,6 @@ impl Client {
             })
             .await?;
 
-        if let Err(err) = self.export_snapshot(&final_snapshot).await {
-            log::error!("Failed to export snapshot: {err}");
-            debug_assert!(false, "Failed to export snapshot");
-        }
-
         let stdout = handle
             .stdout
             .await
@@ -2044,11 +2038,6 @@ impl Client {
             })
             .await?;
         self.drop_lease(lease).await?;
-
-        if let Err(err) = self.export_snapshot(&new_snapshot).await {
-            log::error!("Failed to export snapshot: {err}");
-            debug_assert!(false, "Failed to export snapshot");
-        }
 
         Ok(ContainerState {
             snapshot: new_snapshot.into(),
@@ -2258,7 +2247,6 @@ mod integration_tests {
             Arc::new(crate::engine::cache::NoneCacheBackend),
             1,
             "serpentine-test",
-            false,
         )
         .await
         .expect("Failed to create Docker client")
@@ -2752,7 +2740,6 @@ mod integration_tests {
             Arc::clone(&cache),
             1,
             uuid::Uuid::new_v4().to_string(),
-            true,
         )
         .await
         .unwrap();
@@ -2838,12 +2825,13 @@ cat opaque/test2.txt
             .await
             .expect("Failed to run test command on original containerd.");
 
+        first_client.export_snapshots_from(&second_layer).await;
+
         let second_client = Client::new(
             Reporter::none(),
             Arc::clone(&cache),
             1,
             uuid::Uuid::new_v4().to_string(),
-            false,
         )
         .await
         .unwrap();

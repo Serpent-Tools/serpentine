@@ -100,15 +100,6 @@ impl Data {
             CacheableData::Service(service) => Data::Service(service),
         }
     }
-
-    /// Check if this data is still valid
-    pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
-        match self {
-            Self::Container(state) => ctx.containerd.healthcheck_value(state).await,
-            Self::Service(state) => ctx.containerd.healthcheck_value(state).await,
-            Self::Int(_) | Self::String(_) | Self::FileSystem(_) => true,
-        }
-    }
 }
 
 impl CacheableData {
@@ -126,6 +117,24 @@ impl CacheableData {
                 snapshots.into_iter().map(ResourceKey::Snapshot).collect()
             }
             Self::Int(_) | Self::String(_) => Vec::new(),
+        }
+    }
+
+    /// Check if this data is still valid
+    pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
+        match self {
+            Self::Container(state) => ctx.containerd.healthcheck_value(state).await,
+            Self::Service(state) => ctx.containerd.healthcheck_value(state).await,
+            Self::Int(_) | Self::String(_) => true,
+        }
+    }
+
+    /// Export any data pointed to by this value into the blob cache
+    pub async fn export_external_data(&self, ctx: &RuntimeContext) {
+        match self {
+            Self::Container(state) => ctx.containerd.export_snapshots_from(state).await,
+            Self::Service(state) => ctx.containerd.export_snapshots_from(state).await,
+            Self::Int(_) | Self::String(_) => {}
         }
     }
 }
