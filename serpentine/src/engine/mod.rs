@@ -303,6 +303,8 @@ pub struct RuntimeContext {
     reporter: Reporter,
     /// Caching of values
     cache: cache::Cache,
+    /// Should external state be exported?
+    standalone_cache: bool,
 }
 
 impl RuntimeContext {
@@ -319,7 +321,6 @@ impl RuntimeContext {
             Arc::clone(&cache_backend),
             cli.jobs,
             cli.containerd_namespace.clone(),
-            cli.standalone_cache,
         )
         .await?;
         let cache = cache::Cache::new(cache_backend).await?;
@@ -328,6 +329,7 @@ impl RuntimeContext {
             containerd,
             reporter,
             cache,
+            standalone_cache: cli.standalone_cache,
         })
     }
 
