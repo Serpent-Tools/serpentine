@@ -3293,6 +3293,7 @@ dependencies = [
  "postcard",
  "prost-types",
  "ratatui",
+ "reqwest",
  "rstest",
  "serde",
  "serde_json",

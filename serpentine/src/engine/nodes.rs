@@ -530,8 +530,9 @@ async fn exec_output(
         .map(Into::into)
 }
 
-/// Read a file/folder into a tar from the host system.
+/// Read a file/folder from the host system.
 async fn from_host(_context: Arc<RuntimeContext>, src: Arc<str>) -> miette::Result<FileSystem> {
+    // FIX: this shouldnt work on windows.
     let src: PlatformPathBuf = UnixPath::new(src.as_bytes()).with_encoding();
     Ok(filesystem::LocalFiles(src).into())
 }

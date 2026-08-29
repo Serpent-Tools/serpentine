@@ -7,12 +7,14 @@
 use std::borrow::Cow;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use clap::{CommandFactory, Parser};
 use miette::{Context, IntoDiagnostic};
 use typed_path::{PlatformPath, PlatformPathBuf};
 
+use crate::engine::cache::{self, CacheBackend};
 use crate::events::Reporter;
 use crate::snek::span::VirtualFile;
 
@@ -75,13 +77,16 @@ struct Run {
     /// How to render progress.
     #[arg(long, value_enum, default_value = "auto")]
     output: OutputKind,
-    /// Location of the cache directory
+    /// Which cache backend to use.
+    #[arg(short, long, value_enum, default_value = "auto")]
+    cache_backend: CacheBackendKind,
+    /// Location of the cache directory, if cache backend is `auto` or `fs`
     ///
     /// This can be useful to set in CI, or per project if you are running multiple serpentine
     /// instances at once as some caching features are racing (this will only ever lead to cache
     /// misses, never corruption).
-    #[arg(short, long)]
-    cache: Option<PathBuf>,
+    #[arg(long)]
+    cache_folder: Option<PathBuf>,
     /// Also export container layers, and any other external data referenced by the cache to the
     /// cache directory.
     ///
@@ -124,6 +129,29 @@ enum OutputKind {
     Github,
     /// Render nothing; the run still writes its log file.
     None,
+}
+
+/// Where serpentine stores a run's cache.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CacheBackendKind {
+    /// Pick from the environment: `Github` on gha, `fs` otherwise.
+    Auto,
+    /// Cache files and layers to the local file system specified by `--cache-folder`
+    Fs,
+    /// Uses gha cache, only available in github actions.
+    Github,
+    /// Dont use any cache.
+    None,
+}
+
+impl CacheBackendKind {
+    /// Whether this backend can be used in the current environment.
+    fn available(self) -> bool {
+        match self {
+            Self::Auto | Self::Fs | Self::None => true,
+            Self::Github => cache::GithubActionsBackend::available(),
+        }
+    }
 }
 
 /// How serpentine produces output.
@@ -180,6 +208,19 @@ impl Run {
                 "--output github renders one command at a time, so it requires --jobs 1",
             ));
         }
+
+        if self.cache_folder.is_some()
+            && !matches!(
+                self.cache_backend,
+                CacheBackendKind::Auto | CacheBackendKind::Fs
+            )
+        {
+            return Err(Cli::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--cache-folder can only be specified for `--cache-backend auto` or `--cache-backend fs`",
+            ));
+        }
+
         Ok(())
     }
 
@@ -207,11 +248,52 @@ impl Run {
     }
 
     /// Get the cache to use
-    fn get_cache(&self) -> Cow<'_, PlatformPath> {
-        if let Some(cache) = &self.cache {
+    fn get_cache_folder(&self) -> Cow<'_, PlatformPath> {
+        if let Some(cache) = &self.cache_folder {
             Cow::Borrowed(PlatformPath::new(cache.as_os_str().as_encoded_bytes()))
         } else {
             Cow::Owned(get_default_cache_dir())
+        }
+    }
+
+    /// The backend suggested by the environment serpentine is running under.
+    ///
+    /// Candidates are tried in priority order; `fs` works anywhere, so it ends the list. An
+    /// explicit `--cache-folder` asks for a directory, which only `fs` can offer.
+    fn detect_cache_backend(&self) -> CacheBackendKind {
+        if self.cache_folder.is_some() {
+            return CacheBackendKind::Fs;
+        }
+
+        [CacheBackendKind::Github, CacheBackendKind::Fs]
+            .into_iter()
+            .find(|kind| kind.available())
+            .unwrap_or(CacheBackendKind::Fs)
+    }
+
+    /// Open the cache backend to use
+    async fn get_cache_backend(&self) -> miette::Result<Arc<dyn CacheBackend + Send + Sync>> {
+        let kind = match self.cache_backend {
+            CacheBackendKind::Auto => self.detect_cache_backend(),
+            kind => kind,
+        };
+
+        match kind {
+            CacheBackendKind::Github => Ok(Arc::new(cache::GithubActionsBackend::new(
+                crate::engine::cache::CACHE_COMPATIBILITY_VERSION
+                    .to_string()
+                    .into_boxed_str(),
+            )?)),
+            CacheBackendKind::None => Ok(Arc::new(cache::NoneCacheBackend)),
+            CacheBackendKind::Auto | CacheBackendKind::Fs => {
+                let folder = self.get_cache_folder();
+                let backend = cache::LocalCacheBackend::new(folder.clone().into_owned())
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("opening the cache at {}", folder.display()))?;
+
+                Ok(Arc::new(backend))
+            }
         }
     }
 }
@@ -344,8 +426,6 @@ fn clean_caches(cache: &PlatformPath) -> miette::Result<()> {
 
 /// Handle the `run` subcommand
 fn handle_run(command: &Run) -> Result<(), miette::Error> {
-    println!("Storing cache in {}", command.get_cache().display());
-
     let output_mode = command.get_output_mode();
     if let Err(error) = setup_logging(output_mode.get_reporter()) {
         eprintln!("Failed to initialize logging: {error}");
@@ -416,15 +496,11 @@ mod tests {
             }
         };
 
-        let random_cache_dir = std::env::temp_dir().join(format!(
-            "serpentine_test_cache_{}.serpentine_cache",
-            uuid::Uuid::new_v4()
-        ));
-
         let cli = crate::Run {
             pipeline: path.clone(),
             output: crate::OutputKind::None,
-            cache: Some(random_cache_dir),
+            cache_folder: None,
+            cache_backend: crate::CacheBackendKind::None,
             standalone_cache: false,
             clean_old: false,
             entry_point: "DEFAULT".into(),
@@ -452,15 +528,11 @@ mod tests {
             }
         };
 
-        let random_cache_dir = std::env::temp_dir().join(format!(
-            "serpentine_test_cache_{}.serpentine_cache",
-            uuid::Uuid::new_v4()
-        ));
-
         let cli = crate::Run {
             pipeline: path.clone(),
             output: crate::OutputKind::None,
-            cache: Some(random_cache_dir),
+            cache_folder: None,
+            cache_backend: crate::CacheBackendKind::None,
             standalone_cache: false,
             clean_old: false,
             entry_point: "DEFAULT".into(),

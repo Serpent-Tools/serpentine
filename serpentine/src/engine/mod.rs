@@ -1,6 +1,6 @@
 //! Contains the node engine, as well as node type definitions.
 
-mod cache;
+pub mod cache;
 mod containerd;
 pub mod data_model;
 pub mod docker;
@@ -296,13 +296,9 @@ pub fn run(
         .context("starting the tokio runtime")?;
 
     runtime.block_on(async {
-        let cache_path = cli.get_cache().into_owned();
-        let backend = cache::LocalCacheBackend::new(cache_path.clone())
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("opening the cache at {}", cache_path.display()))?;
+        let backend = cli.get_cache_backend().await?;
 
-        let context = Arc::new(RuntimeContext::new(reporter, cli, Arc::new(backend)).await?);
+        let context = Arc::new(RuntimeContext::new(reporter, cli, backend).await?);
         let scheduler = Arc::new(scheduler::Scheduler::new(
             compile_result.nodes,
             compile_result.graph,
@@ -372,7 +368,8 @@ pub(crate) mod benchmarks {
         let cli = crate::Run {
             pipeline: snek_path.to_path_buf(),
             output: crate::OutputKind::None,
-            cache: Some(cache_path.to_path_buf()),
+            cache_folder: Some(cache_path.to_path_buf()),
+            cache_backend: crate::CacheBackendKind::Fs,
             standalone_cache,
             clean_old: false,
             entry_point: "DEFAULT".into(),

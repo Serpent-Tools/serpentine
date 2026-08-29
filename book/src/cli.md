@@ -43,11 +43,28 @@ Selects how serpentine renders a run:
 
 Under `auto` serpentine uses `github` when it detects github actions with `--jobs 1`, `plain` under any other CI runner or when stdout is not an interactive terminal, and `tui` otherwise. This means CI runners generally need no flag at all, though setting it explicitly is harmless.
 
-### `--cache` / `-c`
+### `--cache-folder`
 * default: platform specific, printed to stdout at the start of a run.
 
 Specifies the directory to store caches in, by default it will store it in the systems default cache location, this flag should be used in CI to store the cache at a deterministic location.
 The directory is created if it doesn't exist.
+
+### `--cache-backend`/`-c`
+The caching backend to use
+
+
+| value | behaviour |
+| --- | --- |
+| `auto` | Picks from the environment, as described below. |
+| `fs` | Cache to the directory specified by `--cache-folder` |
+| `github` | Cache to github actions cache, only avaialbe in github actions. |
+| `none` | disables the cache. |
+
+
+Under `auto` serpentine:
+* Uses `fs` if `--cache-folder` is set
+* otherwise uses `github` if running in github actions.
+* otherwise uses `fs`
 
 ### `--containerd-namespace`
 * default: `serpentine`

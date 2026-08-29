@@ -43,6 +43,8 @@ impl LocalCacheBackend {
     ///
     /// This will create the directory if it does not exist.
     pub async fn new(cache_dir: PlatformPathBuf) -> Result<Self, std::io::Error> {
+        log::info!("Saving caches to {}", cache_dir.display());
+
         log::debug!("Creating local cache backend with directory: {cache_dir:?}");
         tokio::fs::create_dir_all(platform_to_std(&cache_dir).map_err(std::io::Error::other)?)
             .await?;

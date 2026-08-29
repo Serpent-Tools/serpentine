@@ -12,8 +12,10 @@ use crate::engine::data_model::{CacheableData, Data, NodeKindId, ResourceKey};
 use crate::engine::{BoxedReader, BoxedWriter, internal};
 
 mod filesystem_backend;
+mod github_backend;
 
 pub use filesystem_backend::LocalCacheBackend;
+pub use github_backend::GithubActionsBackend;
 
 /// Version number for the cache.
 ///
@@ -33,7 +35,7 @@ pub use filesystem_backend::LocalCacheBackend;
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-const CACHE_COMPATIBILITY_VERSION: u8 = 5;
+pub const CACHE_COMPATIBILITY_VERSION: u8 = 5;
 
 /// The cache was out of date.
 #[derive(Debug, Error, Diagnostic)]
@@ -168,8 +170,6 @@ pub trait CacheBackend {
 static_assertions::assert_obj_safe!(CacheBackend);
 
 /// A cache backend that does not store anything.
-#[expect(clippy::allow_attributes, reason = "dead_code doesnt work with expect")]
-#[allow(dead_code, reason = "not wired into cli yet, but used in tests.")]
 pub struct NoneCacheBackend;
 
 impl CacheBackend for NoneCacheBackend {
