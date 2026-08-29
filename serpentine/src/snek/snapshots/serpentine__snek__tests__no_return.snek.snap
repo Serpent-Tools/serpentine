@@ -1,10 +1,8 @@
 ---
-source: src/snek/mod.rs
-expression: err
+source: serpentine/src/snek/mod.rs
+expression: "$crate :: test_support :: render_error(& error)"
 ---
-  x Compile Error
-
-Error: compiler::no_return
+compiler::no_return
 
   x No return found.
    ,-[<redacted-path>:1:5]

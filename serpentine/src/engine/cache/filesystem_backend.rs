@@ -7,6 +7,7 @@ use std::task::{Context, Poll, ready};
 
 use base64::Engine;
 use futures_util::future::BoxFuture;
+use miette::{IntoDiagnostic, WrapErr};
 use nohash::IntSet;
 use serpentine_internal::platform_to_std;
 use tokio::io::AsyncWrite;
@@ -154,9 +155,7 @@ impl CacheBackend for LocalCacheBackend {
         })
     }
 
-    fn get_data_cache_writer(
-        &self,
-    ) -> BoxFuture<'_, Result<BoxedWriter, crate::engine::RuntimeError>> {
+    fn get_data_cache_writer(&self) -> BoxFuture<'_, miette::Result<BoxedWriter>> {
         log::debug!("Writing data cache to local cache backend");
         let destination = self.file_path_for_data();
         let scratch = self.scratch_path();
@@ -165,12 +164,15 @@ impl CacheBackend for LocalCacheBackend {
             let to_std = |path: &PlatformPath| {
                 platform_to_std(path)
                     .map(std::path::Path::to_path_buf)
-                    .map_err(|_| crate::engine::RuntimeError::internal("Failed to convert path"))
+                    .into_diagnostic()
+                    .with_context(|| format!("cache path {} is not utf-8", path.display()))
             };
 
-            Ok(BoxedWriter::new(
-                ScratchFile::create(to_std(&scratch)?, to_std(&destination)?).await?,
-            ))
+            let file = ScratchFile::create(to_std(&scratch)?, to_std(&destination)?)
+                .await
+                .into_diagnostic()
+                .with_context(|| format!("creating cache file {}", destination.display()))?;
+            Ok(BoxedWriter::new(file))
         })
     }
 

@@ -302,10 +302,7 @@ mod tests {
         match res {
             Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),
             Err(err) => {
-                let error = crate::SerpentineError::Compile {
-                    source_code: virtual_file.into_readonly(),
-                    error: vec![err],
-                };
+                let error = miette::Report::new(err).with_source_code(virtual_file.into_readonly());
 
                 crate::test_support::assert_error_snapshot!(
                     path.file_name().unwrap().to_string_lossy().into_owned(),
