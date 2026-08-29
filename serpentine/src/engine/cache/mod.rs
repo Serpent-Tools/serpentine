@@ -4,10 +4,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
+use miette::{Context, Diagnostic, IntoDiagnostic};
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::engine::data_model::{CacheableData, Data, NodeKindId, ResourceKey};
-use crate::engine::{BoxedReader, BoxedWriter, RuntimeError};
+use crate::engine::{BoxedReader, BoxedWriter, internal};
 
 mod filesystem_backend;
 
@@ -32,6 +34,16 @@ pub use filesystem_backend::LocalCacheBackend;
 /// * Changes to the cli
 /// * Etc...
 const CACHE_COMPATIBILITY_VERSION: u8 = 5;
+
+/// The cache was out of date.
+#[derive(Debug, Error, Diagnostic)]
+#[error("Cache format version {got} doesn't match current version {current}")]
+struct CacheOutOfDate {
+    /// The version in the cache file
+    got: u8,
+    /// The version of this binary
+    current: u8,
+}
 
 /// Wrapper around the raw blake3 hash output as its trait implementations (`Hash` and `Eq`) use
 /// constant time functions, which we do not require
@@ -70,20 +82,24 @@ impl nohash::IsEnabled for CacheHash {}
 /// A trait similar to `Hash`, but required to be stable across runs, and unique across values.
 pub trait ContentHash {
     /// Hash the content of this value into the given hasher.
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError>;
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> miette::Result<()>;
 }
 
 impl<T: serde::Serialize + ?Sized> ContentHash for T {
     fn content_hash(
         &self,
         hasher: &mut blake3::Hasher,
-    ) -> impl Future<Output = Result<(), RuntimeError>> {
+    ) -> impl Future<Output = miette::Result<()>> {
         match postcard::to_stdvec(self) {
             Ok(bytes) => {
                 hasher.update(&bytes);
                 std::future::ready(Ok(()))
             }
-            Err(err) => std::future::ready(Err(err.into())),
+            Err(err) => std::future::ready(
+                Err(err)
+                    .into_diagnostic()
+                    .context("hashing a value for the cache"),
+            ),
         }
     }
 }
@@ -103,7 +119,7 @@ impl CacheHash {
     pub async fn from_data<T: ContentHash + ?Sized>(
         scope: CacheScope,
         data: &T,
-    ) -> Result<Self, RuntimeError> {
+    ) -> miette::Result<Self> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&[scope as u8]);
 
@@ -132,7 +148,7 @@ pub trait CacheBackend {
 
     /// Get a writer to the `DataCache` in this backend, this does not use `write_key`
     /// as the data cache should always be saved and is not lazily saved based on keys
-    fn get_data_cache_writer(&self) -> BoxFuture<'_, Result<BoxedWriter, RuntimeError>>;
+    fn get_data_cache_writer(&self) -> BoxFuture<'_, miette::Result<BoxedWriter>>;
 
     /// Delete the given key if it exists in the cache backend.
     ///
@@ -163,7 +179,7 @@ impl CacheBackend for NoneCacheBackend {
         Box::pin(std::future::ready(None))
     }
 
-    fn get_data_cache_writer(&self) -> BoxFuture<'_, Result<BoxedWriter, RuntimeError>> {
+    fn get_data_cache_writer(&self) -> BoxFuture<'_, miette::Result<BoxedWriter>> {
         Box::pin(std::future::ready(Ok(BoxedWriter::new(
             std::io::Cursor::new(Vec::new()),
         ))))
@@ -180,7 +196,7 @@ pub struct CacheKey<'caller> {
 }
 
 impl ContentHash for CacheKey<'_> {
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> miette::Result<()> {
         hasher.update(&self.node.index().to_le_bytes());
         hasher.update(&(self.inputs.len() as u64).to_le_bytes());
 
@@ -242,16 +258,26 @@ impl DataCache {
         self,
         keep_old_cache: bool,
         mut writer: impl AsyncWrite + Unpin + Send,
-    ) -> Result<HashSet<ResourceKey>, RuntimeError> {
-        writer.write_u8(CACHE_COMPATIBILITY_VERSION).await?;
+    ) -> miette::Result<HashSet<ResourceKey>> {
+        writer
+            .write_u8(CACHE_COMPATIBILITY_VERSION)
+            .await
+            .into_diagnostic()
+            .context("writing the cache version")?;
 
         if keep_old_cache {
             let mut combined_cache = self.new_cache;
             combined_cache.extend(self.old_cache);
-            serpentine_internal::write_postcard_frame(&combined_cache, &mut writer).await?;
+            serpentine_internal::write_postcard_frame(&combined_cache, &mut writer)
+                .await
+                .into_diagnostic()
+                .context("writing the data cache")?;
             Ok(HashSet::new())
         } else {
-            serpentine_internal::write_postcard_frame(&self.new_cache, &mut writer).await?;
+            serpentine_internal::write_postcard_frame(&self.new_cache, &mut writer)
+                .await
+                .into_diagnostic()
+                .context("writing the data cache")?;
             Ok(self
                 .old_cache
                 .into_values()
@@ -261,16 +287,24 @@ impl DataCache {
     }
 
     /// Load a cache from the given reader, checking the version number.
-    async fn load(mut reader: impl AsyncRead + Unpin + Send) -> Result<Self, RuntimeError> {
-        let version = reader.read_u8().await?;
+    async fn load(mut reader: impl AsyncRead + Unpin + Send) -> miette::Result<Self> {
+        let version = reader
+            .read_u8()
+            .await
+            .into_diagnostic()
+            .context("reading the cache version")?;
         if version != CACHE_COMPATIBILITY_VERSION {
-            return Err(RuntimeError::CacheOutOfDate {
+            return Err(CacheOutOfDate {
                 current: CACHE_COMPATIBILITY_VERSION,
                 got: version,
-            });
+            }
+            .into());
         }
 
-        let cache = serpentine_internal::read_postcard_frame(&mut reader).await?;
+        let cache = serpentine_internal::read_postcard_frame(&mut reader)
+            .await
+            .into_diagnostic()
+            .context("reading the data cache")?;
 
         Ok(DataCache {
             old_cache: cache,
@@ -289,7 +323,7 @@ pub struct Cache {
 
 impl Cache {
     /// Load the cache from the given backend, or create a new empty cache if the backend does not have a cache.
-    pub async fn new(backend: Arc<dyn CacheBackend + Send + Sync>) -> Result<Self, RuntimeError> {
+    pub async fn new(backend: Arc<dyn CacheBackend + Send + Sync>) -> miette::Result<Self> {
         let data_cache = if let Some(mut reader) = backend.get_data_cache().await {
             match DataCache::load(&mut reader).await {
                 Ok(data_cache) => data_cache,
@@ -314,7 +348,7 @@ impl Cache {
     async fn delete_resource_key(
         backend: &(impl CacheBackend + ?Sized),
         key: &ResourceKey,
-    ) -> Result<(), RuntimeError> {
+    ) -> miette::Result<()> {
         let hash = key.cache_hash().await?;
         backend.delete_key(hash).await;
 
@@ -325,19 +359,23 @@ impl Cache {
     ///
     /// Returns a hashset of the resource keys that the shutdown system should pass along to the
     /// various engines for cleanup.
-    pub async fn save(self, keep_old_cache: bool) -> Result<HashSet<ResourceKey>, RuntimeError> {
+    pub async fn save(self, keep_old_cache: bool) -> miette::Result<HashSet<ResourceKey>> {
         let Self {
             data_cache,
             backend,
         } = self;
 
-        let data_cache = data_cache.into_inner().map_err(|_| {
-            RuntimeError::internal("Failed to lock data cache for saving, mutex poisoned")
-        })?;
+        let data_cache = data_cache
+            .into_inner()
+            .map_err(|_| internal("data cache mutex poisoned"))?;
 
         let mut writer = backend.get_data_cache_writer().await?;
         let removed_resource_keys = data_cache.write(keep_old_cache, &mut writer).await?;
-        writer.shutdown().await?;
+        writer
+            .shutdown()
+            .await
+            .into_diagnostic()
+            .context("flushing the data cache")?;
 
         for key in &removed_resource_keys {
             if let Err(err) = Self::delete_resource_key(&*backend, key).await {

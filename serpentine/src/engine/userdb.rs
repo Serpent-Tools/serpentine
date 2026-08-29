@@ -3,7 +3,19 @@
 
 use std::str::FromStr;
 
-use crate::engine::RuntimeError;
+use miette::Diagnostic;
+use thiserror::Error;
+
+/// Could not parse / could not find user info in /etc/passwd
+#[derive(Debug, Error, Diagnostic)]
+#[error("Could not resolve user {user:?}: {msg}")]
+#[diagnostic(code(user_not_found))]
+pub struct UserNotFound {
+    /// Which user couldnt be found
+    user: OciUser,
+    /// What specific part wasnt found.
+    msg: &'static str,
+}
 
 /// The possible ways to identify a unix user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,14 +233,15 @@ impl OciUser {
         self,
         passwd: Passwd,
         groups: &EtcGroup,
-    ) -> Result<(oci_spec::runtime::User, Box<str>), RuntimeError> {
+    ) -> miette::Result<(oci_spec::runtime::User, Box<str>)> {
         let mut user = oci_spec::runtime::User::default();
 
         let Some(passwd_entry) = passwd.find_user(&self.user) else {
-            return Err(RuntimeError::UserNotFound {
+            return Err(UserNotFound {
                 user: self,
                 msg: "Failed to find user in /etc/passwd",
-            });
+            }
+            .into());
         };
 
         user.set_uid(passwd_entry.user_id);
@@ -236,10 +249,11 @@ impl OciUser {
         match &self.group {
             Some(GroupIdentifier::Id(id)) => {
                 if !groups.check_gid_valid(*id) {
-                    return Err(RuntimeError::UserNotFound {
+                    return Err(UserNotFound {
                         user: self,
                         msg: "Group id not found in /etc/group",
-                    });
+                    }
+                    .into());
                 }
 
                 user.set_gid(*id);
@@ -247,10 +261,11 @@ impl OciUser {
             }
             Some(GroupIdentifier::Name(group_name)) => {
                 let Some(group) = groups.find_group_by_name(group_name) else {
-                    return Err(RuntimeError::UserNotFound {
+                    return Err(UserNotFound {
                         user: self,
                         msg: "Group name not found in /etc/group",
-                    });
+                    }
+                    .into());
                 };
 
                 user.set_gid(group.group_id);
@@ -259,10 +274,11 @@ impl OciUser {
             None => {
                 let group_id = passwd_entry.group_id;
                 if !groups.check_gid_valid(group_id) {
-                    return Err(RuntimeError::UserNotFound {
+                    return Err(UserNotFound {
                         user: self,
                         msg: "Group id not found in /etc/group",
-                    });
+                    }
+                    .into());
                 }
 
                 user.set_gid(group_id);

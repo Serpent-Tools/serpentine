@@ -5,13 +5,14 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
+use miette::{Context, IntoDiagnostic};
 use typed_path::{PlatformPathBuf, UnixPath};
 
 use crate::engine::cache::{CacheHash, CacheKey, CacheScope};
 use crate::engine::data_model::{Data, DataType, NodeInstanceId, NodeKindId};
 use crate::engine::filesystem::{self, FileSystem};
 use crate::engine::scheduler::Scheduler;
-use crate::engine::{RuntimeContext, RuntimeError, containerd};
+use crate::engine::{RuntimeContext, containerd, internal};
 use crate::snek::CompileError;
 use crate::snek::span::{Span, Spanned};
 
@@ -55,10 +56,11 @@ pub trait NodeImpl: Send + Sync {
     /// You should overwrite this and resolve the inputs yourself.
     fn execute_raw<'scheduler>(
         &'scheduler self,
+        node_id: NodeInstanceId,
         kind: NodeKindId,
         scheduler: Arc<Scheduler>,
         inputs: &'scheduler [NodeInstanceId],
-    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
+    ) -> BoxFuture<'scheduler, miette::Result<Data>> {
         Box::pin(async move {
             let inputs = scheduler.resolve_all(inputs).await?;
 
@@ -67,7 +69,7 @@ pub trait NodeImpl: Send + Sync {
                 .reporter
                 .node(crate::events::NodeTransition::Started);
 
-            let outcome: Result<(Data, crate::events::NodeTransition), RuntimeError> = async move {
+            let outcome: miette::Result<(Data, crate::events::NodeTransition)> = async move {
                 if self.should_be_cached() {
                     let key = CacheKey {
                         node: kind,
@@ -78,7 +80,15 @@ pub trait NodeImpl: Send + Sync {
 
                     if let Some(cached_value) =
                         // NOTE: braces such that the mutex lock is dropped.
-                        { context.cache.data_cache.lock()?.get(key).cloned() }
+                        {
+                            context
+                                .cache
+                                .data_cache
+                                .lock()
+                                .map_err(|_| internal("data cache mutex poisoned"))?
+                                .get(key)
+                                .cloned()
+                        }
                     {
                         log::debug!("Cache hit on {}", self.describe());
 
@@ -99,7 +109,12 @@ pub trait NodeImpl: Send + Sync {
                             result.export_external_data(context).await;
                         }
 
-                        context.cache.data_cache.lock()?.insert(key, result);
+                        context
+                            .cache
+                            .data_cache
+                            .lock()
+                            .map_err(|_| internal("data cache mutex poisoned"))?
+                            .insert(key, result);
                     }
 
                     Ok((result, crate::events::NodeTransition::Ran))
@@ -115,7 +130,9 @@ pub trait NodeImpl: Send + Sync {
                 .as_ref()
                 .map_or(crate::events::NodeTransition::Ran, |(_, picked)| *picked);
             context.reporter.node(transition);
-            outcome.map(|(data, _)| data)
+            outcome
+                .map(|(data, _)| data)
+                .map_err(|err| scheduler.node_error(node_id, err))
         })
     }
 
@@ -127,7 +144,7 @@ pub trait NodeImpl: Send + Sync {
         &'scheduler self,
         context: &'scheduler Arc<RuntimeContext>,
         inputs: Vec<Data>,
-    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>>;
+    ) -> BoxFuture<'scheduler, miette::Result<Data>>;
 }
 
 /// Trait implemented on the raw types in `Data`
@@ -303,7 +320,7 @@ macro_rules! impl_node_impl {
         #[allow(warnings, reason="auto generated")]
         impl< F, R, Fut, $($arg),*> NodeImpl for Wrap<F, ($($arg),*)>
         where F: Fn(Arc<RuntimeContext>, $($arg),*) -> Fut + Send + Sync,
-              Fut: Future<Output=Result<R, RuntimeError>> + Send,
+              Fut: Future<Output=miette::Result<R>> + Send,
               R: RawData,
               $($arg: RawData),*
         {
@@ -364,7 +381,7 @@ macro_rules! impl_node_impl {
                 &'scheduler self,
                 context: &'scheduler Arc<RuntimeContext>,
                 inputs: Vec<Data>,
-            ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
+            ) -> BoxFuture<'scheduler, miette::Result<Data>> {
                 Box::pin(async move {
                     let mut inputs = inputs.into_iter();
                     let ($($arg),*,) = (
@@ -372,12 +389,12 @@ macro_rules! impl_node_impl {
                             #[cfg(false)]
                             {$arg;}
 
-                            inputs.next().ok_or_else(|| RuntimeError::internal("Missing arguments at runtime"))?
+                            inputs.next().ok_or_else(|| internal("Missing arguments at runtime"))?
                         }),*,
                     );
 
                     $(
-                        let $arg = $arg::from_data(&$arg).ok_or_else(|| RuntimeError::internal("Type mismatch at runtime"))?;
+                        let $arg = $arg::from_data(&$arg).ok_or_else(|| internal("Type mismatch at runtime"))?;
                     )*
 
                     log::debug!("Executing {}", std::any::type_name::<F>());
@@ -426,12 +443,12 @@ impl NodeImpl for Noop {
         &'scheduler self,
         _context: &'scheduler Arc<RuntimeContext>,
         inputs: Vec<Data>,
-    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
+    ) -> BoxFuture<'scheduler, miette::Result<Data>> {
         Box::pin(async move {
             inputs
                 .into_iter()
                 .next()
-                .ok_or_else(|| RuntimeError::internal("Argument count mismatch at runtime"))
+                .ok_or_else(|| internal("Argument count mismatch at runtime"))
         })
     }
 }
@@ -461,7 +478,7 @@ impl NodeImpl for LiteralNode {
         &'scheduler self,
         _context: &'scheduler Arc<RuntimeContext>,
         _inputs: Vec<Data>,
-    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
+    ) -> BoxFuture<'scheduler, miette::Result<Data>> {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -474,7 +491,7 @@ pub const NOOP_NAME: &str = "Noop";
 async fn image(
     context: Arc<RuntimeContext>,
     image: Arc<str>,
-) -> Result<containerd::ContainerState, RuntimeError> {
+) -> miette::Result<containerd::ContainerState> {
     context.containerd.pull_image(&image).await
 }
 
@@ -482,7 +499,7 @@ async fn image(
 async fn image_service(
     context: Arc<RuntimeContext>,
     image: Arc<str>,
-) -> Result<containerd::ServiceState, RuntimeError> {
+) -> miette::Result<containerd::ServiceState> {
     context.containerd.pull_service(&image).await
 }
 
@@ -491,7 +508,7 @@ async fn exec(
     context: Arc<RuntimeContext>,
     mut container: containerd::ContainerLike,
     command: Arc<str>,
-) -> Result<containerd::ContainerLike, RuntimeError> {
+) -> miette::Result<containerd::ContainerLike> {
     *container = context
         .containerd
         .exec(&container, command.to_string())
@@ -505,7 +522,7 @@ async fn exec_output(
     context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
     command: Arc<str>,
-) -> Result<Arc<str>, RuntimeError> {
+) -> miette::Result<Arc<str>> {
     context
         .containerd
         .exec_get_output(&container, command.to_string())
@@ -514,10 +531,7 @@ async fn exec_output(
 }
 
 /// Read a file/folder into a tar from the host system.
-async fn from_host(
-    _context: Arc<RuntimeContext>,
-    src: Arc<str>,
-) -> Result<FileSystem, RuntimeError> {
+async fn from_host(_context: Arc<RuntimeContext>, src: Arc<str>) -> miette::Result<FileSystem> {
     let src: PlatformPathBuf = UnixPath::new(src.as_bytes()).with_encoding();
     Ok(filesystem::LocalFiles(src).into())
 }
@@ -528,7 +542,7 @@ async fn export(
 
     container: containerd::ContainerLike,
     path: Arc<str>,
-) -> Result<FileSystem, RuntimeError> {
+) -> miette::Result<FileSystem> {
     context
         .containerd
         .export_path(&container, UnixPath::new(path.as_bytes()))
@@ -540,11 +554,14 @@ async fn to_host(
     _context: Arc<RuntimeContext>,
     fs: FileSystem,
     path: Arc<str>,
-) -> Result<i128, RuntimeError> {
+) -> miette::Result<i128> {
     let mut reader = fs.get_reader().await?;
 
     let path: PlatformPathBuf = UnixPath::new(path.as_bytes()).with_encoding();
-    serpentine_internal::read_filesystem_stream_to_disk(&path, &mut reader, false).await?;
+    serpentine_internal::read_filesystem_stream_to_disk(&path, &mut reader, false)
+        .await
+        .into_diagnostic()
+        .with_context(|| format!("writing files to {}", path.display()))?;
 
     Ok(0)
 }
@@ -556,7 +573,7 @@ async fn with(
     mut container: containerd::ContainerLike,
     fs: FileSystem,
     path: Arc<str>,
-) -> Result<containerd::ContainerLike, RuntimeError> {
+) -> miette::Result<containerd::ContainerLike> {
     *container = context
         .containerd
         .copy_fs_into_container(&container, fs, UnixPath::new(path.as_bytes()))
@@ -570,7 +587,7 @@ async fn with_working_dir(
     _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
     dir: Arc<str>,
-) -> Result<containerd::ContainerLike, RuntimeError> {
+) -> miette::Result<containerd::ContainerLike> {
     Ok(container.update_config(|config| config.set_working_dir(UnixPath::new(dir.as_bytes()))))
 }
 
@@ -580,7 +597,7 @@ async fn env(
     container: containerd::ContainerLike,
     env: Arc<str>,
     value: Arc<str>,
-) -> Result<containerd::ContainerLike, RuntimeError> {
+) -> miette::Result<containerd::ContainerLike> {
     Ok(container.update_config(|config| config.set_env_var(env, value)))
 }
 
@@ -589,7 +606,7 @@ async fn get_env(
     _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
     env: Arc<str>,
-) -> Result<Arc<str>, RuntimeError> {
+) -> miette::Result<Arc<str>> {
     Ok(container
         .get_config()
         .get_env_var(&env)
@@ -602,7 +619,7 @@ async fn set_user(
     _context: Arc<RuntimeContext>,
     container: containerd::ContainerLike,
     user: Arc<str>,
-) -> Result<containerd::ContainerLike, RuntimeError> {
+) -> miette::Result<containerd::ContainerLike> {
     Ok(container.update_config(|config| config.set_user(user)))
 }
 
@@ -641,7 +658,7 @@ impl NodeImpl for Join {
         &'scheduler self,
         _context: &'scheduler Arc<RuntimeContext>,
         inputs: Vec<Data>,
-    ) -> BoxFuture<'scheduler, Result<Data, RuntimeError>> {
+    ) -> BoxFuture<'scheduler, miette::Result<Data>> {
         Box::pin(async move {
             inputs
                 .into_iter()
@@ -649,7 +666,7 @@ impl NodeImpl for Join {
                     if let Data::String(data) = data {
                         Ok(data)
                     } else {
-                        Err(RuntimeError::internal("Type mismatch at runtime"))
+                        Err(internal("Type mismatch at runtime"))
                     }
                 })
                 .try_fold(String::new(), |mut result, data| {
@@ -666,7 +683,7 @@ async fn to_service(
     _context: Arc<RuntimeContext>,
     container: containerd::ContainerState,
     entrypoint: Arc<str>,
-) -> Result<containerd::ServiceState, RuntimeError> {
+) -> miette::Result<containerd::ServiceState> {
     Ok(container.into_service(entrypoint))
 }
 
@@ -676,7 +693,7 @@ async fn with_service(
     container: containerd::ContainerLike,
     service: containerd::ServiceState,
     hostname: Arc<str>,
-) -> Result<containerd::ContainerLike, RuntimeError> {
+) -> miette::Result<containerd::ContainerLike> {
     Ok(container.update_config(|config| config.with_service(service, hostname)))
 }
 
@@ -686,11 +703,12 @@ async fn healthcheck(
     service: containerd::ServiceState,
     command: Arc<str>,
     timeout_seconds: i128,
-) -> Result<containerd::ServiceState, RuntimeError> {
+) -> miette::Result<containerd::ServiceState> {
     let timeout = std::time::Duration::from_secs(
         timeout_seconds
             .try_into()
-            .map_err(|_| RuntimeError::internal("Invalid timeout value"))?,
+            .into_diagnostic()
+            .context("healthcheck timeout")?,
     );
     Ok(service.update_service_config(|config| config.set_healthcheck(command, timeout)))
 }

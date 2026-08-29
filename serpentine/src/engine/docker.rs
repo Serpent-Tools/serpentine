@@ -6,9 +6,45 @@ use std::process::Command;
 use bollard::API_DEFAULT_VERSION;
 use bollard::query_parameters::{RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder};
 use futures_util::StreamExt;
+use miette::{Context, Diagnostic, IntoDiagnostic};
+use thiserror::Error;
 
-use crate::engine::{RuntimeError, acquire_file_lock, sidecar_client};
+use crate::engine::{acquire_file_lock, sidecar_client};
 use crate::events::{Reporter, TaskKind};
+
+/// Error establishing connection to docker/podman
+#[derive(Debug, Error, Diagnostic)]
+#[error("Docker/Podman not found")]
+#[diagnostic(code(docker_not_found))]
+#[diagnostic(help(
+    "If docker or podman is installed try setting `DOCKER_HOST` environment variable explicitly."
+))]
+struct DockerNotFound {
+    /// Why each strategy did not reach a daemon
+    #[related]
+    failures: Vec<StrategyFailure>,
+}
+
+/// A connection strategy that did not reach a daemon.
+#[derive(Debug, Error, Diagnostic)]
+enum StrategyFailure {
+    /// The strategy could not build a client at all.
+    #[error("{name}: not available")]
+    Unavailable {
+        /// The strategy that was tried
+        name: &'static str,
+    },
+
+    /// The daemon the strategy found did not answer a ping.
+    #[error("{name}: ping failed")]
+    Ping {
+        /// The strategy that was tried
+        name: &'static str,
+        /// The daemon's response
+        #[source]
+        error: bollard::errors::Error,
+    },
+}
 
 /// The name of the containerd daemon serpentine spawns.
 const CONTAINER_NAME: &str = "serpent-tools.containerd";
@@ -33,7 +69,7 @@ const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
 /// Returns the name of the runtime that answered alongside the client.
 pub async fn connect(
     reporter: &Reporter,
-) -> Result<(&'static str, sidecar_client::Client), RuntimeError> {
+) -> miette::Result<(&'static str, sidecar_client::Client)> {
     let (runtime, docker) = connect_docker().await?;
     let containerd_addr = spin_up_containerd(docker, reporter).await?;
     Ok((runtime, sidecar_client::Client::new(containerd_addr)))
@@ -52,13 +88,15 @@ const STRATEGIES: &[ConnectionStrategy] = &[
 /// Attempt to connect to docker or podman, trying each strategy in order.
 ///
 /// Returns the name of the runtime that answered alongside the client.
-async fn connect_docker() -> Result<(&'static str, bollard::Docker), RuntimeError> {
+async fn connect_docker() -> miette::Result<(&'static str, bollard::Docker)> {
     log::info!("Connecting to Docker daemon");
     log::debug!("DOCKER_HOST={:?}", std::env::var("DOCKER_HOST"));
 
-    for (name, strategy) in STRATEGIES {
+    let mut failures = Vec::new();
+    for &(name, strategy) in STRATEGIES {
         let Some(client) = strategy() else {
             log::info!("{name}: not available");
+            failures.push(StrategyFailure::Unavailable { name });
             continue;
         };
 
@@ -68,17 +106,14 @@ async fn connect_docker() -> Result<(&'static str, bollard::Docker), RuntimeErro
                 let runtime = detect_runtime(&client).await.unwrap_or(name);
                 return Ok((runtime, client));
             }
-            Err(err) => {
-                log::warn!("{name}: ping failed: {err}");
+            Err(error) => {
+                log::warn!("{name}: ping failed: {error}");
+                failures.push(StrategyFailure::Ping { name, error });
             }
         }
     }
 
-    Err(RuntimeError::DockerNotFound {
-        inner: Box::new(miette::MietteDiagnostic::new(
-            "no working Docker or Podman connection found",
-        )),
-    })
+    Err(DockerNotFound { failures }.into())
 }
 
 /// Ask the daemon which runtime it is, returning `None` when it does not say.
@@ -160,7 +195,7 @@ fn is_docker_status(err: &bollard::errors::Error, status: u16) -> bool {
 }
 
 /// Delete the container and docker volume in order to fully reset the sidecar
-pub async fn delete_container_and_volume() -> Result<(), RuntimeError> {
+pub async fn delete_container_and_volume() -> miette::Result<()> {
     let (runtime, docker) = connect_docker().await?;
     log::info!("Cleaning out serpentine container from {runtime}");
 
@@ -199,7 +234,7 @@ pub async fn delete_container_and_volume() -> Result<(), RuntimeError> {
 async fn spin_up_containerd(
     docker: bollard::Docker,
     reporter: &Reporter,
-) -> Result<std::net::SocketAddr, RuntimeError> {
+) -> miette::Result<std::net::SocketAddr> {
     let _setup_guard = acquire_file_lock(CONTAINER_NAME).await?;
     let volume = create_containerd_volume(&docker).await?;
     let image = ensure_containerd_image(&docker, reporter).await?;
@@ -250,7 +285,9 @@ async fn spin_up_containerd(
         if let Err(err) = created
             && !is_docker_status(&err, 409)
         {
-            return Err(err.into());
+            return Err(err)
+                .into_diagnostic()
+                .with_context(|| format!("creating the {CONTAINER_NAME} container"));
         }
 
         let started = docker
@@ -262,7 +299,9 @@ async fn spin_up_containerd(
         if let Err(err) = started
             && !is_docker_status(&err, 304)
         {
-            return Err(err.into());
+            return Err(err)
+                .into_diagnostic()
+                .with_context(|| format!("starting the {CONTAINER_NAME} container"));
         }
     }
 
@@ -278,7 +317,7 @@ async fn spin_up_containerd(
 ///
 /// Immediately after `start_container` returns, the port binding may still be empty for a brief
 /// window before docker reconciles it. Retrying avoids racing on that gap.
-async fn wait_for_host_port(docker: &bollard::Docker) -> Result<u16, RuntimeError> {
+async fn wait_for_host_port(docker: &bollard::Docker) -> miette::Result<u16> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(30);
     let port_key = format!("{}/tcp", serpentine_internal::sidecar::PORT);
@@ -288,7 +327,9 @@ async fn wait_for_host_port(docker: &bollard::Docker) -> Result<u16, RuntimeErro
                 CONTAINER_NAME,
                 Some(bollard::query_parameters::InspectContainerOptions::default()),
             )
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("inspecting the {CONTAINER_NAME} container"))?;
 
         let host_port = container_details
             .network_settings
@@ -302,12 +343,13 @@ async fn wait_for_host_port(docker: &bollard::Docker) -> Result<u16, RuntimeErro
         if let Some(host_port) = host_port {
             return host_port
                 .parse()
-                .map_err(|_| RuntimeError::internal("Port wasn't a number"));
+                .into_diagnostic()
+                .with_context(|| format!("docker reported host port {host_port:?}"));
         }
 
         if start.elapsed() >= timeout {
-            return Err(RuntimeError::internal(
-                "Timed out waiting for host port binding on containerd container",
+            return Err(miette::miette!(
+                "timed out after {timeout:?} waiting for docker to bind a host port for {CONTAINER_NAME}"
             ));
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -315,7 +357,7 @@ async fn wait_for_host_port(docker: &bollard::Docker) -> Result<u16, RuntimeErro
 }
 
 /// Ensure the containerd data volume exists
-async fn create_containerd_volume(docker: &bollard::Docker) -> Result<&'static str, RuntimeError> {
+async fn create_containerd_volume(docker: &bollard::Docker) -> miette::Result<&'static str> {
     if docker.inspect_volume(CONTAINER_VOLUME).await.is_err() {
         log::info!("Creating volume {CONTAINER_VOLUME}");
         docker
@@ -329,7 +371,9 @@ async fn create_containerd_volume(docker: &bollard::Docker) -> Result<&'static s
                 )])),
                 cluster_volume_spec: None,
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("creating the {CONTAINER_VOLUME} volume"))?;
     }
 
     Ok(CONTAINER_VOLUME)
@@ -339,7 +383,7 @@ async fn create_containerd_volume(docker: &bollard::Docker) -> Result<&'static s
 async fn ensure_containerd_image(
     docker: &bollard::Docker,
     reporter: &Reporter,
-) -> Result<Box<str>, RuntimeError> {
+) -> miette::Result<Box<str>> {
     let image_name = format!("{CONTAINERD_IMAGE}:{CONTAINERD_IMAGE_TAG}").into_boxed_str();
 
     if docker.inspect_image(&image_name).await.is_err() {

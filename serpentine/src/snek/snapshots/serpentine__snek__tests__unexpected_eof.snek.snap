@@ -1,10 +1,8 @@
 ---
 source: serpentine/src/snek/mod.rs
-expression: err
+expression: "$crate :: test_support :: render_error(& error)"
 ---
-  x Compile Error
-
-Error: parsing::unexpected_token
+parsing::unexpected_token
 
   x Expected `identifier`
    ,-[<redacted-path>:1:13]

@@ -10,12 +10,13 @@ use std::task::{Context, Poll};
 
 use futures_util::future::BoxFuture;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use miette::{IntoDiagnostic, WrapErr};
 use tokio::io::{AsyncRead, AsyncReadExt, DuplexStream, ReadBuf};
 use tokio::sync::OnceCell;
 use typed_path::{PlatformPath, PlatformPathBuf};
 
+use crate::engine::BoxedReader;
 use crate::engine::cache::ContentHash;
-use crate::engine::{BoxedReader, RuntimeError};
 
 /// Trait for a object that can provide file system data.
 ///
@@ -24,7 +25,7 @@ use crate::engine::{BoxedReader, RuntimeError};
 pub trait FileSystemProvider: Send + Sync {
     /// Get a reader matching the format specified in `serpentine_internal` from this file system
     /// source.
-    fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>>;
+    fn get_reader(&self) -> BoxFuture<'_, miette::Result<BoxedReader>>;
 
     /// Hash this content.
     ///
@@ -32,14 +33,16 @@ pub trait FileSystemProvider: Send + Sync {
     fn hash_data<'this>(
         &'this self,
         hasher: &'this mut blake3::Hasher,
-    ) -> BoxFuture<'this, Result<(), RuntimeError>> {
+    ) -> BoxFuture<'this, miette::Result<()>> {
         Box::pin(async move {
             let mut reader = self.get_reader().await?;
             let mut buffer = [0_u8; 4048];
 
             loop {
                 match reader.read(&mut buffer).await {
-                    Err(err) => return Err(err.into()),
+                    Err(err) => {
+                        return Err(err).into_diagnostic().context("hashing file contents");
+                    }
                     Ok(0) => break,
                     Ok(bytes_read) => {
                         #[expect(
@@ -101,13 +104,13 @@ impl std::fmt::Debug for FileSystem {
 }
 
 impl ContentHash for FileSystem {
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> miette::Result<()> {
         let hash = self
             .hash
             .get_or_try_init(|| async move {
                 let mut inner_hasher = blake3::Hasher::new();
                 self.provider.hash_data(&mut inner_hasher).await?;
-                Ok::<_, RuntimeError>(inner_hasher.finalize())
+                Ok::<_, miette::Report>(inner_hasher.finalize())
             })
             .await?;
 
@@ -189,10 +192,12 @@ impl<Fut: Future<Output = io::Result<()>>> AsyncRead for InlineReader<Fut> {
 pub struct LocalFiles(pub PlatformPathBuf);
 
 impl FileSystemProvider for LocalFiles {
-    fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>> {
+    fn get_reader(&self) -> BoxFuture<'_, miette::Result<BoxedReader>> {
         Box::pin(async move {
             let ignore = discover_gitignore(
-                serpentine_internal::platform_to_std(&self.0).map_err(io::Error::other)?,
+                serpentine_internal::platform_to_std(&self.0)
+                    .into_diagnostic()
+                    .with_context(|| format!("path {} is not utf-8", self.0.display()))?,
             );
 
             let absolute_path = self.0.clone();
@@ -260,14 +265,14 @@ pub mod fuzz {
     pub struct InMemoryFile(pub Arc<[u8]>);
 
     impl FileSystemProvider for InMemoryFile {
-        fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>> {
+        fn get_reader(&self) -> BoxFuture<'_, miette::Result<BoxedReader>> {
             let reader = BoxedReader::new(io::Cursor::new(Arc::clone(&self.0)));
             Box::pin(std::future::ready(Ok(reader)))
         }
         fn hash_data<'this>(
             &'this self,
             hasher: &'this mut blake3::Hasher,
-        ) -> BoxFuture<'this, Result<(), RuntimeError>> {
+        ) -> BoxFuture<'this, miette::Result<()>> {
             hasher.update(&self.0);
             Box::pin(std::future::ready(Ok(())))
         }

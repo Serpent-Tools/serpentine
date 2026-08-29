@@ -1,10 +1,8 @@
 ---
 source: serpentine/src/main.rs
-expression: err
+expression: "$crate :: test_support :: render_error(& err)"
 ---
-  x Runtime Error
-
-Error: node_error
+node_error
 
   x Error in node StoreId(3)
   `-> command_execution_error
