@@ -133,6 +133,7 @@ impl CacheHash {
 /// A trait for interfacing with a caching backend, like local filestorage or github actions cache.
 pub trait CacheBackend {
     /// Read the given key from the cache backend, returning a reader for the data.
+    /// This must return one of the values written to this key using `write_key`, or `None`.
     ///
     /// Returns `None` if the key does not exist in the cache backend.
     fn read_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedReader>>;
@@ -140,10 +141,15 @@ pub trait CacheBackend {
     /// Write the given key to the cache backend, returning a writer for the data.
     ///
     /// Returns `None` if the key already exists in the cache backend, and thus should not be written to.
+    /// (It is not a requirement to return `None` when the key already exsists, but its highly
+    /// engouraged.)
     fn write_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>>;
 
     /// Retrieve a reader to the  `DataCache` from this backend, this does not use `read_key`
     /// as the data cache should always be loaded and is not lazily loaded based on keys.
+    ///
+    /// Should return the same data as written by `get_data_cache_writer`, preferably the latest
+    /// bytes written, but any previously written bytes are acceptable. (or `None` if none written).
     fn get_data_cache(&self) -> BoxFuture<'_, Option<BoxedReader>>;
 
     /// Get a writer to the `DataCache` in this backend, this does not use `write_key`
@@ -399,6 +405,154 @@ mod tests {
     use crate::engine::containerd::{ContainerConfig, ContainerState, ServiceState};
     use crate::engine::filesystem;
 
+    /// Generate tests for the given cache backend.
+    ///
+    /// These tests assume a "well-behaved" cache, which is a subset of valid implementations of
+    /// `CacheBackend`.
+    /// For example while the `NoneCacheBackend` is a valid implementation, it would
+    /// fail these tests.
+    /// A well-behaved cache is defined as:
+    /// * `read_key` from a unwritten key returns `None` (This should be true for all valid
+    ///   implementations of a `CacheBackend` unless they can magically translate a opaque hash to the
+    ///   expected bytes)
+    /// * `.write_key` followed by `.read_key` returns the same data.
+    /// * `.write_key`, followed by `.write_key` returns None.
+    /// * `.get_data_cache` when a data cache has not been written returns `None`, (see note on
+    ///   `read_key`).
+    /// * `.get_data_cache_writer`, followed by `.get_data_cache` returns the data written.
+    /// * `.get_data_cache_writer`, followed by `.get_data_cache_writer` (writing other bytes),
+    ///   followed by `.get_data_cache` returns the last written bytes.
+    ///
+    /// It is assumed that the backend is fully empty when these tests start executing, but it is
+    /// tolerate that multiple tests share the same cache storage (they all use different hashes).
+    #[macro_export]
+    macro_rules! test_well_behaved_cache {
+        ($init:expr) => {
+            use ::tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_cant_read_undefined() {
+                let backend = $init;
+
+                let result = backend
+                    .read_key($crate::engine::cache::CacheHash([0; _]))
+                    .await;
+                assert!(result.is_none(), "Expected unwritten key to be None");
+            }
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_read_write_key() {
+                const TEST_STRING: &str = "integration testing for life!";
+
+                let backend = $init;
+
+                let mut writer = backend
+                    .write_key($crate::engine::cache::CacheHash([1; _]))
+                    .await
+                    .expect("Expected to be able to write to key 1");
+                writer
+                    .write_all(TEST_STRING.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer.shutdown().await.expect("Failed to close writer");
+
+                let mut reader = backend
+                    .read_key($crate::engine::cache::CacheHash([1; _]))
+                    .await
+                    .expect("Failed to key 1");
+                let mut read_content = String::new();
+                reader
+                    .read_to_string(&mut read_content)
+                    .await
+                    .expect("Failed to read content");
+
+                assert_eq!(
+                    read_content, TEST_STRING,
+                    "Read content didnt match written"
+                );
+            }
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_write_twice() {
+                const TEST_STRING: &str = "integration testing for life!";
+
+                let backend = $init;
+
+                let mut writer = backend
+                    .write_key($crate::engine::cache::CacheHash([2; _]))
+                    .await
+                    .expect("Expected to be able to write to key 2");
+                writer
+                    .write_all(TEST_STRING.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer.shutdown().await.expect("Failed to close writer");
+
+                let  writer = backend
+                    .write_key($crate::engine::cache::CacheHash([2; _]))
+                    .await;
+                assert!(writer.is_none(), "Expected trying to write key twice to return None, as caches are content addressed.");
+            }
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_data_cache() {
+                const TEST_STRING1: &str = "integration testing for life!";
+                const TEST_STRING2: &str = "macros go brrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr.";
+
+                let backend = $init;
+
+                let reader = backend.get_data_cache().await;
+                assert!(reader.is_none(), "Expected data cache to be None before writing.");
+
+                let mut writer1 = backend
+                    .get_data_cache_writer()
+                    .await
+                    .expect("Expected to be able to write to cache data");
+                writer1
+                    .write_all(TEST_STRING1.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer1.shutdown().await.expect("Failed to close writer");
+
+                let mut reader1 = backend
+                    .get_data_cache()
+                    .await
+                    .expect("Failed to get cache data");
+                let mut read_content1 = String::new();
+                reader1
+                    .read_to_string(&mut read_content1)
+                    .await
+                    .expect("Failed to read content");
+                assert_eq!(read_content1, TEST_STRING1, "Expected bytes read from data cache to match first write");
+
+                let mut writer2 = backend
+                    .get_data_cache_writer()
+                    .await
+                    .expect("Expected to be able to write to cache data twice");
+                writer2
+                    .write_all(TEST_STRING2.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer2.shutdown().await.expect("Failed to close writer");
+
+                let mut reader2 = backend
+                    .get_data_cache()
+                    .await
+                    .expect("Failed to get cache data");
+                let mut read_content2 = String::new();
+                reader2
+                    .read_to_string(&mut read_content2)
+                    .await
+                    .expect("Failed to read content");
+                assert_eq!(read_content2, TEST_STRING2, "Expected bytes read from data cache to match second write");
+            }
+        };
+    }
+
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .build()
@@ -465,6 +619,7 @@ mod tests {
     #[case::complex_container("complex_container", Data::Container(complex_container()))]
     #[case::file("file", Data::FileSystem(file()))]
     #[case::folder("folder", Data::FileSystem(folder()))]
+    #[test_log::test]
     fn snapshot_hashes(#[case] name: &str, #[case] value: Data) {
         let rt = runtime();
         rt.block_on(async {
@@ -477,6 +632,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn different_entries_hash_differently() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -517,6 +673,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn same_entry_hashes_equal() {
         let rt = runtime();
         bolero::check!()
@@ -538,6 +695,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn save_and_load_one_entry() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -566,6 +724,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn save_and_load_duplicate() {
         let rt = runtime();
         bolero::check!()
@@ -597,6 +756,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn save_and_load_multiple_entries() {
         let rt = runtime();
         bolero::check!()
@@ -643,6 +803,7 @@ mod tests {
     /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
     /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
     #[test]
+    #[test_log::test]
     fn if_cache_used_should_always_be_kept() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -682,6 +843,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn old_entry_cleared_if_not_used() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -716,6 +878,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn old_entry_kept_if_keep_old_true_even_if_not_used() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
