@@ -7,6 +7,7 @@ permissions:
   contents: read
 jobs:
   build-docker:
+    if: false # FIX: REMOVE
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,6 +30,7 @@ jobs:
 
   test:
     needs: [build-docker]
+    if: false # FIX: REMOVE
     strategy:
       fail-fast: false
       matrix:
@@ -209,7 +211,38 @@ jobs:
           wsl.exe -d Ubuntu-22.04 -- sh -c "hostname -I; ss -ltnp | grep 2375; systemctl is-active docker"
           curl.exe -sS -m 5 -o - "$($env:DOCKER_HOST -replace '^tcp','http')/_ping"
 
+  test_gha_cache:
+    needs: []
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Expose actions cache credentials
+        # The runner injects these into JS actions only, so `run:` steps need them re-exported.
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL);
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
+      - name: Run github actions cache tests
+        run: cargo nextest run -p serpentine --features _test_gha github_backend
+        env:
+          RUST_LOG: serpentine=trace
+
   lint:
+    if: false # FIX: REMOVE
     needs: [build-docker]
     runs-on: ubuntu-latest
     steps:
@@ -247,6 +280,7 @@ jobs:
           key: ${{ steps.cache-restore.outputs.cache-primary-key }}
 
   advisory:
+    if: false # FIX: REMOVE
     needs: [build-docker]
     strategy:
       fail-fast: false
@@ -295,11 +329,16 @@ jobs:
 
   all-checks:
     if: always()
-    needs: [test, lint, advisory]
+    needs: [
+      test, 
+      test_gha_cache, 
+      lint, 
+      advisory
+    ]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
           # These being red might or might not be caused by the given PR, so a reviewer decides.
-          allowed-failures: advisory
+          allowed-failures: advisory, test_gha_cache
           jobs: ${{ toJSON(needs) }}

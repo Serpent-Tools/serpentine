@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::engine::cache::{CacheHash, CacheScope, ContentHash};
 use crate::engine::filesystem::FileSystem;
 use crate::engine::nodes::NodeImpl;
-use crate::engine::{RuntimeContext, RuntimeError, containerd};
+use crate::engine::{RuntimeContext, containerd};
 use crate::snek::span::Spanned;
 
 /// Shared field generators for fuzzing.
@@ -100,15 +100,6 @@ impl Data {
             CacheableData::Service(service) => Data::Service(service),
         }
     }
-
-    /// Check if this data is still valid
-    pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
-        match self {
-            Self::Container(state) => ctx.containerd.healthcheck_value(state).await,
-            Self::Service(state) => ctx.containerd.healthcheck_value(state).await,
-            Self::Int(_) | Self::String(_) | Self::FileSystem(_) => true,
-        }
-    }
 }
 
 impl CacheableData {
@@ -128,19 +119,37 @@ impl CacheableData {
             Self::Int(_) | Self::String(_) => Vec::new(),
         }
     }
+
+    /// Check if this data is still valid
+    pub async fn healthcheck(&self, ctx: &RuntimeContext) -> bool {
+        match self {
+            Self::Container(state) => ctx.containerd.healthcheck_value(state).await,
+            Self::Service(state) => ctx.containerd.healthcheck_value(state).await,
+            Self::Int(_) | Self::String(_) => true,
+        }
+    }
+
+    /// Export any data pointed to by this value into the blob cache
+    pub async fn export_external_data(&self, ctx: &RuntimeContext) {
+        match self {
+            Self::Container(state) => ctx.containerd.export_snapshots_from(state).await,
+            Self::Service(state) => ctx.containerd.export_snapshots_from(state).await,
+            Self::Int(_) | Self::String(_) => {}
+        }
+    }
 }
 
 impl ResourceKey {
     /// Return a cache hash for this resource key, must match the cache hash used when trying to
     /// retrive/save the resource to the cache backend.
-    pub async fn cache_hash(&self) -> Result<CacheHash, RuntimeError> {
+    pub async fn cache_hash(&self) -> miette::Result<CacheHash> {
         match self {
             Self::Snapshot(name) => CacheHash::from_data(CacheScope::Snapshot, name).await,
         }
     }
 
     /// Delete this resource from the various backends, if it exists.
-    pub async fn clean(self, containerd: &containerd::Client) -> Result<(), RuntimeError> {
+    pub async fn clean(self, containerd: &containerd::Client) -> miette::Result<()> {
         match self {
             Self::Snapshot(name) => containerd.delete(&name).await?,
         }
@@ -150,7 +159,7 @@ impl ResourceKey {
 }
 
 impl ContentHash for Data {
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> miette::Result<()> {
         hasher.update(&[self.type_() as u8]);
 
         match self {

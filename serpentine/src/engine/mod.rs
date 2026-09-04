@@ -1,6 +1,6 @@
 //! Contains the node engine, as well as node type definitions.
 
-mod cache;
+pub mod cache;
 mod containerd;
 pub mod data_model;
 pub mod docker;
@@ -15,161 +15,78 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use miette::Diagnostic;
+use miette::{Diagnostic, IntoDiagnostic, Report, WrapErr};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::engine::cache::CacheBackend;
 use crate::events::{Lifecycle, Reporter};
 use crate::snek::CompileResult;
-use crate::snek::span::ReadOnlyVirtualFile;
 
-/// An error encountered while running the source code
+/// Ctrl-C was pressed
 #[derive(Debug, Error, Diagnostic)]
-pub enum RuntimeError {
-    /// An error from a node, i.e. a runtime error with an associated span.
-    #[error("Error in node {node_id:?}")]
-    #[diagnostic(code(node_error))]
-    NodeError {
-        /// Which node the error occurred in
-        node_id: crate::engine::data_model::NodeInstanceId,
-        /// The location of the node
-        #[label("Error occurred in this node")]
-        span: crate::snek::span::Span,
-        /// The inner error
-        #[diagnostic_source]
-        inner: Box<dyn Diagnostic + Send + Sync>,
-    },
+#[error("Execution interrupted by user (Ctrl-C)")]
+#[diagnostic(code(execution_interrupted))]
+pub struct Interrupted;
 
-    /// A Docker API error
-    #[error("Docker API error: {0}")]
-    #[diagnostic(code(docker_error))]
-    Docker(#[from] bollard::errors::Error),
-
-    /// Containerd API error (for transport)
-    #[error("Containerd API error: {0}")]
-    #[diagnostic(code(containerd_error))]
-    ContainerdTransport(#[from] containerd_client::tonic::transport::Error),
-
-    /// Containerd API error (for containerd itself)
-    #[error("Containerd API error: {0}")]
-    #[diagnostic(code(containerd_error))]
-    ContainerdError(Box<containerd_client::tonic::Status>),
-
-    /// Parsing image error
-    #[error("Invalid image name: {0}")]
-    #[diagnostic(code(invalid_image))]
-    InvalidImageName(#[from] oci_client::ParseError),
-
-    /// Image pull error
-    #[error("Error pulling image: {0}")]
-    #[diagnostic(code(pull_image))]
-    PullError(#[from] oci_client::errors::OciDistributionError),
-
-    /// Error establishing connection to docker/podman
-    #[error("Docker/Podman not found")]
-    #[diagnostic(code(docker_not_found))]
-    #[diagnostic(help(
-        "If docker or podman is installed try setting `DOCKER_HOST` environment variable explicitly."
-    ))]
-    DockerNotFound {
-        /// The inner error
-        #[diagnostic_source]
-        inner: Box<dyn Diagnostic + Send + Sync>,
-    },
-
-    /// The cache was out of date.
-    #[error("Cache format version {got} doesn't match current version {current}")]
-    CacheOutOfDate {
-        /// The version in the cache file
-        got: u8,
-        /// The version of this binary
-        current: u8,
-    },
-
-    /// A command failed to execute
-    #[error("Failed to execute command (exit code {code}): {command:?} \n{output}")]
-    #[diagnostic(code(command_execution_error))]
-    CommandExecution {
-        /// The exit code
-        code: u32,
-        /// The command that was run
-        command: String,
-        /// The stdout/stderr of the command
-        output: String,
-    },
-
-    /// A healthcheck didnt pass in time
-    #[error("Healthcheck {check:?} did not pass in {timeout:?}")]
-    #[diagnostic(code(healthcheck_timeout))]
-    HealthcheckTimeout {
-        /// Which healthcheck didnt pass
-        check: String,
-        /// How long we waited for it to pass
-        timeout: std::time::Duration,
-    },
-
-    /// Attempted to capture non-utf8 output
-    #[error("Failed to capture stdout of command as non-utf8 was found: \n{output}")]
-    #[diagnostic(code(non_utf8_capture))]
-    NonUtf8Capture {
-        /// The stdout/stderr of the command
-        output: String,
-    },
-
-    /// A exec command failed to parse
-    #[error("Failed to parse command: {0}")]
-    ExecParse(#[from] shell_words::ParseError),
-
-    /// A filesystem read error
-    #[error("Io error: {0}")]
-    #[diagnostic(code(filesystem_read_error))]
-    IoError(#[from] std::io::Error),
-
-    /// Ctrl-C was pressed
-    #[error("Execution interrupted by user (Ctrl-C)")]
-    #[diagnostic(code(execution_interrupted))]
-    CtrlC,
-
-    /// Could not parse / could not find user info in /etc/passwd
-    #[error("Could not resolve user {user:?}: {msg}")]
-    #[diagnostic(code(user_not_found))]
-    UserNotFound {
-        /// Which user couldnt be found
-        user: userdb::OciUser,
-        /// What specific part wasnt found.
-        msg: &'static str,
-    },
-
-    /// Failed to serialize/deserialize data
-    #[error("Failed to serialize/deserialize data: {0}")]
-    #[diagnostic(code(serialization_error))]
-    SerializationError(#[from] postcard::Error),
-
-    /// Unhandled internal error.
-    #[error("INTERNAL ERROR - this is a bug, please report it.\n{0}")]
-    #[diagnostic(code(internal_error))]
-    InternalError(String),
+/// A violated invariant, i.e. a bug in serpentine rather than a fault in the pipeline being run.
+#[derive(Debug, Error)]
+#[error("INTERNAL ERROR - this is a bug, please report it.\n{msg}")]
+struct InternalError {
+    /// The invariant that was violated
+    msg: String,
+    /// The failure that exposed it
+    inner: Option<Box<dyn Diagnostic + Send + Sync>>,
 }
 
-impl RuntimeError {
-    /// Create a `RuntimeError::InternalError`, but panic in debug mode instead
-    pub fn internal(msg: impl Into<String>) -> Self {
-        let msg = msg.into();
-        debug_assert!(false, "{msg}");
-        Self::InternalError(msg)
+impl Diagnostic for InternalError {
+    fn code(&self) -> Option<Box<dyn std::fmt::Display + '_>> {
+        Some(Box::new("internal_error"))
+    }
+
+    fn diagnostic_source(&self) -> Option<&dyn Diagnostic> {
+        self.inner.as_ref().map(|inner| &**inner as &dyn Diagnostic)
     }
 }
 
-impl From<containerd_client::tonic::Status> for RuntimeError {
-    fn from(value: containerd_client::tonic::Status) -> Self {
-        RuntimeError::ContainerdError(Box::new(value))
+/// Report a violated internal invariant, panicking in debug builds.
+#[track_caller]
+pub fn internal(msg: impl std::fmt::Display) -> Report {
+    let msg = msg.to_string();
+    debug_assert!(false, "{msg}");
+    InternalError { msg, inner: None }.into()
+}
+
+/// Blame a failure on a violated internal invariant.
+pub trait WrapInternal<T> {
+    /// Attribute this failure to a serpentine bug, keeping any original error as the cause.
+    ///
+    /// Panics in debug builds, like [`internal`]. A failure the pipeline can legitimately provoke
+    /// wants [`WrapErr::wrap_err`] instead.
+    fn wrap_internal(self, msg: impl std::fmt::Display) -> miette::Result<T>;
+}
+
+impl<T> WrapInternal<T> for Option<T> {
+    #[track_caller]
+    fn wrap_internal(self, msg: impl std::fmt::Display) -> miette::Result<T> {
+        self.ok_or_else(|| internal(msg))
     }
 }
 
-impl<T> From<std::sync::PoisonError<T>> for RuntimeError {
-    fn from(value: std::sync::PoisonError<T>) -> Self {
-        RuntimeError::internal(format!("Poisoned lock: {value}"))
+impl<T, E: std::error::Error + Send + Sync + 'static> WrapInternal<T> for Result<T, E> {
+    #[track_caller]
+    fn wrap_internal(self, msg: impl std::fmt::Display) -> miette::Result<T> {
+        if let Err(err) = &self {
+            debug_assert!(false, "{msg}: {err}");
+        }
+
+        self.into_diagnostic().map_err(|err| {
+            InternalError {
+                msg: msg.to_string(),
+                inner: Some(err.into()),
+            }
+            .into()
+        })
     }
 }
 
@@ -277,7 +194,7 @@ fn lock_file_name(key: &str) -> String {
 /// and snapshot stores. Locking on a stable key lets the first process do a create or fetch while
 /// the others wait and then reuse the result, avoiding duplicated work and races on that shared
 /// state. The lock is released when the returned guard is dropped.
-async fn acquire_file_lock(key: &str) -> Result<FileLockGuard, RuntimeError> {
+async fn acquire_file_lock(key: &str) -> miette::Result<FileLockGuard> {
     let file_name = lock_file_name(key);
     let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
         let dir = std::env::temp_dir().join("serpent-tools").join("locks");
@@ -291,7 +208,9 @@ async fn acquire_file_lock(key: &str) -> Result<FileLockGuard, RuntimeError> {
         Ok(file)
     })
     .await
-    .map_err(std::io::Error::other)??;
+    .wrap_internal("lock task panicked")?
+    .into_diagnostic()
+    .with_context(|| format!("acquiring advisory lock {key:?}"))?;
     Ok(FileLockGuard { file })
 }
 
@@ -303,6 +222,8 @@ pub struct RuntimeContext {
     reporter: Reporter,
     /// Caching of values
     cache: cache::Cache,
+    /// Should external state be exported?
+    standalone_cache: bool,
 }
 
 impl RuntimeContext {
@@ -311,7 +232,7 @@ impl RuntimeContext {
         reporter: Reporter,
         cli: &crate::Run,
         cache_backend: Arc<dyn CacheBackend + Send + Sync>,
-    ) -> Result<Self, RuntimeError> {
+    ) -> miette::Result<Self> {
         log::debug!("Creating runtime context");
 
         let containerd = containerd::Client::new(
@@ -319,7 +240,6 @@ impl RuntimeContext {
             Arc::clone(&cache_backend),
             cli.jobs,
             cli.containerd_namespace.clone(),
-            cli.standalone_cache,
         )
         .await?;
         let cache = cache::Cache::new(cache_backend).await?;
@@ -328,6 +248,7 @@ impl RuntimeContext {
             containerd,
             reporter,
             cache,
+            standalone_cache: cli.standalone_cache,
         })
     }
 
@@ -359,11 +280,10 @@ impl RuntimeContext {
 
 /// Run the given compilation result
 pub fn run(
-    source_code: ReadOnlyVirtualFile,
     compile_result: CompileResult,
     reporter: Reporter,
     cli: &crate::Run,
-) -> Result<(), crate::SerpentineError> {
+) -> miette::Result<()> {
     let start_node = compile_result.start_node;
 
     log::debug!("Nodes: {}", compile_result.graph.len());
@@ -371,68 +291,57 @@ pub fn run(
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build();
-    let Ok(runtime) = runtime else {
-        return Err(crate::SerpentineError::Runtime {
-            source_code,
-            error: vec![RuntimeError::internal("Failed to start tokio")],
-        });
-    };
+        .build()
+        .into_diagnostic()
+        .context("starting the tokio runtime")?;
 
-    runtime
-        .block_on(async {
-            let backend = cache::LocalCacheBackend::new(cli.get_cache().into_owned()).await?;
+    runtime.block_on(async {
+        let backend = cli.get_cache_backend().await?;
 
-            let context = Arc::new(RuntimeContext::new(reporter, cli, Arc::new(backend)).await?);
-            let scheduler = Arc::new(scheduler::Scheduler::new(
-                compile_result.nodes,
-                compile_result.graph,
-                Arc::clone(&context),
-            ));
-            let result = tokio::select!(
-                res = Arc::clone(&scheduler).get_output(start_node) => res.map(|_| ()),
-                _ = tokio::signal::ctrl_c() => {
-                    log::warn!("Execution interrupted by user");
-                    Err(RuntimeError::CtrlC)
-                }
-            );
+        let context = Arc::new(RuntimeContext::new(reporter, cli, backend).await?);
+        let scheduler = Arc::new(scheduler::Scheduler::new(
+            compile_result.nodes,
+            compile_result.graph,
+            Arc::clone(&context),
+        ));
+        let result = tokio::select!(
+            res = Arc::clone(&scheduler).get_output(start_node) => res.map(|_| ()),
+            _ = tokio::signal::ctrl_c() => {
+                log::warn!("Execution interrupted by user");
+                Err(Interrupted.into())
+            }
+        );
 
-            context.reporter.lifecycle(Lifecycle::ShuttingDown);
+        context.reporter.lifecycle(Lifecycle::ShuttingDown);
 
-            // On a clean finish every spawned node task was awaited to completion, so dropping our
-            // handle leaves us the sole owner and the first attempt succeeds. On Ctrl-C the run
-            // future drops and aborts the in-flight tasks; give them a bounded window to release
-            // their scheduler references before reclaiming the context by value for shutdown.
-            drop(scheduler);
-            let reclaimed = tokio::time::timeout(Duration::from_secs(5), async move {
-                let mut context = context;
-                loop {
-                    match Arc::try_unwrap(context) {
-                        Ok(context) => break context,
-                        Err(returned) => {
-                            context = returned;
-                            tokio::time::sleep(Duration::from_millis(50)).await;
-                        }
+        // On a clean finish every spawned node task was awaited to completion, so dropping our
+        // handle leaves us the sole owner and the first attempt succeeds. On Ctrl-C the run
+        // future drops and aborts the in-flight tasks; give them a bounded window to release
+        // their scheduler references before reclaiming the context by value for shutdown.
+        drop(scheduler);
+        let reclaimed = tokio::time::timeout(Duration::from_secs(5), async move {
+            let mut context = context;
+            loop {
+                match Arc::try_unwrap(context) {
+                    Ok(context) => break context,
+                    Err(returned) => {
+                        context = returned;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
-            })
-            .await;
-
-            match reclaimed {
-                Ok(runtime_context) => runtime_context.shutdown(cli).await,
-                Err(_) => {
-                    log::warn!("Tasks still in flight after timeout, skipping clean shutdown");
-                }
             }
-
-            result
         })
-        .map_err(|err| crate::SerpentineError::Runtime {
-            source_code,
-            error: vec![err],
-        })?;
+        .await;
 
-    Ok(())
+        match reclaimed {
+            Ok(runtime_context) => runtime_context.shutdown(cli).await,
+            Err(_) => {
+                log::warn!("Tasks still in flight after timeout, skipping clean shutdown");
+            }
+        }
+
+        result
+    })
 }
 
 /// Benchmarks for the engine pipeline.
@@ -455,12 +364,12 @@ pub(crate) mod benchmarks {
         standalone_cache: bool,
         namespace: String,
     ) {
-        let virtual_file = VirtualFile::new();
-        let graph = crate::snek::compile_graph(&virtual_file, snek_path, "DEFAULT").unwrap();
+        let graph = crate::snek::compile_graph(&VirtualFile::new(), snek_path, "DEFAULT").unwrap();
         let cli = crate::Run {
             pipeline: snek_path.to_path_buf(),
             output: crate::OutputKind::None,
-            cache: Some(cache_path.to_path_buf()),
+            cache_folder: Some(cache_path.to_path_buf()),
+            cache_backend: crate::CacheBackendKind::Fs,
             standalone_cache,
             clean_old: false,
             entry_point: "DEFAULT".into(),
@@ -468,13 +377,7 @@ pub(crate) mod benchmarks {
             containerd_namespace: namespace,
         };
 
-        super::run(
-            virtual_file.into_readonly(),
-            graph,
-            crate::events::Reporter::none(),
-            &cli,
-        )
-        .unwrap();
+        super::run(graph, crate::events::Reporter::none(), &cli).unwrap();
     }
 
     /// Absolute path to the benchmark pipeline.

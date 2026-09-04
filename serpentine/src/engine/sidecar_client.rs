@@ -2,14 +2,13 @@
 
 use std::net::SocketAddr;
 
+use miette::{Context, IntoDiagnostic};
 use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, Request};
 use serpentine_internal::{TypedPathSerdeWrapper, read_postcard_frame, write_postcard_frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net;
 use typed_path::{UnixPath, UnixPathBuf};
-
-use crate::engine::RuntimeError;
 
 /// A sidecar client, holds the location to connect to for each connection.
 #[derive(Clone, Copy)]
@@ -22,16 +21,26 @@ impl Client {
     }
 
     /// Connect to serpentine and send the needed magic bytes
-    async fn connect(&self, request: Request) -> Result<net::TcpStream, RuntimeError> {
-        let mut socket = net::TcpStream::connect(self.0).await?;
-        socket.write_all(MAGIC_NUMBER.as_bytes()).await?;
-        write_postcard_frame(&request, &mut socket).await?;
+    async fn connect(&self, request: Request) -> miette::Result<net::TcpStream> {
+        let mut socket = net::TcpStream::connect(self.0)
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("connecting to the sidecar at {}", self.0))?;
+        socket
+            .write_all(MAGIC_NUMBER.as_bytes())
+            .await
+            .into_diagnostic()
+            .context("greeting the sidecar")?;
+        write_postcard_frame(&request, &mut socket)
+            .await
+            .into_diagnostic()
+            .context("sending the request to the sidecar")?;
 
         Ok(socket)
     }
 
     /// Connect to the sidecar and setup a containerd proxy.
-    pub async fn containerd(&self) -> Result<net::TcpStream, RuntimeError> {
+    pub async fn containerd(&self) -> miette::Result<net::TcpStream> {
         let socket = self.connect(Request::Proxy).await?;
         Ok(socket)
     }
@@ -39,12 +48,15 @@ impl Client {
     /// Connected to the sidecar and request it create a fifo pipe, returns its (in container) path and a reader of the contents.
     pub async fn fifo_pipe(
         &self,
-    ) -> Result<(UnixPathBuf, impl AsyncRead + Unpin + Send + 'static), RuntimeError> {
+    ) -> miette::Result<(UnixPathBuf, impl AsyncRead + Unpin + Send + 'static)> {
         log::debug!("Creating fifo pipe");
         let mut socket = self.connect(Request::CreateFifo).await?;
 
         let path: TypedPathSerdeWrapper<typed_path::UnixEncoding> =
-            read_postcard_frame(&mut socket).await?;
+            read_postcard_frame(&mut socket)
+                .await
+                .into_diagnostic()
+                .context("reading the fifo path from the sidecar")?;
 
         Ok((path.0, socket))
     }
@@ -53,16 +65,19 @@ impl Client {
     pub async fn create_network(
         &self,
         topology: AbstractTopology,
-    ) -> Result<ConcreteTopology, RuntimeError> {
+    ) -> miette::Result<ConcreteTopology> {
         log::debug!("Creating network topology");
         let mut socket = self.connect(Request::CreateNetwork(topology)).await?;
 
-        let network = read_postcard_frame(&mut socket).await?;
+        let network = read_postcard_frame(&mut socket)
+            .await
+            .into_diagnostic()
+            .context("reading the created network from the sidecar")?;
         Ok(network)
     }
 
     /// Delete a network namespace
-    pub async fn delete_network(&self, network: ConcreteTopology) -> Result<(), RuntimeError> {
+    pub async fn delete_network(&self, network: ConcreteTopology) -> miette::Result<()> {
         self.connect(Request::DeleteNetwork(network)).await?;
 
         Ok(())
@@ -73,7 +88,7 @@ impl Client {
         &self,
         mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
         path: UnixPathBuf,
-    ) -> Result<impl AsyncRead + Unpin + Send + 'static, RuntimeError> {
+    ) -> miette::Result<impl AsyncRead + Unpin + Send + 'static> {
         let mounts = mounts
             .into_iter()
             .map(containerd_to_sidecar_mount)
@@ -81,12 +96,18 @@ impl Client {
 
         let mut socket = self.connect(Request::ExportFiles { mounts, path }).await?;
 
-        let status = socket.read_u8().await?;
+        let status = socket
+            .read_u8()
+            .await
+            .into_diagnostic()
+            .context("reading the export status from the sidecar")?;
         if status != 0 {
-            let message: String = read_postcard_frame(&mut socket).await?;
+            let message: String = read_postcard_frame(&mut socket)
+                .await
+                .into_diagnostic()
+                .context("reading the export failure from the sidecar")?;
 
-            let error = std::io::Error::other(message);
-            return Err(RuntimeError::IoError(error));
+            return Err(miette::miette!("sidecar failed to export files: {message}"));
         }
 
         Ok(socket)
@@ -99,7 +120,7 @@ impl Client {
         &self,
         mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
         path: UnixPathBuf,
-    ) -> Result<impl AsyncWrite + Unpin + Send + 'static, RuntimeError> {
+    ) -> miette::Result<impl AsyncWrite + Unpin + Send + 'static> {
         let mounts = mounts
             .into_iter()
             .map(containerd_to_sidecar_mount)
@@ -116,7 +137,7 @@ impl Client {
     pub async fn export_layer(
         &self,
         mount: containerd_client::types::Mount,
-    ) -> Result<impl AsyncRead + Unpin + Send + 'static, RuntimeError> {
+    ) -> miette::Result<impl AsyncRead + Unpin + Send + 'static> {
         let mount = containerd_to_sidecar_mount(mount);
         let socket = self.connect(Request::ExportLayer(mount)).await?;
         Ok(socket)

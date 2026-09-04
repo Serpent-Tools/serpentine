@@ -4,14 +4,18 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
+use miette::{Context, Diagnostic, IntoDiagnostic};
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::engine::data_model::{CacheableData, Data, NodeKindId, ResourceKey};
-use crate::engine::{BoxedReader, BoxedWriter, RuntimeError};
+use crate::engine::{BoxedReader, BoxedWriter, internal};
 
 mod filesystem_backend;
+mod github_backend;
 
 pub use filesystem_backend::LocalCacheBackend;
+pub use github_backend::GithubActionsBackend;
 
 /// Version number for the cache.
 ///
@@ -31,7 +35,17 @@ pub use filesystem_backend::LocalCacheBackend;
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-const CACHE_COMPATIBILITY_VERSION: u8 = 5;
+pub const CACHE_COMPATIBILITY_VERSION: u8 = 5;
+
+/// The cache was out of date.
+#[derive(Debug, Error, Diagnostic)]
+#[error("Cache format version {got} doesn't match current version {current}")]
+struct CacheOutOfDate {
+    /// The version in the cache file
+    got: u8,
+    /// The version of this binary
+    current: u8,
+}
 
 /// Wrapper around the raw blake3 hash output as its trait implementations (`Hash` and `Eq`) use
 /// constant time functions, which we do not require
@@ -70,20 +84,24 @@ impl nohash::IsEnabled for CacheHash {}
 /// A trait similar to `Hash`, but required to be stable across runs, and unique across values.
 pub trait ContentHash {
     /// Hash the content of this value into the given hasher.
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError>;
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> miette::Result<()>;
 }
 
 impl<T: serde::Serialize + ?Sized> ContentHash for T {
     fn content_hash(
         &self,
         hasher: &mut blake3::Hasher,
-    ) -> impl Future<Output = Result<(), RuntimeError>> {
+    ) -> impl Future<Output = miette::Result<()>> {
         match postcard::to_stdvec(self) {
             Ok(bytes) => {
                 hasher.update(&bytes);
                 std::future::ready(Ok(()))
             }
-            Err(err) => std::future::ready(Err(err.into())),
+            Err(err) => std::future::ready(
+                Err(err)
+                    .into_diagnostic()
+                    .context("hashing a value for the cache"),
+            ),
         }
     }
 }
@@ -103,7 +121,7 @@ impl CacheHash {
     pub async fn from_data<T: ContentHash + ?Sized>(
         scope: CacheScope,
         data: &T,
-    ) -> Result<Self, RuntimeError> {
+    ) -> miette::Result<Self> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&[scope as u8]);
 
@@ -117,6 +135,7 @@ impl CacheHash {
 /// A trait for interfacing with a caching backend, like local filestorage or github actions cache.
 pub trait CacheBackend {
     /// Read the given key from the cache backend, returning a reader for the data.
+    /// This must return one of the values written to this key using `write_key`, or `None`.
     ///
     /// Returns `None` if the key does not exist in the cache backend.
     fn read_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedReader>>;
@@ -124,15 +143,20 @@ pub trait CacheBackend {
     /// Write the given key to the cache backend, returning a writer for the data.
     ///
     /// Returns `None` if the key already exists in the cache backend, and thus should not be written to.
+    /// (It is not a requirement to return `None` when the key already exsists, but its highly
+    /// engouraged.)
     fn write_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>>;
 
     /// Retrieve a reader to the  `DataCache` from this backend, this does not use `read_key`
     /// as the data cache should always be loaded and is not lazily loaded based on keys.
+    ///
+    /// Should return the same data as written by `get_data_cache_writer`, preferably the latest
+    /// bytes written, but any previously written bytes are acceptable. (or `None` if none written).
     fn get_data_cache(&self) -> BoxFuture<'_, Option<BoxedReader>>;
 
     /// Get a writer to the `DataCache` in this backend, this does not use `write_key`
     /// as the data cache should always be saved and is not lazily saved based on keys
-    fn get_data_cache_writer(&self) -> BoxFuture<'_, Result<BoxedWriter, RuntimeError>>;
+    fn get_data_cache_writer(&self) -> BoxFuture<'_, miette::Result<BoxedWriter>>;
 
     /// Delete the given key if it exists in the cache backend.
     ///
@@ -146,8 +170,6 @@ pub trait CacheBackend {
 static_assertions::assert_obj_safe!(CacheBackend);
 
 /// A cache backend that does not store anything.
-#[expect(clippy::allow_attributes, reason = "dead_code doesnt work with expect")]
-#[allow(dead_code, reason = "not wired into cli yet, but used in tests.")]
 pub struct NoneCacheBackend;
 
 impl CacheBackend for NoneCacheBackend {
@@ -163,7 +185,7 @@ impl CacheBackend for NoneCacheBackend {
         Box::pin(std::future::ready(None))
     }
 
-    fn get_data_cache_writer(&self) -> BoxFuture<'_, Result<BoxedWriter, RuntimeError>> {
+    fn get_data_cache_writer(&self) -> BoxFuture<'_, miette::Result<BoxedWriter>> {
         Box::pin(std::future::ready(Ok(BoxedWriter::new(
             std::io::Cursor::new(Vec::new()),
         ))))
@@ -180,7 +202,7 @@ pub struct CacheKey<'caller> {
 }
 
 impl ContentHash for CacheKey<'_> {
-    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), RuntimeError> {
+    async fn content_hash(&self, hasher: &mut blake3::Hasher) -> miette::Result<()> {
         hasher.update(&self.node.index().to_le_bytes());
         hasher.update(&(self.inputs.len() as u64).to_le_bytes());
 
@@ -242,16 +264,26 @@ impl DataCache {
         self,
         keep_old_cache: bool,
         mut writer: impl AsyncWrite + Unpin + Send,
-    ) -> Result<HashSet<ResourceKey>, RuntimeError> {
-        writer.write_u8(CACHE_COMPATIBILITY_VERSION).await?;
+    ) -> miette::Result<HashSet<ResourceKey>> {
+        writer
+            .write_u8(CACHE_COMPATIBILITY_VERSION)
+            .await
+            .into_diagnostic()
+            .context("writing the cache version")?;
 
         if keep_old_cache {
             let mut combined_cache = self.new_cache;
             combined_cache.extend(self.old_cache);
-            serpentine_internal::write_postcard_frame(&combined_cache, &mut writer).await?;
+            serpentine_internal::write_postcard_frame(&combined_cache, &mut writer)
+                .await
+                .into_diagnostic()
+                .context("writing the data cache")?;
             Ok(HashSet::new())
         } else {
-            serpentine_internal::write_postcard_frame(&self.new_cache, &mut writer).await?;
+            serpentine_internal::write_postcard_frame(&self.new_cache, &mut writer)
+                .await
+                .into_diagnostic()
+                .context("writing the data cache")?;
             Ok(self
                 .old_cache
                 .into_values()
@@ -261,16 +293,24 @@ impl DataCache {
     }
 
     /// Load a cache from the given reader, checking the version number.
-    async fn load(mut reader: impl AsyncRead + Unpin + Send) -> Result<Self, RuntimeError> {
-        let version = reader.read_u8().await?;
+    async fn load(mut reader: impl AsyncRead + Unpin + Send) -> miette::Result<Self> {
+        let version = reader
+            .read_u8()
+            .await
+            .into_diagnostic()
+            .context("reading the cache version")?;
         if version != CACHE_COMPATIBILITY_VERSION {
-            return Err(RuntimeError::CacheOutOfDate {
+            return Err(CacheOutOfDate {
                 current: CACHE_COMPATIBILITY_VERSION,
                 got: version,
-            });
+            }
+            .into());
         }
 
-        let cache = serpentine_internal::read_postcard_frame(&mut reader).await?;
+        let cache = serpentine_internal::read_postcard_frame(&mut reader)
+            .await
+            .into_diagnostic()
+            .context("reading the data cache")?;
 
         Ok(DataCache {
             old_cache: cache,
@@ -289,7 +329,7 @@ pub struct Cache {
 
 impl Cache {
     /// Load the cache from the given backend, or create a new empty cache if the backend does not have a cache.
-    pub async fn new(backend: Arc<dyn CacheBackend + Send + Sync>) -> Result<Self, RuntimeError> {
+    pub async fn new(backend: Arc<dyn CacheBackend + Send + Sync>) -> miette::Result<Self> {
         let data_cache = if let Some(mut reader) = backend.get_data_cache().await {
             match DataCache::load(&mut reader).await {
                 Ok(data_cache) => data_cache,
@@ -314,7 +354,7 @@ impl Cache {
     async fn delete_resource_key(
         backend: &(impl CacheBackend + ?Sized),
         key: &ResourceKey,
-    ) -> Result<(), RuntimeError> {
+    ) -> miette::Result<()> {
         let hash = key.cache_hash().await?;
         backend.delete_key(hash).await;
 
@@ -325,19 +365,23 @@ impl Cache {
     ///
     /// Returns a hashset of the resource keys that the shutdown system should pass along to the
     /// various engines for cleanup.
-    pub async fn save(self, keep_old_cache: bool) -> Result<HashSet<ResourceKey>, RuntimeError> {
+    pub async fn save(self, keep_old_cache: bool) -> miette::Result<HashSet<ResourceKey>> {
         let Self {
             data_cache,
             backend,
         } = self;
 
-        let data_cache = data_cache.into_inner().map_err(|_| {
-            RuntimeError::internal("Failed to lock data cache for saving, mutex poisoned")
-        })?;
+        let data_cache = data_cache
+            .into_inner()
+            .map_err(|_| internal("data cache mutex poisoned"))?;
 
         let mut writer = backend.get_data_cache_writer().await?;
         let removed_resource_keys = data_cache.write(keep_old_cache, &mut writer).await?;
-        writer.shutdown().await?;
+        writer
+            .shutdown()
+            .await
+            .into_diagnostic()
+            .context("flushing the data cache")?;
 
         for key in &removed_resource_keys {
             if let Err(err) = Self::delete_resource_key(&*backend, key).await {
@@ -360,6 +404,154 @@ mod tests {
     use super::*;
     use crate::engine::containerd::{ContainerConfig, ContainerState, ServiceState};
     use crate::engine::filesystem;
+
+    /// Generate tests for the given cache backend.
+    ///
+    /// These tests assume a "well-behaved" cache, which is a subset of valid implementations of
+    /// `CacheBackend`.
+    /// For example while the `NoneCacheBackend` is a valid implementation, it would
+    /// fail these tests.
+    /// A well-behaved cache is defined as:
+    /// * `read_key` from a unwritten key returns `None` (This should be true for all valid
+    ///   implementations of a `CacheBackend` unless they can magically translate a opaque hash to the
+    ///   expected bytes)
+    /// * `.write_key` followed by `.read_key` returns the same data.
+    /// * `.write_key`, followed by `.write_key` returns None.
+    /// * `.get_data_cache` when a data cache has not been written returns `None`, (see note on
+    ///   `read_key`).
+    /// * `.get_data_cache_writer`, followed by `.get_data_cache` returns the data written.
+    /// * `.get_data_cache_writer`, followed by `.get_data_cache_writer` (writing other bytes),
+    ///   followed by `.get_data_cache` returns the last written bytes.
+    ///
+    /// It is assumed that the backend is fully empty when these tests start executing, but it is
+    /// tolerate that multiple tests share the same cache storage (they all use different hashes).
+    #[macro_export]
+    macro_rules! test_well_behaved_cache {
+        ($init:expr) => {
+            use ::tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_cant_read_undefined() {
+                let backend = $init;
+
+                let result = backend
+                    .read_key($crate::engine::cache::CacheHash([0; _]))
+                    .await;
+                assert!(result.is_none(), "Expected unwritten key to be None");
+            }
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_read_write_key() {
+                const TEST_STRING: &str = "integration testing for life!";
+
+                let backend = $init;
+
+                let mut writer = backend
+                    .write_key($crate::engine::cache::CacheHash([1; _]))
+                    .await
+                    .expect("Expected to be able to write to key 1");
+                writer
+                    .write_all(TEST_STRING.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer.shutdown().await.expect("Failed to close writer");
+
+                let mut reader = backend
+                    .read_key($crate::engine::cache::CacheHash([1; _]))
+                    .await
+                    .expect("Failed to key 1");
+                let mut read_content = String::new();
+                reader
+                    .read_to_string(&mut read_content)
+                    .await
+                    .expect("Failed to read content");
+
+                assert_eq!(
+                    read_content, TEST_STRING,
+                    "Read content didnt match written"
+                );
+            }
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_write_twice() {
+                const TEST_STRING: &str = "integration testing for life!";
+
+                let backend = $init;
+
+                let mut writer = backend
+                    .write_key($crate::engine::cache::CacheHash([2; _]))
+                    .await
+                    .expect("Expected to be able to write to key 2");
+                writer
+                    .write_all(TEST_STRING.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer.shutdown().await.expect("Failed to close writer");
+
+                let  writer = backend
+                    .write_key($crate::engine::cache::CacheHash([2; _]))
+                    .await;
+                assert!(writer.is_none(), "Expected trying to write key twice to return None, as caches are content addressed.");
+            }
+
+            #[tokio::test]
+            #[test_log::test]
+            async fn test_data_cache() {
+                const TEST_STRING1: &str = "integration testing for life!";
+                const TEST_STRING2: &str = "macros go brrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr.";
+
+                let backend = $init;
+
+                let reader = backend.get_data_cache().await;
+                assert!(reader.is_none(), "Expected data cache to be None before writing.");
+
+                let mut writer1 = backend
+                    .get_data_cache_writer()
+                    .await
+                    .expect("Expected to be able to write to cache data");
+                writer1
+                    .write_all(TEST_STRING1.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer1.shutdown().await.expect("Failed to close writer");
+
+                let mut reader1 = backend
+                    .get_data_cache()
+                    .await
+                    .expect("Failed to get cache data");
+                let mut read_content1 = String::new();
+                reader1
+                    .read_to_string(&mut read_content1)
+                    .await
+                    .expect("Failed to read content");
+                assert_eq!(read_content1, TEST_STRING1, "Expected bytes read from data cache to match first write");
+
+                let mut writer2 = backend
+                    .get_data_cache_writer()
+                    .await
+                    .expect("Expected to be able to write to cache data twice");
+                writer2
+                    .write_all(TEST_STRING2.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer2.shutdown().await.expect("Failed to close writer");
+
+                let mut reader2 = backend
+                    .get_data_cache()
+                    .await
+                    .expect("Failed to get cache data");
+                let mut read_content2 = String::new();
+                reader2
+                    .read_to_string(&mut read_content2)
+                    .await
+                    .expect("Failed to read content");
+                assert_eq!(read_content2, TEST_STRING2, "Expected bytes read from data cache to match second write");
+            }
+        };
+    }
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -427,6 +619,7 @@ mod tests {
     #[case::complex_container("complex_container", Data::Container(complex_container()))]
     #[case::file("file", Data::FileSystem(file()))]
     #[case::folder("folder", Data::FileSystem(folder()))]
+    #[test_log::test]
     fn snapshot_hashes(#[case] name: &str, #[case] value: Data) {
         let rt = runtime();
         rt.block_on(async {
@@ -439,6 +632,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn different_entries_hash_differently() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -479,6 +673,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn same_entry_hashes_equal() {
         let rt = runtime();
         bolero::check!()
@@ -500,6 +695,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn save_and_load_one_entry() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -528,6 +724,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn save_and_load_duplicate() {
         let rt = runtime();
         bolero::check!()
@@ -559,6 +756,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn save_and_load_multiple_entries() {
         let rt = runtime();
         bolero::check!()
@@ -605,6 +803,7 @@ mod tests {
     /// If a entry in the old cache is used then it should be kept even if `keep_old_cache` is false.
     /// As `keep_old_cache=false` is for cleaning up cache not used/generated this session.
     #[test]
+    #[test_log::test]
     fn if_cache_used_should_always_be_kept() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -644,6 +843,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn old_entry_cleared_if_not_used() {
         let rt = runtime();
         bolero::check!().with_type().for_each(
@@ -678,6 +878,7 @@ mod tests {
     }
 
     #[test]
+    #[test_log::test]
     fn old_entry_kept_if_keep_old_true_even_if_not_used() {
         let rt = runtime();
         bolero::check!().with_type().for_each(

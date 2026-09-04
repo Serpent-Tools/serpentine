@@ -11,16 +11,58 @@ use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::future::BoxFuture;
 use futures_util::{StreamExt, TryStreamExt};
+use miette::{Context, Diagnostic, IntoDiagnostic};
 use serpentine_internal::{FileSystemEntryHeader, network};
 use sha2::Digest as _;
+use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use typed_path::{UnixPath, UnixPathBuf};
 
 use crate::engine::cache::{CacheBackend, CacheHash, CacheScope};
 use crate::engine::filesystem::{FileSystem, FileSystemProvider};
-use crate::engine::{BoxedReader, RuntimeError, acquire_file_lock, sidecar_client, userdb};
+use crate::engine::{
+    BoxedReader,
+    WrapInternal,
+    acquire_file_lock,
+    internal,
+    sidecar_client,
+    userdb,
+};
 use crate::events::{Lifecycle, Reporter, TaskHandle, TaskId, TaskKind};
+
+/// A command failed to execute
+#[derive(Debug, Error, Diagnostic)]
+#[error("Failed to execute command (exit code {code}): {command:?} \n{output}")]
+#[diagnostic(code(command_execution_error))]
+struct CommandFailed {
+    /// The exit code
+    code: u32,
+    /// The command that was run
+    command: String,
+    /// The stdout/stderr of the command
+    output: String,
+}
+
+/// A healthcheck didnt pass in time
+#[derive(Debug, Error, Diagnostic)]
+#[error("Healthcheck {check:?} did not pass in {timeout:?}")]
+#[diagnostic(code(healthcheck_timeout))]
+struct HealthcheckTimeout {
+    /// Which healthcheck didnt pass
+    check: String,
+    /// How long we waited for it to pass
+    timeout: Duration,
+}
+
+/// Attempted to capture non-utf8 output
+#[derive(Debug, Error, Diagnostic)]
+#[error("Failed to capture stdout of command as non-utf8 was found: \n{output}")]
+#[diagnostic(code(non_utf8_capture))]
+struct NonUtf8Capture {
+    /// The stdout/stderr of the command
+    output: String,
+}
 
 /// The snapshotter to use for containers.
 // WARN: While most of the code is snapshotter agnostic, the sidecar export layer implementation uses
@@ -537,10 +579,6 @@ pub struct Client {
     cache: Arc<dyn CacheBackend + Send + Sync>,
     /// Limiter on the amount of exec jobs running at once
     exec_lock: tokio::sync::Semaphore,
-    /// Should snapshots be exported to the serpentine cache as well.
-    ///
-    /// This is required for portability.
-    export_snapshots: bool,
     /// Dangling resources
     dangling: Mutex<Vec<DanglingResource>>,
     /// Networks that arent currently in use.
@@ -553,9 +591,7 @@ impl Client {
     /// Right after the sidecar container starts, the proxy is reachable before containerd inside
     /// the container has finished initializing its unix socket. Any gRPC call in that window fails
     /// with a "broken pipe" transport error. Wait for a successful round-trip before returning.
-    async fn wait_for_containerd_ready(
-        client: &containerd_client::Client,
-    ) -> Result<(), RuntimeError> {
+    async fn wait_for_containerd_ready(client: &containerd_client::Client) -> miette::Result<()> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(30);
         loop {
@@ -563,7 +599,9 @@ impl Client {
                 Ok(_) => return Ok(()),
                 Err(err) => {
                     if start.elapsed() >= timeout {
-                        return Err(err.into());
+                        return Err(err).into_diagnostic().with_context(|| {
+                            format!("containerd did not become ready within {timeout:?}")
+                        });
                     }
                     log::debug!("containerd not ready yet: {err}");
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -582,8 +620,7 @@ impl Client {
         cache: Arc<dyn CacheBackend + Send + Sync>,
         exec_permits: usize,
         namespace: impl Into<String>,
-        export_snapshots: bool,
-    ) -> Result<Self, RuntimeError> {
+    ) -> miette::Result<Self> {
         let oci = oci_client::Client::new(oci_client::client::ClientConfig {
             user_agent: concat!("serpentine/", env!("CARGO_PKG_VERSION")),
             platform_resolver: Some(Box::new(platform_resolver)),
@@ -600,7 +637,9 @@ impl Client {
                         .map_err(std::io::Error::other)
                         .map(hyper_util::rt::TokioIo::new)
                 }))
-                .await?;
+                .await
+                .into_diagnostic()
+                .context("connecting to containerd through the sidecar")?;
         let containerd = containerd_client::Client::from(containerd);
 
         Self::wait_for_containerd_ready(&containerd).await?;
@@ -618,7 +657,6 @@ impl Client {
             oci,
             reporter,
             cache,
-            export_snapshots,
             exec_lock: tokio::sync::Semaphore::new(exec_permits),
             dangling: Mutex::new(Vec::new()),
             free_networks: Mutex::new(HashMap::new()),
@@ -626,13 +664,7 @@ impl Client {
     }
 
     /// Export the given snapshot to the caching backend
-    // TODO: This is slow and blocks further execution, which it really shouldnt. its hard to clone
-    // the self from here tho...
-    async fn export_snapshot(&self, snapshot: &str) -> Result<(), RuntimeError> {
-        if !self.export_snapshots {
-            return Ok(());
-        }
-
+    async fn export_snapshot(&self, snapshot: &str) -> miette::Result<()> {
         log::debug!("Exporting snapshot {snapshot} to cache");
 
         let hash = CacheHash::from_data(CacheScope::Snapshot, snapshot).await?;
@@ -660,7 +692,9 @@ impl Client {
                 }
                 .with_lease(&lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("viewing snapshot {snapshot}"))?
             .into_inner()
             .mounts;
 
@@ -671,7 +705,7 @@ impl Client {
         let mount = mounts
             .into_iter()
             .next()
-            .ok_or_else(|| RuntimeError::internal("No mounts returned for snapshoter"))?;
+            .wrap_internal("No mounts returned for snapshoter")?;
 
         let parent = self
             .containerd
@@ -680,23 +714,37 @@ impl Client {
                 snapshotter: SNAPSHOTTER.into(),
                 key: snapshot.into(),
             })
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("stating snapshot {snapshot}"))?
             .into_inner()
             .info
-            .ok_or_else(|| RuntimeError::internal("snapshot didnt have any info"))?
+            .wrap_internal("snapshot didnt have any info")?
             .parent;
 
-        serpentine_internal::write_postcard_frame(&parent, &mut writer).await?;
+        serpentine_internal::write_postcard_frame(&parent, &mut writer)
+            .await
+            .into_diagnostic()
+            .context("writing the parent snapshot to the cache")?;
         let mut tar_stream = self.sidecar.export_layer(mount).await?;
-        tokio::io::copy(&mut tar_stream, &mut writer).await?;
-        writer.shutdown().await?;
+        tokio::io::copy(&mut tar_stream, &mut writer)
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("writing snapshot {snapshot} to the cache"))?;
+        writer
+            .shutdown()
+            .await
+            .into_diagnostic()
+            .context("flushing the snapshot to the cache")?;
 
         log::debug!("Finished exporting layer");
         self.drop_lease(lease).await?;
         drop(task);
 
         if !parent.is_empty() {
-            Box::pin(self.export_snapshot(&parent)).await?;
+            Box::pin(self.export_snapshot(&parent))
+                .await
+                .with_context(|| format!("exporting parent of {snapshot}"))?;
         }
 
         Ok(())
@@ -705,7 +753,7 @@ impl Client {
     /// Attempt to load the given snapshot from the cache backend.
     ///
     /// returns whether the snapshot was imported
-    async fn import_layer(&self, snapshot: &str) -> Result<bool, RuntimeError> {
+    async fn import_layer(&self, snapshot: &str) -> miette::Result<bool> {
         log::debug!("Attempting to import {snapshot}");
 
         let hash = CacheHash::from_data(CacheScope::Snapshot, snapshot).await?;
@@ -714,7 +762,10 @@ impl Client {
             return Ok(false);
         };
 
-        let parent: String = serpentine_internal::read_postcard_frame(&mut reader).await?;
+        let parent: String = serpentine_internal::read_postcard_frame(&mut reader)
+            .await
+            .into_diagnostic()
+            .context("reading the parent snapshot from the cache")?;
 
         if !parent.is_empty() {
             let was_found = Box::pin(self.ensure_snapshot(&parent)).await;
@@ -747,7 +798,9 @@ impl Client {
                 }
                 .with_lease(&lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("preparing snapshot {temp_snapshot}"))?
             .into_inner()
             .mounts;
 
@@ -766,7 +819,9 @@ impl Client {
                 payloads: HashMap::new(),
                 sync_fs: true,
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("applying the layer diff to {temp_snapshot}"))?;
         log::debug!("Diff applied, committing snapshot to {snapshot}");
         self.containerd
             .snapshot()
@@ -776,7 +831,9 @@ impl Client {
                 name: snapshot.to_owned(),
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("committing snapshot {snapshot}"))?;
 
         self.drop_lease(lease).await?;
         drop(task);
@@ -787,11 +844,12 @@ impl Client {
     /// Import data from the given reader into the content store (under the given lease.)
     ///
     /// returns the total size in bytes, as well as the digest.
+    #[expect(clippy::too_many_lines, reason = "Tightly coupled linear task")]
     async fn import_reader_into_content_store(
         &self,
         reader: BoxedReader,
         lease: &str,
-    ) -> Result<(usize, String), RuntimeError> {
+    ) -> miette::Result<(usize, String)> {
         let upload_ref = uuid::Uuid::new_v4().to_string();
         let upload_ref_clone = upload_ref.clone();
         // Give it a 1MiB buffer instead of the default 4KiB because h2 has a ddos protection that
@@ -828,14 +886,17 @@ impl Client {
                     })
                     .with_lease(lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .context("writing content to the containerd store")?
             .into_inner()
             .try_for_each(async |_| Ok(()))
-            .await?;
+            .await
+            .into_diagnostic()?;
         let total_size = current_offset.load(Ordering::Relaxed);
         let digest = {
             let Ok(hasher) = hasher.lock() else {
-                return Err(RuntimeError::internal("Content hasher mutex was poisoned"));
+                return Err(internal("Content hasher mutex was poisoned"));
             };
             let mut digest = String::from("sha256:");
             for byte in hasher.clone().finalize() {
@@ -872,8 +933,10 @@ impl Client {
                 response
                     .into_inner()
                     .try_next()
-                    .await?
-                    .ok_or_else(|| RuntimeError::internal("No response for commit"))?;
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("committing content {digest}"))?
+                    .wrap_internal("No response for commit")?;
             }
             // The store is content addressed, so this says the bytes are already there. They are
             // held by whichever lease stored them first, so ours is given a reference of its own.
@@ -888,9 +951,15 @@ impl Client {
                             r#type: "content".to_owned(),
                         }),
                     })
-                    .await?;
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("leasing already stored content {digest}"))?;
             }
-            Err(status) => return Err(status.into()),
+            Err(status) => {
+                return Err(status)
+                    .into_diagnostic()
+                    .with_context(|| format!("committing content {digest}"));
+            }
         }
 
         Ok((total_size, digest))
@@ -950,8 +1019,19 @@ impl Client {
         true
     }
 
+    /// Export all the referenced snapshots from this config.
+    pub async fn export_snapshots_from(&self, config: &ContainerState) {
+        if let Err(err) = self.export_snapshot(&config.snapshot).await {
+            log::error!("Failed to export snapshot: {err}");
+        }
+
+        for service in config.config.services.values() {
+            Box::pin(self.export_snapshots_from(service)).await;
+        }
+    }
+
     /// Create a new lease
-    async fn new_lease(&self) -> Result<String, RuntimeError> {
+    async fn new_lease(&self) -> miette::Result<String> {
         let lease = uuid::Uuid::new_v4().to_string();
         self.dangling
             .lock()
@@ -964,24 +1044,28 @@ impl Client {
                 id: lease.clone(),
                 labels: HashMap::new(),
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .context("creating a containerd lease")?;
         Ok(lease)
     }
 
     /// Drop the given lease, freeing up any not referenced elsewhere.
-    async fn drop_lease(&self, lease: String) -> Result<(), RuntimeError> {
+    async fn drop_lease(&self, lease: String) -> miette::Result<()> {
         self.containerd
             .leases()
             .delete(containerd_services::DeleteRequest {
                 id: lease.clone(),
                 sync: false,
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("dropping containerd lease {lease}"))?;
         Ok(())
     }
 
     /// Download the given image and return a normal `ContainerState` representing it.
-    pub async fn pull_image(&self, image_name: &str) -> Result<ContainerState, RuntimeError> {
+    pub async fn pull_image(&self, image_name: &str) -> miette::Result<ContainerState> {
         let (config, snapshot_name) = self.fetch_image(image_name).await?;
 
         let config = if let Some(config) = config.config {
@@ -997,7 +1081,7 @@ impl Client {
     }
 
     /// Download the given image and return a `ServiceState` representing it.
-    pub async fn pull_service(&self, image_name: &str) -> Result<ServiceState, RuntimeError> {
+    pub async fn pull_service(&self, image_name: &str) -> miette::Result<ServiceState> {
         let (config, snapshot_name) = self.fetch_image(image_name).await?;
 
         let (service_config, config) = if let Some(config) = config.config {
@@ -1031,13 +1115,19 @@ impl Client {
     async fn fetch_image(
         &self,
         image_name: &str,
-    ) -> Result<(oci_client::config::ConfigFile, String), RuntimeError> {
-        let image = oci_client::Reference::try_from(image_name)?;
+    ) -> miette::Result<(oci_client::config::ConfigFile, String)> {
+        let image = oci_client::Reference::try_from(image_name)
+            .into_diagnostic()
+            .with_context(|| format!("invalid image name {image_name:?}"))?;
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
 
         log::debug!("Pulling image {image} manifest");
-        let (manifest, manifest_digest, config) =
-            self.oci.pull_manifest_and_config(&image, &auth).await?;
+        let (manifest, manifest_digest, config) = self
+            .oci
+            .pull_manifest_and_config(&image, &auth)
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("pulling the manifest of {image}"))?;
         let pull_guard = acquire_file_lock(&manifest_digest).await?;
         let lease = self.new_lease().await?;
 
@@ -1049,8 +1139,9 @@ impl Client {
 
         pull_guard.unlock();
 
-        let config: oci_client::config::ConfigFile =
-            serde_json::from_str(&config).map_err(|err| RuntimeError::internal(err.to_string()))?;
+        let config: oci_client::config::ConfigFile = serde_json::from_str(&config)
+            .into_diagnostic()
+            .with_context(|| format!("parsing the image config of {image}"))?;
 
         Ok((config, snapshot_name))
     }
@@ -1063,7 +1154,7 @@ impl Client {
         image_name: &str,
         manifest: oci_client::manifest::OciImageManifest,
         lease: &str,
-    ) -> Result<String, RuntimeError> {
+    ) -> miette::Result<String> {
         let mut parent = String::new();
         let layer_count = manifest.layers.len();
 
@@ -1110,7 +1201,9 @@ impl Client {
                         }
                         .with_lease(lease),
                     )
-                    .await?
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("preparing snapshot {key}"))?
                     .into_inner()
                     .mounts;
 
@@ -1127,7 +1220,9 @@ impl Client {
                         payloads: HashMap::new(),
                         sync_fs: false,
                     })
-                    .await?;
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("applying layer {} to {key}", layer.digest))?;
 
                 log::debug!("Committing {key} to {snapshot_name}");
                 let labels = if is_final_layer {
@@ -1151,7 +1246,9 @@ impl Client {
                 if let Err(status) = commit
                     && !Self::is_already_exists(&status)
                 {
-                    return Err(status.into());
+                    return Err(status)
+                        .into_diagnostic()
+                        .with_context(|| format!("committing snapshot {snapshot_name}"));
                 }
             }
 
@@ -1172,7 +1269,7 @@ impl Client {
         layer: &oci_client::manifest::OciDescriptor,
         lease: &str,
         task_id: TaskId,
-    ) -> Result<(), RuntimeError> {
+    ) -> miette::Result<()> {
         if self
             .containerd
             .content()
@@ -1190,7 +1287,12 @@ impl Client {
 
         log::debug!("Pulling layer {layer}");
 
-        let layer_stream = self.oci.pull_blob_stream(image, &layer).await?;
+        let layer_stream = self
+            .oci
+            .pull_blob_stream(image, &layer)
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("pulling layer {} of {image}", layer.digest))?;
         let total_size: i64 = layer_stream
             .content_length
             .and_then(|len| len.try_into().ok())
@@ -1229,10 +1331,14 @@ impl Client {
                     })
                     .with_lease(lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("writing layer {} to the content store", layer.digest))?
             .into_inner()
             .try_for_each(async |_| Ok(()))
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("writing layer {} to the content store", layer.digest))?;
 
         log::debug!("Finished pulling {digest_clone}.");
         let commit = self
@@ -1252,17 +1358,21 @@ impl Client {
                 ))
                 .with_lease(lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("committing layer {}", layer.digest))?
             .into_inner()
             .try_for_each(async |_| Ok(()))
             .await;
         if let Err(status) = commit
             && !Self::is_already_exists(&status)
         {
-            return Err(status.into());
+            return Err(status)
+                .into_diagnostic()
+                .with_context(|| format!("committing layer {}", layer.digest));
         }
 
-        Ok::<_, RuntimeError>(())
+        Ok(())
     }
 
     /// Execute a command on top of a given state and return a new state representing the result
@@ -1270,7 +1380,7 @@ impl Client {
         &self,
         state: &ContainerState,
         cmd: String,
-    ) -> Result<ContainerState, RuntimeError> {
+    ) -> miette::Result<ContainerState> {
         let lease = self.new_lease().await?;
         let (container, _) = self.exec_internal(state.clone(), cmd, &lease).await?;
         self.drop_lease(lease).await?;
@@ -1283,13 +1393,13 @@ impl Client {
         &self,
         state: &ContainerState,
         cmd: String,
-    ) -> Result<String, RuntimeError> {
+    ) -> miette::Result<String> {
         let lease = self.new_lease().await?;
         let stdout = self
             .exec_internal(state.clone(), cmd, &lease)
             .await?
             .1
-            .map_err(|output| RuntimeError::NonUtf8Capture { output })?;
+            .map_err(|output| NonUtf8Capture { output })?;
         self.drop_lease(lease).await?;
 
         Ok(stdout)
@@ -1299,7 +1409,7 @@ impl Client {
     async fn get_network(
         &self,
         topology: network::AbstractTopology,
-    ) -> Result<network::ConcreteTopology, RuntimeError> {
+    ) -> miette::Result<network::ConcreteTopology> {
         if let Some(concrete_topology) = self
             .free_networks
             .lock()
@@ -1327,7 +1437,7 @@ impl Client {
         state: ContainerState,
         cmd: String,
         lease: &str,
-    ) -> Result<(ContainerState, Result<String, String>), RuntimeError> {
+    ) -> miette::Result<(ContainerState, Result<String, String>)> {
         let exec_lock = self.exec_lock.acquire().await;
         log::debug!("Preparing to execute {cmd:?} in {state:?}");
         let container_topology = state.into_topology(cmd.into());
@@ -1351,7 +1461,7 @@ impl Client {
             ContainerLike::Container(container) => container,
             ContainerLike::Service(_) => {
                 log::error!("Root of topology was a service, this should never happen");
-                return Err(RuntimeError::internal(
+                return Err(internal(
                     "Invalid container topology: root node was a service".to_owned(),
                 ));
             }
@@ -1367,7 +1477,7 @@ impl Client {
         &self,
         topology: network::Topology<(ContainerTopologyNode, network::Namespace)>,
         lease: &str,
-    ) -> Result<network::Topology<ContainerHandle>, RuntimeError> {
+    ) -> miette::Result<network::Topology<ContainerHandle>> {
         let ((node, network_namespace), children) = topology.into_parts();
 
         let mut hosts = Vec::new();
@@ -1402,7 +1512,9 @@ impl Client {
                 }
                 .with_lease(lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("preparing snapshot {mutable_snapshot}"))?
             .into_inner()
             .mounts;
         log::trace!("Mounts: {mounts:?}");
@@ -1448,7 +1560,9 @@ impl Client {
                 }
                 .with_lease(lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("creating a task in {container}"))?
             .into_inner();
 
         log::debug!("Starting {:?} in {container}", node.get_cmd());
@@ -1459,7 +1573,9 @@ impl Client {
                 container_id: container.clone(),
                 exec_id: String::new(),
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("starting the task in {container}"))?;
 
         if let ContainerLike::Service(service) = &node.state {
             let (healthcheck, timeout) = &service.get_service_config().healthcheck;
@@ -1494,7 +1610,7 @@ impl Client {
         command: Arc<str>,
         timeout: std::time::Duration,
         lease: &str,
-    ) -> Result<(), RuntimeError> {
+    ) -> miette::Result<()> {
         base_process.set_args(Some(vec![
             "/bin/sh".to_owned(),
             "-c".to_owned(),
@@ -1508,10 +1624,11 @@ impl Client {
         let start_time = std::time::Instant::now();
         loop {
             if start_time.elapsed() > timeout {
-                return Err(RuntimeError::HealthcheckTimeout {
+                return Err(HealthcheckTimeout {
                     check: command.to_string(),
                     timeout,
-                });
+                }
+                .into());
             }
 
             let exec_id = uuid::Uuid::new_v4().to_string();
@@ -1539,19 +1656,23 @@ impl Client {
                             type_url: "types.containerd.io/opencontainers/runtime-spec/1/Process"
                                 .to_owned(),
                             value: serde_json::to_vec(&base_process)
-                                .map_err(|err| RuntimeError::internal(err.to_string()))?,
+                                .wrap_internal("healthcheck process spec is not serializable")?,
                         }),
                     }
                     .with_lease(lease),
                 )
-                .await?;
+                .await
+                .into_diagnostic()
+                .with_context(|| format!("running healthcheck {command} in {container_id}"))?;
             self.containerd
                 .tasks()
                 .start(containerd_services::StartRequest {
                     container_id: container_id.clone(),
                     exec_id: exec_id.clone(),
                 })
-                .await?;
+                .await
+                .into_diagnostic()
+                .with_context(|| format!("starting healthcheck {command} in {container_id}"))?;
 
             let exit_code = tokio::select! {
                 exit = self.wait_for_exit(container_id.clone(), exec_id.clone()) => {
@@ -1582,7 +1703,7 @@ impl Client {
         hosts: Vec<(Arc<str>, std::net::Ipv4Addr)>,
         mounts: Box<[containerd_client::types::Mount]>,
         lease: &str,
-    ) -> Result<(String, oci_spec::runtime::Process), RuntimeError> {
+    ) -> miette::Result<(String, oci_spec::runtime::Process)> {
         let container = uuid::Uuid::new_v4().to_string();
         self.dangling
             .lock()
@@ -1696,7 +1817,7 @@ impl Client {
                             type_url: "types.containerd.io/opencontainers/runtime-spec/1/Spec"
                                 .to_owned(),
                             value: serde_json::to_vec(&spec)
-                                .map_err(|err| RuntimeError::internal(err.to_string()))?,
+                                .wrap_internal("container spec is not serializable")?,
                         }),
                         sandbox: String::new(),
                         updated_at: None,
@@ -1708,7 +1829,9 @@ impl Client {
                 }
                 .with_lease(lease),
             )
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("creating container {container}"))?;
 
         Ok((container, process))
     }
@@ -1762,14 +1885,16 @@ impl Client {
         &self,
         mounts: Box<[containerd_client::types::Mount]>,
         user: &str,
-    ) -> Result<(oci_spec::runtime::User, Box<str>), RuntimeError> {
+    ) -> miette::Result<(oci_spec::runtime::User, Box<str>)> {
         let Ok(passwd) = self
             .read_file(mounts.clone(), UnixPathBuf::from("/etc/passwd"))
-            .await?
+            .await
+            .context("reading /etc/passwd from the container")?
             .parse();
         let Ok(groups) = self
             .read_file(mounts, UnixPathBuf::from("/etc/group"))
-            .await?
+            .await
+            .context("reading /etc/group from the container")?
             .parse();
 
         let Ok(user): Result<userdb::OciUser, _> = user.parse();
@@ -1787,17 +1912,24 @@ impl Client {
         &self,
         mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
         file: UnixPathBuf,
-    ) -> Result<String, RuntimeError> {
+    ) -> miette::Result<String> {
         let mut file_system_stream = self.sidecar.export_files(mounts, file).await?;
 
         let FileSystemEntryHeader::File { .. } =
-            serpentine_internal::read_postcard_frame(&mut file_system_stream).await?
+            serpentine_internal::read_postcard_frame(&mut file_system_stream)
+                .await
+                .into_diagnostic()
+                .context("reading the file header")?
         else {
-            return Err(RuntimeError::internal("Expected file entry header"));
+            return Err(internal("Expected file entry header"));
         };
 
         let mut passwd = String::new();
-        file_system_stream.read_to_string(&mut passwd).await?;
+        file_system_stream
+            .read_to_string(&mut passwd)
+            .await
+            .into_diagnostic()
+            .context("reading the file contents")?;
         Ok(passwd)
     }
 
@@ -1807,15 +1939,22 @@ impl Client {
         mounts: impl IntoIterator<Item = containerd_client::types::Mount>,
         file: UnixPathBuf,
         content: &[u8],
-    ) -> Result<(), RuntimeError> {
+    ) -> miette::Result<()> {
         let mut stream = self.sidecar.import_files(mounts, file).await?;
 
         let header = serpentine_internal::FileSystemEntryHeader::File {
             name: Box::default(),
             length: content.len() as u64,
         };
-        serpentine_internal::write_postcard_frame(&header, &mut stream).await?;
-        stream.write_all(content).await?;
+        serpentine_internal::write_postcard_frame(&header, &mut stream)
+            .await
+            .into_diagnostic()
+            .context("writing the file header")?;
+        stream
+            .write_all(content)
+            .await
+            .into_diagnostic()
+            .context("writing the file contents")?;
 
         Ok(())
     }
@@ -1824,7 +1963,7 @@ impl Client {
     async fn write_hosts_file(
         &self,
         hosts: Vec<(Arc<str>, std::net::Ipv4Addr)>,
-    ) -> Result<oci_spec::runtime::Mount, RuntimeError> {
+    ) -> miette::Result<oci_spec::runtime::Mount> {
         let hosts_content = hosts
             .into_iter()
             .map(|(hostname, ip)| format!("{ip}\t{hostname}"))
@@ -1847,7 +1986,8 @@ impl Client {
             UnixPathBuf::from(&file_name),
             hosts_content.as_bytes(),
         )
-        .await?;
+        .await
+        .with_context(|| format!("writing the hosts file {file_name}"))?;
 
         let mut mount = oci_spec::runtime::Mount::default();
         mount
@@ -1861,11 +2001,7 @@ impl Client {
     /// Wait for the given container handle to exit.
     ///
     /// Returns the processes exit code.
-    async fn wait_for_exit(
-        &self,
-        container_id: String,
-        exec_id: String,
-    ) -> Result<u32, RuntimeError> {
+    async fn wait_for_exit(&self, container_id: String, exec_id: String) -> miette::Result<u32> {
         log::debug!("Waiting for {container_id}/{exec_id} to exit.");
 
         let exit_code = self
@@ -1875,7 +2011,9 @@ impl Client {
                 container_id,
                 exec_id,
             })
-            .await?
+            .await
+            .into_diagnostic()
+            .context("waiting for the task to exit")?
             .into_inner()
             .exit_status;
 
@@ -1886,7 +2024,7 @@ impl Client {
     async fn spindown_topology(
         &self,
         containers: network::Topology<ContainerHandle>,
-    ) -> Result<(ContainerLike, Result<String, String>), RuntimeError> {
+    ) -> miette::Result<(ContainerLike, Result<String, String>)> {
         const SIGINT: u32 = 2;
         const SIGKILL: u32 = 9;
 
@@ -1916,17 +2054,14 @@ impl Client {
                 key: handle.snapshot.clone(),
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
-            .await?;
-
-        if let Err(err) = self.export_snapshot(&final_snapshot).await {
-            log::error!("Failed to export snapshot: {err}");
-            debug_assert!(false, "Failed to export snapshot");
-        }
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("committing snapshot {final_snapshot}"))?;
 
         let stdout = handle
             .stdout
             .await
-            .map_err(|_| RuntimeError::internal("Failed to join task"))?;
+            .wrap_internal("stdout reader task panicked")?;
 
         if exit_code != 0 {
             if matches!(handle.node.state, ContainerLike::Service(_)) {
@@ -1937,20 +2072,19 @@ impl Client {
             } else {
                 let stdout = stdout.unwrap_or_else(|err| err);
 
-                return Err(RuntimeError::CommandExecution {
+                return Err(CommandFailed {
                     code: exit_code,
                     command: handle.node.get_cmd().to_owned(),
                     output: stdout,
-                });
+                }
+                .into());
             }
         }
 
         let mut services = BTreeMap::new();
         for child in children {
             let Some(hostname) = &child.get_data().node.hostname else {
-                return Err(RuntimeError::internal(
-                    "Child container missing hostname".to_owned(),
-                ));
+                return Err(internal("Child container missing hostname".to_owned()));
             };
             let hostname = Arc::clone(hostname);
 
@@ -1959,7 +2093,7 @@ impl Client {
             if let ContainerLike::Service(service) = child_container {
                 services.insert(hostname, service);
             } else {
-                return Err(RuntimeError::internal("Expected a service".to_owned()));
+                return Err(internal("Expected a service".to_owned()));
             }
         }
 
@@ -2000,7 +2134,7 @@ impl Client {
         state: &ContainerState,
         src: FileSystem,
         dest: &UnixPath,
-    ) -> Result<ContainerState, RuntimeError> {
+    ) -> miette::Result<ContainerState> {
         let snapshot = uuid::Uuid::new_v4().to_string();
         let lease = self.new_lease().await?;
 
@@ -2022,7 +2156,9 @@ impl Client {
                 }
                 .with_lease(&lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("preparing snapshot {snapshot}"))?
             .into_inner()
             .mounts;
 
@@ -2031,7 +2167,10 @@ impl Client {
 
         let mut src = src.get_reader().await?;
         let mut dest = self.sidecar.import_files(mounts, dest).await?;
-        tokio::io::copy(&mut src, &mut dest).await?;
+        tokio::io::copy(&mut src, &mut dest)
+            .await
+            .into_diagnostic()
+            .context("copying the filesystem into the container")?;
 
         let new_snapshot = uuid::Uuid::new_v4().to_string();
         self.containerd
@@ -2042,13 +2181,10 @@ impl Client {
                 key: snapshot.clone(),
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("committing snapshot {new_snapshot}"))?;
         self.drop_lease(lease).await?;
-
-        if let Err(err) = self.export_snapshot(&new_snapshot).await {
-            log::error!("Failed to export snapshot: {err}");
-            debug_assert!(false, "Failed to export snapshot");
-        }
 
         Ok(ContainerState {
             snapshot: new_snapshot.into(),
@@ -2061,7 +2197,7 @@ impl Client {
         &self,
         state: &ContainerState,
         container_path: &UnixPath,
-    ) -> Result<FileSystem, RuntimeError> {
+    ) -> miette::Result<FileSystem> {
         log::debug!("Creating file system provider for {state:?} at {container_path}");
         let snapshot = format!("{}/view/{}", state.snapshot, uuid::Uuid::new_v4());
         let container_path = if container_path.as_bytes() == b"." {
@@ -2083,7 +2219,9 @@ impl Client {
                 }
                 .with_lease(&lease),
             )
-            .await?
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("viewing snapshot {}", state.snapshot))?
             .into_inner()
             .mounts;
 
@@ -2137,7 +2275,7 @@ impl Client {
     // time.
 
     /// Mark the given snapshot for garbage collection.
-    pub async fn delete(&self, snapshot: &str) -> Result<(), RuntimeError> {
+    pub async fn delete(&self, snapshot: &str) -> miette::Result<()> {
         self.containerd
             .snapshot()
             .update(containerd_services::snapshots::UpdateSnapshotRequest {
@@ -2151,7 +2289,9 @@ impl Client {
                     paths: vec!["labels".to_owned()],
                 }),
             })
-            .await?;
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("marking snapshot {snapshot} for collection"))?;
 
         Ok(())
     }
@@ -2178,7 +2318,7 @@ struct ContainerFileExport {
 }
 
 impl FileSystemProvider for ContainerFileExport {
-    fn get_reader(&self) -> BoxFuture<'_, Result<BoxedReader, RuntimeError>> {
+    fn get_reader(&self) -> BoxFuture<'_, miette::Result<BoxedReader>> {
         Box::pin(async move {
             log::debug!("Creating reader for {} in container", self.path.display());
             let reader = self
@@ -2258,7 +2398,6 @@ mod integration_tests {
             Arc::new(crate::engine::cache::NoneCacheBackend),
             1,
             "serpentine-test",
-            false,
         )
         .await
         .expect("Failed to create Docker client")
@@ -2752,7 +2891,6 @@ mod integration_tests {
             Arc::clone(&cache),
             1,
             uuid::Uuid::new_v4().to_string(),
-            true,
         )
         .await
         .unwrap();
@@ -2838,12 +2976,13 @@ cat opaque/test2.txt
             .await
             .expect("Failed to run test command on original containerd.");
 
+        first_client.export_snapshots_from(&second_layer).await;
+
         let second_client = Client::new(
             Reporter::none(),
             Arc::clone(&cache),
             1,
             uuid::Uuid::new_v4().to_string(),
-            false,
         )
         .await
         .unwrap();
