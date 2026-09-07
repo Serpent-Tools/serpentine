@@ -1,4 +1,4 @@
-check: test (run "FULL")
+check: test (run "PR_BLOCKERS")
 
 run entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}}

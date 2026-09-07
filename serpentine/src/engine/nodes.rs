@@ -560,24 +560,21 @@ impl NodeImpl for All {
                 clippy::manual_try_fold,
                 reason = "false positive, yes its fold on Result, no its not try_fold shaped"
             )]
-            let result =
-                inputs
-                    .await
-                    .into_iter()
-                    .fold(Ok(Vec::with_capacity(len)), |accumulator, result| {
-                        match (accumulator, result) {
-                            (Ok(mut results), Ok(result)) => {
-                                results.push(result);
-                                Ok(results)
-                            }
-                            (Ok(_), Err(error)) => Err(vec![error]),
-                            (Err(mut errors), Err(error)) => {
-                                errors.push(error);
-                                Err(errors)
-                            }
-                            (Err(errors), Ok(_)) => Err(errors),
-                        }
-                    });
+            let result = inputs.await.into_iter().fold(
+                Ok(Vec::with_capacity(len)),
+                |accumulator, result| match (accumulator, result) {
+                    (Ok(mut results), Ok(result)) => {
+                        results.push(result);
+                        Ok(results)
+                    }
+                    (Ok(_), Err(error)) => Err(vec![error]),
+                    (Err(mut errors), Err(error)) => {
+                        errors.push(error);
+                        Err(errors)
+                    }
+                    (Err(errors), Ok(_)) => Err(errors),
+                },
+            );
 
             result.map_err(|errors| {
                 AllErrors {
