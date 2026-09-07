@@ -9,7 +9,7 @@ Run a serpentine pipeline, takes no positional arguments. By default this will w
 For example CI systems will likely want some variation on:
 
 ```bash
-serpentine run --cache /tmp/serpentine_cache --clean-old --standalone-cache
+serpentine run --cache-folder /tmp/serpentine_cache --clean-old --standalone-cache
 ```
 
 ### `--pipeline` / `-p`

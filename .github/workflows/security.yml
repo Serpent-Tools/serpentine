@@ -36,7 +36,9 @@ jobs:
           docker save serpent-tools/containerd:dev -o target/containerd.tar
       - name: Run security scan
         # Serpentine writes the step summary itself; the log is kept only for the issue body below.
-        run: cargo run -p serpentine --locked -- run --entry-point SECURITY --jobs 1 2> >(tee /tmp/serpentine_stderr.log >&2)
+        # The scan exists to pick up newly published advisories, and its inputs don't change
+        # between nightly runs, so a cache hit here would report yesterday's verdict forever.
+        run: cargo run -p serpentine --locked -- run --cache-backend none --entry-point SECURITY --jobs 1 2> >(tee /tmp/serpentine_stderr.log >&2)
       - name: Create or update issue on failure
         if: failure()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
