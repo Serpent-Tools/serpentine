@@ -143,7 +143,7 @@ pub trait CacheBackend {
     /// Write the given key to the cache backend, returning a writer for the data.
     ///
     /// Returns `None` if the key already exists in the cache backend, and thus should not be written to.
-    /// (It is not a requirement to return `None` when the key already exsists, but its highly
+    /// (It is not a requirement to return `None` when the key already exists, but its highly
     /// engouraged.)
     fn write_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>>;
 

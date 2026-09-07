@@ -57,7 +57,7 @@ The caching backend to use
 | --- | --- |
 | `auto` | Picks from the environment, as described below. |
 | `fs` | Cache to the directory specified by `--cache-folder` |
-| `github` | Cache to github actions cache, only avaialbe in github actions. |
+| `github` | Cache to github actions cache, only available in github actions. |
 | `none` | disables the cache. |
 
 
