@@ -210,7 +210,6 @@ jobs:
           curl.exe -sS -m 5 -o - "$($env:DOCKER_HOST -replace '^tcp','http')/_ping"
 
   test_gha_cache:
-    needs: []
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -250,12 +249,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: cache-restore
-        with:
-          path: /tmp/serpentine_cache
-          key: serpentine_cache-${{ github.sha }}
-          restore-keys: serpentine_cache-
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           version: '34.1'
@@ -268,24 +261,22 @@ jobs:
         run: |
           mkdir -p target
           zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
-      - name: Run serpentine pipeline
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point LINTS --jobs 1
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: always()
+      - name: Expose actions cache credentials
+        # The runner injects these into JS actions only, so `run:` steps need them re-exported.
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          path: /tmp/serpentine_cache
-          key: ${{ steps.cache-restore.outputs.cache-primary-key }}
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL);
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
+      - name: Run serpentine pipeline
+        run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point LINTS --jobs 1
 
   advisory:
     needs: [build-docker]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - entry_point: SECURITY
-            cache_prefix: security_cache
-          - entry_point: FUZZ
-            cache_prefix: fuzz_cache
+        entry_point: [SECURITY, FUZZ]
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -296,12 +287,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: cache-restore
-        with:
-          path: /tmp/serpentine_cache
-          key: ${{ matrix.cache_prefix }}-${{ github.sha }}
-          restore-keys: ${{ matrix.cache_prefix }}-
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           version: '34.1'
@@ -315,13 +300,15 @@ jobs:
         run: |
           mkdir -p target
           zstd -d /tmp/containerd-dev.tar.zst --stdout | tee target/containerd.tar | docker load
-      - name: Run ${{ matrix.entry_point }} pipeline
-        run: cargo run -p serpentine --locked -- run --cache /tmp/serpentine_cache --standalone-cache --clean-old --entry-point ${{ matrix.entry_point }} --jobs 1
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: always()
+      - name: Expose actions cache credentials
+        # The runner injects these into JS actions only, so `run:` steps need them re-exported.
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          path: /tmp/serpentine_cache
-          key: ${{ steps.cache-restore.outputs.cache-primary-key }}
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL);
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
+      - name: Run ${{ matrix.entry_point }} pipeline
+        run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point ${{ matrix.entry_point }} --jobs 1
 
   all-checks:
     if: always()

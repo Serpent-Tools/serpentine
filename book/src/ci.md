@@ -18,29 +18,23 @@ You must restore `/tmp/serpentine_cache` before running it, and save it afterwar
 
 ## Github Actions
 
-Using serpentine in github actions is no more special than any other runner, we use `actions/cache` to cache serpentines own cache directory, and then simply run serpentine. 
+Similar to buildkit/docker serpentine has dedicated support for github actions cache, but github does not expose the needed token to `run` steps, so we need to use `github-script` to expose them:
 
 ```yaml
 test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout
-      - uses: actions/cache/restore
-        id: cache-restore
+      - uses: actions/github-script
         with:
-          path: /tmp/serpentine_cache
-          key: serpentine_cache-${{ github.sha }}
-          restore-keys: serpentine_cache-
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL);
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
 
       - name: Install serpentine
         run: TODO_FOR_v1.0.0
       - name: Run serpentine pipeline
-        run: serpentine run --standalone-cache --clean-old
-
-      - uses: actions/cache/save
-        if: always()
-        with:
-          path: /tmp/serpentine_cache
-          key: ${{ steps.cache-restore.outputs.cache-primary-key }}
+        run: serpentine run --cache-backend github --standalone-cache
 ```
 
+Serpentine should be able to detect the backend automatically, but it doesnt hurt to set the backend explicitly. 
