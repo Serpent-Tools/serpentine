@@ -11,6 +11,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use super::RuntimeContext;
 use crate::engine::data_model::{Data, Graph, NodeInstanceId, NodeStorage};
+use crate::snek::span::Span;
 
 /// An error from a node, i.e. a runtime error with an associated span.
 #[derive(Debug, Error, Diagnostic)]
@@ -65,17 +66,22 @@ impl Scheduler {
     ) -> miette::Result<Vec<Data>> {
         let handles = nodes.iter().map(|&node_id| {
             let scheduler = Arc::clone(self);
-            async move { scheduler.get_output(node_id).await }
+            scheduler.get_output(node_id)
         });
 
         futures_util::future::try_join_all(handles).await
+    }
+
+    /// Return the span for the given node
+    pub fn span_for(&self, node_id: NodeInstanceId) -> Span {
+        self.graph.get(node_id).span()
     }
 
     /// Attach `node_id`'s span to an error from the work that node did itself.
     pub fn node_error(&self, node_id: NodeInstanceId, error: Report) -> Report {
         NodeError {
             node_id,
-            span: self.graph.get(node_id).span(),
+            span: self.span_for(node_id),
             inner: error.into(),
         }
         .into()

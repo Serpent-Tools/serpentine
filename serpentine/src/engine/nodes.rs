@@ -62,7 +62,7 @@ pub trait NodeImpl: Send + Sync {
         inputs: &'scheduler [NodeInstanceId],
     ) -> BoxFuture<'scheduler, miette::Result<Data>> {
         Box::pin(async move {
-            let inputs = scheduler.resolve_all(inputs).await?;
+            let inputs = self.resolve_inputs(node_id, &scheduler, inputs).await?;
 
             let context = scheduler.context();
             context
@@ -134,6 +134,20 @@ pub trait NodeImpl: Send + Sync {
                 .map(|(data, _)| data)
                 .map_err(|err| scheduler.node_error(node_id, err))
         })
+    }
+
+    /// Resolve every input of this node into the values handed to [`NodeImpl::execute`].
+    ///
+    /// The default is fail fast: the first input to fail aborts the node and the errors of any
+    /// still running inputs are dropped. Override this to keep waiting after a failure, as `All`
+    /// does to gather every error in one run.
+    fn resolve_inputs<'scheduler>(
+        &'scheduler self,
+        _node_id: NodeInstanceId,
+        scheduler: &'scheduler Arc<Scheduler>,
+        inputs: &'scheduler [NodeInstanceId],
+    ) -> BoxFuture<'scheduler, miette::Result<Vec<Data>>> {
+        Box::pin(scheduler.resolve_all(inputs))
     }
 
     /// Execute the node with its inputs already resolved.
@@ -409,6 +423,10 @@ impl_node_impl!(A);
 impl_node_impl!(A, B);
 impl_node_impl!(A, B, C);
 
+/// The name of the noop node.
+/// This is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
+pub const NOOP_NAME: &str = "Noop";
+
 /// A node that just returns the first input
 struct Noop;
 
@@ -483,9 +501,106 @@ impl NodeImpl for LiteralNode {
     }
 }
 
-/// The name of the noop node.
-/// This is used by the compiler to insert noop nodes when a inlined node has phantom inputs.
-pub const NOOP_NAME: &str = "Noop";
+/// A node that collects *all* errors produced and returns all of them.
+struct All;
+
+/// The errors collected by an [`All`] node.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[diagnostic(code(all))]
+#[error("1+ errors occurred")]
+struct AllErrors {
+    /// The `All` node the errors were collected at
+    #[label("At this All node")]
+    all_node: Span,
+    /// The errors
+    #[related]
+    errors: Vec<miette::Report>,
+}
+
+impl NodeImpl for All {
+    fn should_be_cached(&self) -> bool {
+        false
+    }
+
+    fn describe(&self) -> Cow<'static, str> {
+        "All".into()
+    }
+
+    fn return_type(
+        &self,
+        arguments: &[Spanned<DataType>],
+        node_span: Span,
+    ) -> Result<DataType, CompileError> {
+        if let Some(first_arg) = arguments.first() {
+            Ok(first_arg.take())
+        } else {
+            Err(CompileError::ArgumentCountMismatch {
+                expected: 1,
+                got: 0,
+                location: node_span,
+            })
+        }
+    }
+
+    fn resolve_inputs<'scheduler>(
+        &'scheduler self,
+        node_id: NodeInstanceId,
+        scheduler: &'scheduler Arc<Scheduler>,
+        inputs: &'scheduler [NodeInstanceId],
+    ) -> BoxFuture<'scheduler, miette::Result<Vec<Data>>> {
+        let len = inputs.len();
+        let inputs = inputs.iter().map(|input| {
+            let scheduler = Arc::clone(scheduler);
+            scheduler.get_output(*input)
+        });
+        let inputs = futures_util::future::join_all(inputs);
+
+        Box::pin(async move {
+            #[expect(
+                clippy::manual_try_fold,
+                reason = "false positive, yes its fold on Result, no its not try_fold shaped"
+            )]
+            let result =
+                inputs
+                    .await
+                    .into_iter()
+                    .fold(Ok(Vec::with_capacity(len)), |accumulator, result| {
+                        match (accumulator, result) {
+                            (Ok(mut results), Ok(result)) => {
+                                results.push(result);
+                                Ok(results)
+                            }
+                            (Ok(_), Err(error)) => Err(vec![error]),
+                            (Err(mut errors), Err(error)) => {
+                                errors.push(error);
+                                Err(errors)
+                            }
+                            (Err(errors), Ok(_)) => Err(errors),
+                        }
+                    });
+
+            result.map_err(|errors| {
+                AllErrors {
+                    all_node: scheduler.span_for(node_id),
+                    errors,
+                }
+                .into()
+            })
+        })
+    }
+
+    fn execute<'scheduler>(
+        &'scheduler self,
+        _context: &'scheduler Arc<RuntimeContext>,
+        inputs: Vec<Data>,
+    ) -> BoxFuture<'scheduler, miette::Result<Data>> {
+        let result = inputs
+            .first()
+            .cloned()
+            .ok_or_else(|| internal("All node ran with no arguments"));
+        Box::pin(std::future::ready(result))
+    }
+}
 
 /// Create a container state from a remote image
 async fn image(
@@ -783,6 +898,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             ),
         ),
         ("Join", Box::new(Join)),
+        ("All", Box::new(All)),
         (
             "ToService",
             Box::new(Wrap::<_, (containerd::ContainerState, Arc<str>)>::new(

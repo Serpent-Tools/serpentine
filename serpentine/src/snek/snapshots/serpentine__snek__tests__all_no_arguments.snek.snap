@@ -1,0 +1,13 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: "$crate :: test_support :: render_error(& error)"
+---
+compiler::argument_count
+
+  x Expected 1 arguments got 0
+   ,-[<redacted-path>:1:18]
+ 1 | export DEFAULT = All();
+   :                  ^|^
+   :                   `-- This node expects 1 arguments
+   `----
+  help: Remember that chaining counts as a argument, `... > Foo(1, 2)` has 3 arguments passed for example.
