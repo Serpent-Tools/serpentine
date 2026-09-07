@@ -563,7 +563,10 @@ pub fn start_tui(events: Receiver<SerpentineEvent>) {
             break;
         }
 
-        while let Ok(event) = events.recv_timeout(Duration::from_millis(10)) {
+        let start_time = std::time::Instant::now();
+        while start_time.elapsed().as_secs_f32() < 0.1
+            && let Ok(event) = events.recv_timeout(Duration::from_millis(10))
+        {
             match event {
                 SerpentineEvent::Lifecycle(Lifecycle::Stop) => {
                     log::info!("Received stop, terminating TUI");
