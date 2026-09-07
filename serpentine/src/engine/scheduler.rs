@@ -3,13 +3,13 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use miette::{Diagnostic, Report};
+use futures_util::FutureExt;
+use miette::{Diagnostic, IntoDiagnostic, Report};
 use thiserror::Error;
 use tokio::sync::OnceCell;
 use tokio_util::task::AbortOnDropHandle;
 
 use super::RuntimeContext;
-use crate::engine::WrapInternal;
 use crate::engine::data_model::{Data, Graph, NodeInstanceId, NodeStorage};
 
 /// An error from a node, i.e. a runtime error with an associated span.
@@ -65,16 +65,10 @@ impl Scheduler {
     ) -> miette::Result<Vec<Data>> {
         let handles = nodes.iter().map(|&node_id| {
             let scheduler = Arc::clone(self);
-            AbortOnDropHandle::new(tokio::spawn(
-                async move { scheduler.get_output(node_id).await },
-            ))
+            async move { scheduler.get_output(node_id).await }
         });
 
-        futures_util::future::try_join_all(handles)
-            .await
-            .wrap_internal("node task panicked")?
-            .into_iter()
-            .collect()
+        futures_util::future::try_join_all(handles).await
     }
 
     /// Attach `node_id`'s span to an error from the work that node did itself.
@@ -106,7 +100,8 @@ impl Scheduler {
             let data = cell
                 .get_or_try_init(|| {
                     let scheduler = Arc::clone(&self);
-                    async move { scheduler.execute_node(node_id).await }
+                    AbortOnDropHandle::new(tokio::spawn(scheduler.execute_node(node_id)))
+                        .map(|result| result.into_diagnostic().flatten())
                 })
                 .await?;
 
