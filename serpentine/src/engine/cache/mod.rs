@@ -35,7 +35,7 @@ pub use github_backend::GithubActionsBackend;
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-pub const CACHE_COMPATIBILITY_VERSION: u8 = 5;
+pub const CACHE_COMPATIBILITY_VERSION: u8 = 6;
 
 /// The cache was out of date.
 #[derive(Debug, Error, Diagnostic)]

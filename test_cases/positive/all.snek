@@ -1,0 +1,3 @@
+base = Image("");
+
+export DEFAULT = All(base) > Exec("...");

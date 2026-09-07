@@ -1,0 +1,47 @@
+---
+source: serpentine/src/main.rs
+expression: "$crate :: test_support :: render_error(& err)"
+---
+all
+
+  x 1+ errors occurred
+   ,-[<redacted-path>:3:18]
+ 2 |     
+ 3 | ,-> export DEFAULT = All(
+ 4 | |       base > Exec("exit 1"),
+ 5 | |->     base > Exec("exit 2")
+   : `---- At this All node
+ 6 |     );
+   `----
+
+Error: node_error
+
+  x Error in node StoreId(3)
+  `-> command_execution_error
+      
+        x Failed to execute command (exit code 1): "exit 1"
+        |
+      
+   ,-[<redacted-path>:4:12]
+ 3 | export DEFAULT = All(
+ 4 |     base > Exec("exit 1"),
+   :            ^^^^^^|^^^^^^
+   :                  `-- Error occurred in this node
+ 5 |     base > Exec("exit 2")
+   `----
+
+Error: node_error
+
+  x Error in node StoreId(5)
+  `-> command_execution_error
+      
+        x Failed to execute command (exit code 2): "exit 2"
+        |
+      
+   ,-[<redacted-path>:5:12]
+ 4 |     base > Exec("exit 1"),
+ 5 |     base > Exec("exit 2")
+   :            ^^^^^^|^^^^^^
+   :                  `-- Error occurred in this node
+ 6 | );
+   `----
