@@ -37,7 +37,7 @@ fmt = lib::rust
 
 export spelling = lib::debian 
     > WorkingDir("/app")
-    > lib::Binstall("typos-cli@=1.49.0", "typos")
+    > lib::Binstall("typos-cli@=1.50.0", "typos")
     > With(lib::source_code, ".")
     > Exec("typos");
 
