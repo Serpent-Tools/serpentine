@@ -46,7 +46,7 @@ const CACHE_PREFIX: &str = "serpentine-";
 /// The prefix to use for the data cache
 const DATA_CACHE_PREFIX: &str = "serpentine-data";
 
-/// A caching backend for github action cache service, using their undocummented api that everyone
+/// A caching backend for github action cache service, using their undocumented api that everyone
 /// uses :P.
 #[derive(Clone)]
 pub struct GithubActionsBackend {
@@ -71,7 +71,7 @@ impl GithubActionsBackend {
 
     /// Crate a github actions cache backend from the env variables passed by the actions runner.
     ///
-    /// Version is a (persumed ascii?) 64 bytes long string to scope under.
+    /// Version is a (presumed ascii?) 64 bytes long string to scope under.
     pub fn new(version: Box<str>) -> miette::Result<Self> {
         log::info!("Saving caches to github actions");
 
@@ -132,7 +132,7 @@ impl GithubActionsBackend {
         })
     }
 
-    /// Get a reader for the given github cache key (or any specificed by the restore keys)
+    /// Get a reader for the given github cache key (or any specified by the restore keys)
     async fn get_reader_for_github_key(
         &self,
         key: Box<str>,
@@ -262,7 +262,7 @@ struct CreateCacheEntry<'version> {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateCacheEntryResponse {
-    /// Was is sucessfull?
+    /// Was is successful?
     #[serde(alias = "ok")]
     ok: bool,
     /// the url to upload bytes to
@@ -275,7 +275,7 @@ struct CreateCacheEntryResponse {
     message: Box<str>,
 }
 
-/// Serailize a `u64` as a string, as per the twirp protocol.
+/// Serialize a `u64` as a string, as per the twirp protocol.
 #[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "The required signature for serde"
@@ -315,7 +315,7 @@ struct GetCacheEntryDownloadURL {
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 struct GetCacheEntryDownloadURLResponse {
-    /// Was it sucessfull
+    /// Was it successful
     #[serde(alias = "ok")]
     ok: bool,
     /// The url to download from
@@ -370,7 +370,7 @@ struct AzureBlobWriter {
     bytes_written: u64,
     /// The signed url to upload blocks to
     url: Box<str>,
-    /// Counter for generting block ids.
+    /// Counter for generating block ids.
     block_id_counter: u16, // max value is always 50k per azure limits.
     /// The github side key to commit under
     github_key: Box<str>,
@@ -383,9 +383,9 @@ enum BlobWriterShutdownState {
     /// Currently flushing
     Flush,
     /// Currently performing azure commit request
-    CommitingAzure(BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>),
+    CommittingAzure(BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>),
     /// Currently performing github commit request
-    CommitingGithub(BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>),
+    CommittingGithub(BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>),
     /// Shutdown is done
     Done,
 }
@@ -502,7 +502,7 @@ impl AsyncWrite for AzureBlobWriter {
                     return Poll::Pending;
                 }
             }
-            // Since its ready then a item was just poped or it was empty so its always safe for us
+            // Since its ready then a item was just popped or it was empty so its always safe for us
             // to (as in stays under the cap) to register one more waker
             Poll::Ready(value) => {
                 if value.is_some() {
@@ -592,7 +592,7 @@ impl AsyncWrite for AzureBlobWriter {
                 Some(BlobWriterShutdownState::Flush) => {
                     ready!(self.as_mut().poll_flush(cx))?;
 
-                    log::debug!("All bytes flushed, commiting to azure");
+                    log::debug!("All bytes flushed, committing to azure");
                     let mut request_body = String::with_capacity(
                         const { MESSAGE_OPEN.len() + MESSAGE_CLOSE.len() }.saturating_add(
                             usize::from(self.block_id_counter)
@@ -618,14 +618,14 @@ impl AsyncWrite for AzureBlobWriter {
                         .send();
                     let commit_future = Box::pin(commit_future);
                     self.shutdown_state =
-                        Some(BlobWriterShutdownState::CommitingAzure(commit_future));
+                        Some(BlobWriterShutdownState::CommittingAzure(commit_future));
                 }
-                Some(BlobWriterShutdownState::CommitingAzure(future)) => {
+                Some(BlobWriterShutdownState::CommittingAzure(future)) => {
                     ready!(future.poll_unpin(cx))
                         .and_then(reqwest::Response::error_for_status)
                         .map_err(io::Error::other)?;
 
-                    log::debug!("Azure commit done, commiting to github.");
+                    log::debug!("Azure commit done, committing to github.");
                     let request = FinalizeCacheEntryUpload {
                         key: std::mem::take(&mut self.github_key),
                         version: std::mem::take(&mut self.github_client.version),
@@ -640,11 +640,11 @@ impl AsyncWrite for AzureBlobWriter {
                         ))
                         .json(&request)
                         .send();
-                    self.shutdown_state = Some(BlobWriterShutdownState::CommitingGithub(Box::pin(
-                        commit_future,
-                    )));
+                    self.shutdown_state = Some(BlobWriterShutdownState::CommittingGithub(
+                        Box::pin(commit_future),
+                    ));
                 }
-                Some(BlobWriterShutdownState::CommitingGithub(future)) => {
+                Some(BlobWriterShutdownState::CommittingGithub(future)) => {
                     ready!(future.poll_unpin(cx))
                         .and_then(reqwest::Response::error_for_status)
                         .map_err(io::Error::other)?;
