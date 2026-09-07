@@ -1,10 +1,5 @@
 // Most of this will be moved into the stdlib
 
-export def Chain(node_a, node_b) {
-    // Phantom dependencies are pulled before the inner expression.
-    return !node_a Noop(node_b);
-}
-
 export debian = Image("debian:bookworm@sha256:9344f8b8992482f80cba753f323adeaf17690076c095ccff6cc9536be98185dc");
 
 export rust = Image("rustlang/rust:nightly@sha256:4065ce8560d9c29ec7c4458a85960fb263bb1aee496d62835a5bc2938b4e3b48")

@@ -238,7 +238,7 @@ jobs:
         env:
           RUST_LOG: trace
 
-  lint:
+  pr-blockers:
     needs: [build-docker]
     runs-on: ubuntu-latest
     steps:
@@ -269,14 +269,10 @@ jobs:
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL);
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
       - name: Run serpentine pipeline
-        run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point LINTS --jobs 1
+        run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point PR_BLOCKERS --jobs 1
 
-  advisory:
+  pr-hints:
     needs: [build-docker]
-    strategy:
-      fail-fast: false
-      matrix:
-        entry_point: [SECURITY, FUZZ]
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -295,7 +291,7 @@ jobs:
         with:
           name: containerd-image
           path: /tmp
-      # SECURITY scans the image tarball with trivy, so it has to land on disk as well as be loaded.
+      # trivy scans the image tarball, so it has to land on disk as well as be loaded.
       - name: Load Docker image
         run: |
           mkdir -p target
@@ -307,21 +303,21 @@ jobs:
           script: |
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL);
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
-      - name: Run ${{ matrix.entry_point }} pipeline
-        run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point ${{ matrix.entry_point }} --jobs 1
+      - name: Run serpentine pipeline
+        run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point PR_HINTS --jobs 1
 
   all-checks:
     if: always()
     needs: [
-      test, 
-      test_gha_cache, 
-      lint, 
-      advisory
+      test,
+      test_gha_cache,
+      pr-blockers,
+      pr-hints
     ]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
           # These being red might or might not be caused by the given PR, so a reviewer decides.
-          allowed-failures: advisory, test_gha_cache
+          allowed-failures: pr-hints, test_gha_cache
           jobs: ${{ toJSON(needs) }}

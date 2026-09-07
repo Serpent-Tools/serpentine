@@ -23,7 +23,7 @@ windows_toolchain = lib::rust
     > Env("CC_x86_64_pc_windows_gnu", "x86_64-w64-mingw32-gcc-posix");
 clippy_windows = ClippyOnTarget(windows_toolchain, "x86_64-pc-windows-gnu");
 
-clippy_all = !(clippy_hack, clippy_windows) Noop(0);
+clippy_all = All(clippy_hack, clippy_windows);
 
 clippy = lib::rust 
     > Exec("rustup component add clippy")
@@ -59,7 +59,7 @@ renovate_config = Image("ghcr.io/renovatebot/renovate:43.214.1@sha256:55af44f12d
     > With(FromHost("renovate.json"), "renovate.json")
     > Exec("renovate-config-validator --strict --no-global renovate.json");
 
-export light_lints = !(clippy, fmt, spelling) Noop(0);
-export full_lints = !(clippy_all, fmt, spelling, renovate_config) Noop(0);
-export security = !(deny, trivy) Noop(0);
+export light_lints = All(clippy, fmt, spelling);
+export full_lints = All(clippy_all, fmt, spelling, renovate_config);
+export security = All(deny, trivy);
 
