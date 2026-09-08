@@ -22,6 +22,21 @@ Paired with phantom inputs this is how you group nodes, as the group needs somet
 tests = !(unit_tests, integration_tests) Noop(0);
 ```
 
+> [!NOTE]
+> See also `All` for slightly different grouping semantics.
+
+## Flow controll nodes
+
+### `All`
+By default most nodes stop execution of other children branches once one input errors, `All` does not and instead collects the errors from all inputs.
+For example take the `Noop` code from above, if both unit and integration tests are failing phantom inputs will only give you the stderr of one, meanwhile:
+
+```snek
+tests = All(unit_tests, integration_tests);
+```
+
+Will let both run to completion and report all errors if there are any. Similar to `Noop`, `All` will return the first input (if there were no errors);
+
 ## Container nodes
 
 "Containers" in serpentine, or more accurately containerd snapshots (essentially docker layers) are immutable values, the below nodes take in a container and return a new one.
