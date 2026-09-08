@@ -25,7 +25,7 @@ tests = !(unit_tests, integration_tests) Noop(0);
 > [!NOTE]
 > See also `All` for slightly different grouping semantics.
 
-## Flow controll nodes
+## Flow control nodes
 
 ### `All`
 By default most nodes stop execution of other children branches once one input errors, `All` does not and instead collects the errors from all inputs.

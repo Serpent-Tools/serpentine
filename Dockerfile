@@ -1,5 +1,5 @@
 FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b as download
-RUN apk add tar=1.35-r5 curl=8.21.0-r0
+RUN apk add tar curl
 
 ARG TINI_VERSION=v0.19.0
 RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static" -o /tini && \
@@ -119,9 +119,7 @@ COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
 FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
-RUN apk add --no-cache zlib=1.3.2-r0
-RUN apk add --no-cache iptables=1.8.13-r0
-RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 musl=1.2.6-r2 musl-utils=1.2.6-r2
+RUN apk add --no-cache iptables
 
 COPY --from=containerd /src/containerd/bin /bin
 COPY --from=runc /src/runc/runc /bin/runc
