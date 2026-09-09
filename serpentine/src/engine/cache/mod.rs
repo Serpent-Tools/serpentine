@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use base64::Engine;
 use futures_util::future::BoxFuture;
 use miette::{Context, Diagnostic, IntoDiagnostic};
 use thiserror::Error;
@@ -35,7 +36,7 @@ pub use github_backend::GithubActionsBackend;
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-pub const CACHE_COMPATIBILITY_VERSION: u8 = 6;
+pub const CACHE_COMPATIBILITY_VERSION: u8 = 7;
 
 /// The cache was out of date.
 #[derive(Debug, Error, Diagnostic)]
@@ -49,8 +50,24 @@ struct CacheOutOfDate {
 
 /// Wrapper around the raw blake3 hash output as its trait implementations (`Hash` and `Eq`) use
 /// constant time functions, which we do not require
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CacheHash([u8; blake3::OUT_LEN]);
+
+impl std::fmt::Debug for CacheHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hash = base64::prelude::BASE64_STANDARD_NO_PAD.encode(self.0);
+        f.write_str(&hash)?;
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for CacheHash {
+    type Target = [u8; blake3::OUT_LEN];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 // This must only call one `write` method (and only ones <= 64 bits).
 // https://docs.rs/nohash/latest/nohash/trait.IsEnabled.html
@@ -114,6 +131,10 @@ pub enum CacheScope {
     Data,
     /// A containerd snapshot
     Snapshot,
+    /// Hash of the inputs to containerd exec
+    ExecInputs,
+    /// Hash of the inputs to containerd With
+    WithInputs,
 }
 
 impl CacheHash {

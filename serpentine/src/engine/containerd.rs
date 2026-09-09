@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use base64::Engine;
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::future::BoxFuture;
@@ -1438,6 +1439,9 @@ impl Client {
         cmd: String,
         lease: &str,
     ) -> miette::Result<(ContainerState, Result<String, String>)> {
+        let hash = CacheHash::from_data(CacheScope::ExecInputs, &(&state, &cmd)).await?;
+        let snapshot_name = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(*hash);
+
         let exec_lock = self.exec_lock.acquire().await;
         log::debug!("Preparing to execute {cmd:?} in {state:?}");
         let container_topology = state.into_topology(cmd.into());
@@ -1449,7 +1453,11 @@ impl Client {
         let handle = running_topology.get_data();
 
         self.wait_for_exit(handle.id.clone(), String::new()).await?;
-        let (container, stdout) = self.spindown_topology(running_topology).await?;
+
+        let (container, stdout) = self
+            .spindown_topology(running_topology, snapshot_name)
+            .await?;
+
         self.free_networks
             .lock()
             .await
@@ -2021,9 +2029,13 @@ impl Client {
     }
 
     /// Spin down a given topology of running containers.
+    ///
+    /// Takes the name to commit snapshots under, this should be unique, so ideally CAC.
+    /// Services will be committed under `{snapshot_name}/{hostname}`
     async fn spindown_topology(
         &self,
         containers: network::Topology<ContainerHandle>,
+        snapshot_name: String,
     ) -> miette::Result<(ContainerLike, Result<String, String>)> {
         const SIGINT: u32 = 2;
         const SIGKILL: u32 = 9;
@@ -2045,18 +2057,23 @@ impl Client {
 
         drop(handle.exec_task);
 
-        let final_snapshot = uuid::Uuid::new_v4().to_string();
-        self.containerd
+        let commit = self
+            .containerd
             .snapshot()
             .commit(containerd_services::snapshots::CommitSnapshotRequest {
                 snapshotter: SNAPSHOTTER.to_owned(),
-                name: final_snapshot.clone(),
+                name: snapshot_name.clone(),
                 key: handle.snapshot.clone(),
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("committing snapshot {final_snapshot}"))?;
+            .await;
+        if let Err(status) = commit
+            && !Self::is_already_exists(&status)
+        {
+            return Err(status)
+                .into_diagnostic()
+                .with_context(|| format!("committing snapshot {snapshot_name}"));
+        }
 
         let stdout = handle
             .stdout
@@ -2088,7 +2105,9 @@ impl Client {
             };
             let hostname = Arc::clone(hostname);
 
-            let (child_container, _) = Box::pin(self.spindown_topology(child)).await?;
+            let (child_container, _) =
+                Box::pin(self.spindown_topology(child, format!("{snapshot_name}/{hostname}")))
+                    .await?;
 
             if let ContainerLike::Service(service) = child_container {
                 services.insert(hostname, service);
@@ -2098,7 +2117,7 @@ impl Client {
         }
 
         let mut container = handle.node.state;
-        container.snapshot = final_snapshot.into();
+        container.snapshot = snapshot_name.into();
         let container = container.update_config(move |config| {
             config.services = services;
         });
@@ -2135,7 +2154,10 @@ impl Client {
         src: FileSystem,
         dest: &UnixPath,
     ) -> miette::Result<ContainerState> {
-        let snapshot = uuid::Uuid::new_v4().to_string();
+        let hash = CacheHash::from_data(CacheScope::WithInputs, &src).await?;
+        let hash = CacheHash::from_data(CacheScope::WithInputs, &(&state, hash)).await?;
+        let final_snapshot = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(*hash);
+
         let lease = self.new_lease().await?;
 
         let dest = if dest.as_bytes() == b"." {
@@ -2144,6 +2166,7 @@ impl Client {
             dest
         };
 
+        let snapshot = uuid::Uuid::new_v4().to_string();
         let mounts = self
             .containerd
             .snapshot()
@@ -2172,22 +2195,27 @@ impl Client {
             .into_diagnostic()
             .context("copying the filesystem into the container")?;
 
-        let new_snapshot = uuid::Uuid::new_v4().to_string();
-        self.containerd
+        let commit = self
+            .containerd
             .snapshot()
             .commit(containerd_services::snapshots::CommitSnapshotRequest {
                 snapshotter: SNAPSHOTTER.to_owned(),
-                name: new_snapshot.clone(),
+                name: final_snapshot.clone(),
                 key: snapshot.clone(),
                 labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
             })
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("committing snapshot {new_snapshot}"))?;
+            .await;
+        if let Err(status) = commit
+            && !Self::is_already_exists(&status)
+        {
+            return Err(status)
+                .into_diagnostic()
+                .with_context(|| format!("committing snapshot {snapshot}"));
+        }
         self.drop_lease(lease).await?;
 
         Ok(ContainerState {
-            snapshot: new_snapshot.into(),
+            snapshot: final_snapshot.into(),
             config: state.config.clone(),
         })
     }
