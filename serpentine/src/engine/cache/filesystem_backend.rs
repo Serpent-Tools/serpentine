@@ -18,9 +18,6 @@ use crate::engine::{BoxedReader, BoxedWriter};
 /// The extension to use for cache files.
 const CACHE_EXTENSION: &str = ".serpentine";
 
-/// Appended to the cache directory's name to get the scratch directory.
-const SCRATCH_SUFFIX: &[u8] = b".partial";
-
 /// A `CacheBackend` that writes to the local filesystem.
 pub struct LocalCacheBackend {
     /// The caching directory to use.
@@ -45,11 +42,7 @@ impl LocalCacheBackend {
         tokio::fs::create_dir_all(platform_to_std(&cache_dir).map_err(std::io::Error::other)?)
             .await?;
 
-        let scratch_dir = scratch_dir_for(&cache_dir).ok_or_else(|| {
-            std::io::Error::other(format!(
-                "{cache_dir:?} has no parent to place scratch files in"
-            ))
-        })?;
+        let scratch_dir = cache_dir.join(PlatformPath::new("scratch"));
         tokio::fs::create_dir_all(platform_to_std(&scratch_dir).map_err(std::io::Error::other)?)
             .await?;
 
@@ -75,19 +68,6 @@ impl LocalCacheBackend {
     fn scratch_path(&self) -> PlatformPathBuf {
         self.scratch_dir.join(uuid::Uuid::new_v4().to_string())
     }
-}
-
-/// The directory holding scratch files for `cache_dir`.
-///
-/// This sits beside the cache rather than inside it: entries are finished with a rename, which
-/// only works within one filesystem, while anything inside the cache directory would be picked up
-/// by whatever archives it (such as `actions/cache`) and shipped to the next run.
-fn scratch_dir_for(cache_dir: &PlatformPath) -> Option<PlatformPathBuf> {
-    let parent = cache_dir.parent()?;
-    let mut name = cache_dir.file_name()?.to_vec();
-    name.extend_from_slice(SCRATCH_SUFFIX);
-
-    Some(parent.join(PlatformPath::new(&name)))
 }
 
 impl CacheBackend for LocalCacheBackend {
