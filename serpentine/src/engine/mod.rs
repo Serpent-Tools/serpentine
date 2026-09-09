@@ -221,7 +221,7 @@ pub struct RuntimeContext {
     /// The channel run events are reported through
     reporter: Reporter,
     /// Caching of values
-    cache: cache::Cache,
+    cache: Arc<dyn CacheBackend + Sync + Send>,
     /// Should external state be exported?
     standalone_cache: bool,
 }
@@ -242,37 +242,20 @@ impl RuntimeContext {
             cli.containerd_namespace.clone(),
         )
         .await?;
-        let cache = cache::Cache::new(cache_backend).await?;
 
         Ok(Self {
             containerd,
             reporter,
-            cache,
+            cache: cache_backend,
             standalone_cache: cli.standalone_cache,
         })
     }
 
     /// Shutdown the runtime context, cleaning up any resources
-    async fn shutdown(self, cli: &crate::Run) {
+    async fn shutdown(self) {
         log::debug!("Shutting down runtime context");
 
-        let Self {
-            containerd, cache, ..
-        } = self;
-
-        match cache.save(!cli.clean_old).await {
-            Err(err) => {
-                log::warn!("Failed to save cache: {err}");
-            }
-            Ok(resources_to_remove) => {
-                for resource in resources_to_remove {
-                    log::debug!("Removing resource {resource:?}");
-                    if let Err(err) = resource.clean(&containerd).await {
-                        log::error!("Failed to remove resource {err}");
-                    }
-                }
-            }
-        }
+        let Self { containerd, .. } = self;
 
         containerd.shutdown().await;
     }
@@ -334,7 +317,7 @@ pub fn run(
         .await;
 
         match reclaimed {
-            Ok(runtime_context) => runtime_context.shutdown(cli).await,
+            Ok(runtime_context) => runtime_context.shutdown().await,
             Err(_) => {
                 log::warn!("Tasks still in flight after timeout, skipping clean shutdown");
             }
@@ -371,7 +354,6 @@ pub(crate) mod benchmarks {
             cache_folder: Some(cache_path.to_path_buf()),
             cache_backend: crate::CacheBackendKind::Fs,
             standalone_cache,
-            clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 2,
             containerd_namespace: namespace,

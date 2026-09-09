@@ -102,9 +102,6 @@ struct Run {
     /// NOTE: Serpentine already ensures that multiple instance cooperate in regards to containerd.
     #[arg(long, default_value = "serpentine")]
     containerd_namespace: String,
-    /// Delete old cache entries (also cleans out stale container layers).
-    #[arg(long)]
-    clean_old: bool,
     /// Limit of the number of parallel exec jobs allowed to run
     ///
     /// Due to most build systems already using all available cores it usually smart to set this to
@@ -501,7 +498,6 @@ mod tests {
             cache_folder: None,
             cache_backend: crate::CacheBackendKind::None,
             standalone_cache: false,
-            clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 1,
             containerd_namespace: "serpentine-test".into(),
@@ -533,7 +529,6 @@ mod tests {
             cache_folder: None,
             cache_backend: crate::CacheBackendKind::None,
             standalone_cache: false,
-            clean_old: false,
             entry_point: "DEFAULT".into(),
             jobs: 1,
             containerd_namespace: "serpentine-test".into(),

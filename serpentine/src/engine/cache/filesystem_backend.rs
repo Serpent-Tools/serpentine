@@ -7,7 +7,6 @@ use std::task::{Context, Poll, ready};
 
 use base64::Engine;
 use futures_util::future::BoxFuture;
-use miette::{IntoDiagnostic, WrapErr};
 use nohash::IntSet;
 use serpentine_internal::platform_to_std;
 use tokio::io::AsyncWrite;
@@ -18,9 +17,6 @@ use crate::engine::{BoxedReader, BoxedWriter};
 
 /// The extension to use for cache files.
 const CACHE_EXTENSION: &str = ".serpentine";
-
-/// The file to store the data blob in.
-const DATA_BLOB_NAME: &str = "data";
 
 /// Appended to the cache directory's name to get the scratch directory.
 const SCRATCH_SUFFIX: &[u8] = b".partial";
@@ -62,12 +58,6 @@ impl LocalCacheBackend {
             scratch_dir,
             locks: Mutex::new(IntSet::default()),
         })
-    }
-
-    /// Get the file path for the data blob
-    fn file_path_for_data(&self) -> PlatformPathBuf {
-        self.cache_dir
-            .join(format!("{DATA_BLOB_NAME}{CACHE_EXTENSION}"))
     }
 
     /// Get the file path for a given key
@@ -142,51 +132,6 @@ impl CacheBackend for LocalCacheBackend {
                 .await
                 .ok()
                 .map(BoxedWriter::new)
-        })
-    }
-
-    fn get_data_cache(&self) -> BoxFuture<'static, Option<BoxedReader>> {
-        log::debug!("Reading data cache from local cache backend");
-        let path = self.file_path_for_data();
-
-        Box::pin(async move {
-            let file = tokio::fs::File::open(platform_to_std(&path).ok()?)
-                .await
-                .ok()?;
-            Some(BoxedReader::new(file))
-        })
-    }
-
-    fn get_data_cache_writer(&self) -> BoxFuture<'_, miette::Result<BoxedWriter>> {
-        log::debug!("Writing data cache to local cache backend");
-        let destination = self.file_path_for_data();
-        let scratch = self.scratch_path();
-
-        Box::pin(async move {
-            let to_std = |path: &PlatformPath| {
-                platform_to_std(path)
-                    .map(std::path::Path::to_path_buf)
-                    .into_diagnostic()
-                    .with_context(|| format!("cache path {} is not utf-8", path.display()))
-            };
-
-            let file = ScratchFile::create(to_std(&scratch)?, to_std(&destination)?)
-                .await
-                .into_diagnostic()
-                .with_context(|| format!("creating cache file {}", destination.display()))?;
-            Ok(BoxedWriter::new(file))
-        })
-    }
-
-    fn delete_key(&self, key: CacheHash) -> BoxFuture<'_, ()> {
-        let path = self.file_path_for_key(key);
-
-        Box::pin(async move {
-            let Ok(path) = platform_to_std(&path) else {
-                return;
-            };
-
-            let _ = tokio::fs::remove_file(path).await;
         })
     }
 }

@@ -12,7 +12,7 @@ serpentine run
 Now caching is where it gets fun, to persist serpentines layer caches between runners you just need to cache *one folder*, however your CI platform does that.
 Specifically if you use the following command:
 ```bash
-serpentine run --cache-folder /tmp/serpentine_cache --clean-old --standalone-cache
+serpentine run --cache-folder /tmp/serpentine_cache --standalone-cache
 ```
 You must restore `/tmp/serpentine_cache` before running it, and save it afterwards. 
 

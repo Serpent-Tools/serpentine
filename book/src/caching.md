@@ -104,9 +104,6 @@ export def Cooked(container, build_kind) {
 }
 ```
 
-## `--clean-old`
-By default the serpentine cache is purely additive, but this can result in a lot of space use over time. Running with the `--clean-old` flag will only keep values produced (or read) this run. There is also the `clean` sub-command which will delete all data from the cache.
-
 ## `--standalone-cache`
 
 As noted above serpentine simply caches snapshot names, this means the cache cannot be moved between machines as the containerd volumes would not be moved along with it.

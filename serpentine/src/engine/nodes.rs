@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use miette::{Context, IntoDiagnostic};
+use tokio::io::AsyncWriteExt;
 use typed_path::{PlatformPathBuf, UnixPath};
 
 use crate::engine::cache::{CacheHash, CacheKey, CacheScope};
-use crate::engine::data_model::{Data, DataType, NodeInstanceId, NodeKindId};
+use crate::engine::data_model::{CacheableData, Data, DataType, NodeInstanceId, NodeKindId};
 use crate::engine::filesystem::{self, FileSystem};
 use crate::engine::scheduler::Scheduler;
 use crate::engine::{RuntimeContext, containerd, internal};
@@ -78,25 +79,24 @@ pub trait NodeImpl: Send + Sync {
                     let key = CacheHash::from_data(CacheScope::Data, &key).await?;
                     log::debug!("Checking cache with {key:?}");
 
-                    if let Some(cached_value) =
-                        // NOTE: braces such that the mutex lock is dropped.
-                        {
-                            context
-                                .cache
-                                .data_cache
-                                .lock()
-                                .map_err(|_| internal("data cache mutex poisoned"))?
-                                .get(key)
-                                .cloned()
-                        }
-                    {
+                    if let Some(mut cache_reader) = context.cache.read_key(key).await {
                         log::debug!("Cache hit on {}", self.describe());
 
-                        if cached_value.healthcheck(context).await {
-                            let cached_value = Data::from_cacheable(cached_value);
-                            return Ok((cached_value, crate::events::NodeTransition::Cached));
+                        if let Ok(cached_value) = serpentine_internal::read_postcard_frame::<
+                            CacheableData,
+                        >(&mut cache_reader)
+                        .await
+                        {
+                            if cached_value.healthcheck(context).await {
+                                let cached_value = Data::from_cacheable(cached_value);
+                                return Ok((cached_value, crate::events::NodeTransition::Cached));
+                            }
+                            log::warn!(
+                                "value {cached_value:?} failed health-check, not using cache."
+                            );
+                        } else {
+                            log::warn!("Faild to read cache entry");
                         }
-                        log::warn!("value {cached_value:?} failed health-check, not using cache.");
                     }
 
                     log::debug!("Executing {}", self.describe());
@@ -109,12 +109,14 @@ pub trait NodeImpl: Send + Sync {
                             result.export_external_data(context).await;
                         }
 
-                        context
-                            .cache
-                            .data_cache
-                            .lock()
-                            .map_err(|_| internal("data cache mutex poisoned"))?
-                            .insert(key, result);
+                        if let Some(mut writer) = context.cache.write_key(key).await {
+                            let result =
+                                serpentine_internal::write_postcard_frame(&result, &mut writer)
+                                    .await;
+                            if result.is_ok() {
+                                let _ = writer.shutdown().await;
+                            }
+                        }
                     }
 
                     Ok((result, crate::events::NodeTransition::Ran))

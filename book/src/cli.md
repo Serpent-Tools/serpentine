@@ -9,7 +9,7 @@ Run a serpentine pipeline, takes no positional arguments. By default this will w
 For example CI systems will likely want some variation on:
 
 ```bash
-serpentine run --cache-folder /tmp/serpentine_cache --clean-old --standalone-cache
+serpentine run --cache-folder /tmp/serpentine_cache --standalone-cache
 ```
 
 ### `--pipeline` / `-p`
@@ -75,12 +75,6 @@ The containerd namespace to scope every snapshot, layer and lease to. Serpentine
 
 Enables serpentines standalone cache mode, making the cache fully portable between systems, needed if preserving cache on CI runners, see [Caching](./caching.md) chapter for more details.
 
-### `--clean-old`
-
-Delete caches left over from older runs, by default serpentine treats the cache as append only, but especially in CI you might want to clean out unused stuff.
-
-> [!NOTE]
-> Serpentine will do its best to also cleanout the containerd state in a similar manner, but may sometimes miss stuff. In CI with empherial runners this is not a concern, but locally you might want to run a `serpentine clean` once in a while.
 
 ## `clean`
 

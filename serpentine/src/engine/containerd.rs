@@ -348,14 +348,6 @@ impl ContainerState {
         &self.config
     }
 
-    /// Collect the snapshot keys referenced by this container, including its attached services.
-    pub(crate) fn collect_snapshots(&self, out: &mut Vec<Arc<str>>) {
-        out.push(Arc::clone(&self.snapshot));
-        for service in self.config.services.values() {
-            service.collect_snapshots(out);
-        }
-    }
-
     /// Update this states config using a closure.
     ///
     /// This does not change the input state but instead returns a new one.
@@ -2298,31 +2290,6 @@ impl Client {
             }
         }
     }
-
-    // TEST: That this works, hard to do as its simply asking containerd to delete it at a later
-    // time.
-
-    /// Mark the given snapshot for garbage collection.
-    pub async fn delete(&self, snapshot: &str) -> miette::Result<()> {
-        self.containerd
-            .snapshot()
-            .update(containerd_services::snapshots::UpdateSnapshotRequest {
-                snapshotter: SNAPSHOTTER.to_owned(),
-                info: Some(containerd_services::snapshots::Info {
-                    name: snapshot.to_owned(),
-                    labels: HashMap::from([("containerd.io/gc.root".to_owned(), "0".to_owned())]),
-                    ..Default::default()
-                }),
-                update_mask: Some(prost_types::FieldMask {
-                    paths: vec!["labels".to_owned()],
-                }),
-            })
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("marking snapshot {snapshot} for collection"))?;
-
-        Ok(())
-    }
 }
 
 impl Drop for Client {
@@ -2359,52 +2326,6 @@ impl FileSystemProvider for ContainerFileExport {
 
     fn dyn_clone(&self) -> Box<dyn FileSystemProvider> {
         Box::new(self.clone())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A config-only change must keep referencing the same snapshot keys, so the cache cleanup
-    /// does not delete a snapshot still in use.
-    #[test]
-    fn config_edit_keeps_snapshot_keys() {
-        bolero::check!()
-            .with_type()
-            .for_each(|container: &ContainerState| {
-                let edited = container.update_config(|config| {
-                    config.set_env_var("SERPENTINE_TEST".into(), "1".into());
-                });
-
-                let mut original = Vec::new();
-                container.collect_snapshots(&mut original);
-                let mut edited_keys = Vec::new();
-                edited.collect_snapshots(&mut edited_keys);
-
-                assert_eq!(original, edited_keys);
-            });
-    }
-
-    /// Attached services contribute their snapshot keys, so their snapshots are cleaned up once
-    /// orphaned instead of leaking.
-    #[test]
-    fn service_snapshots_are_collected() {
-        bolero::check!().with_type().for_each(
-            |(container, service): &(ContainerState, ContainerState)| {
-                let with_service = container.update_config(|config| {
-                    config.with_service(service.clone().into_service("entry".into()), "db".into());
-                });
-
-                let mut keys = Vec::new();
-                with_service.collect_snapshots(&mut keys);
-                let mut expected = Vec::new();
-                container.collect_snapshots(&mut expected);
-                service.collect_snapshots(&mut expected);
-
-                assert_eq!(keys, expected);
-            },
-        );
     }
 }
 
