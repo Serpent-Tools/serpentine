@@ -95,7 +95,7 @@ pub trait NodeImpl: Send + Sync {
                                 "value {cached_value:?} failed health-check, not using cache."
                             );
                         } else {
-                            log::warn!("Faild to read cache entry");
+                            log::warn!("Failed to read cache entry");
                         }
                     }
 
