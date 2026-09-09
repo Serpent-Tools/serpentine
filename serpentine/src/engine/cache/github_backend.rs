@@ -43,9 +43,6 @@ const AZURE_VERSION: &str = "2023-11-03";
 /// The prefix to use for cache entries for serpentine
 const CACHE_PREFIX: &str = "serpentine-";
 
-/// The prefix to use for the data cache
-const DATA_CACHE_PREFIX: &str = "serpentine-data";
-
 /// A caching backend for github action cache service, using their undocumented api that everyone
 /// uses :P.
 #[derive(Clone)]
@@ -335,24 +332,6 @@ impl CacheBackend for GithubActionsBackend {
     fn write_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>> {
         let key = Self::hash_to_key(key);
         Box::pin(self.create_writer_for_github_key(key).map(Result::ok))
-    }
-
-    fn get_data_cache(&self) -> BoxFuture<'_, Option<BoxedReader>> {
-        Box::pin(
-            self.get_reader_for_github_key(
-                DATA_CACHE_PREFIX.into(),
-                vec![DATA_CACHE_PREFIX.into()],
-            ),
-        )
-    }
-
-    fn get_data_cache_writer(&self) -> BoxFuture<'_, miette::Result<BoxedWriter>> {
-        Box::pin(
-            self.create_writer_for_github_key(format!(
-                "{DATA_CACHE_PREFIX}{}",
-                uuid::Uuid::new_v4()
-            )),
-        )
     }
 }
 
