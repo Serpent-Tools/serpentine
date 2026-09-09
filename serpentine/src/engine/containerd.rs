@@ -799,7 +799,7 @@ impl Client {
 
         log::debug!("Applying layer diff {digest} to {temp_snapshot}");
         let descriptor = containerd_client::types::Descriptor {
-            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+            media_type: "application/vnd.oci.image.layer.v1.tar+zstd".into(),
             digest,
             size: total_size.try_into().unwrap_or(0),
             annotations: HashMap::new(),
