@@ -252,6 +252,9 @@ mod tests {
                     .expect("Failed to write");
                 writer.shutdown().await.expect("Failed to close writer");
 
+                // ensure backends have time to sync any needed changes on their end
+                let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+
                 let mut reader = backend
                     .read_key($crate::engine::cache::CacheHash([1; _]))
                     .await
@@ -284,6 +287,7 @@ mod tests {
                     .await
                     .expect("Failed to write");
                 writer.shutdown().await.expect("Failed to close writer");
+                let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
                 let  writer = backend
                     .write_key($crate::engine::cache::CacheHash([2; _]))

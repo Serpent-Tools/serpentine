@@ -585,9 +585,11 @@ async fn export_layer(
     remote_socket: impl AsyncWrite + Unpin + Send + Sync,
     mount: Mount,
 ) -> Result<(), Box<dyn Error>> {
+    let compressor = async_compression::tokio::write::ZstdEncoder::new(remote_socket);
+
     let upperdir_path = extract_overlayfs_upperdir(mount)?;
     log::debug!("Extracting info from {}", upperdir_path.display());
-    let mut tar = async_tar::Builder::new(remote_socket);
+    let mut tar = async_tar::Builder::new(compressor);
 
     tar.follow_symlinks(false);
     tar.mode(async_tar::HeaderMode::Complete);
@@ -596,9 +598,12 @@ async fn export_layer(
         .await
         .map_err(|err| err.to_string());
     // The builder panics when dropped unfinalized, so finish before surfacing any walk error.
-    let finished = tar.finish().await;
+
+    let writer = tar.into_inner().await;
     appended?;
-    finished?;
+
+    let mut writer = writer?;
+    writer.shutdown().await?;
 
     Ok(())
 }
