@@ -6,7 +6,7 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION
     echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum -c - && \
     chmod +x /tini
 
-FROM docker.io/library/golang:1.27.0-bookworm@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452 AS go_base
+FROM docker.io/library/golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go_base
 
 FROM go_base AS cni
 
@@ -58,8 +58,8 @@ RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # renovate: datasource=github-tags depName=containerd/containerd
-ARG CONTAINERD_VERSION=v2.3.4
-ARG CONTAINERD_COMMIT=db8809540e1a7a9da5d518876894933ff55692ab
+ARG CONTAINERD_VERSION=v2.3.5
+ARG CONTAINERD_COMMIT=1294c24a7da8e5a793ed378161673abe94118892
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
