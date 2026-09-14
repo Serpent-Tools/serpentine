@@ -8,7 +8,7 @@ tokio = { version = "1.50.0", default-features = false }
 tokio-stream = { version = "0.1.19", default-features = false }
 log = { version = "0.4.29", default-features = false }
 uuid = { version = "1.22.0", default-features = false, features = ["v4"] }
-rstest = { version = "0.26.1", default-features = false }
+rstest = { version = "0.27.0", default-features = false }
 bolero = { version = "0.13.4", default-features = false, features = ["std", "alloc"] }
 typed-path = { version = "0.12.3", default-features = false }
 nix = { version = "0.31.3", default-features = false }
