@@ -14,6 +14,10 @@ These nodes are available at all times in the global scope.
 This node takes any number of string arguments and join them together.
 For example `Join("hello ", "world")` results in `"hello world"`
 
+### `ShellEscape`
+
+Escapes a given string so that it can be `Join`ed into a command, for example `Exec(..., Join("echo ", ShellEscape("lots of special symbols & stuff;")))`
+
 ### `Noop`
 
 Takes exactly one value of any type and returns it unchanged.
