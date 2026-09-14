@@ -828,6 +828,11 @@ async fn healthcheck(
     Ok(service.update_service_config(|config| config.set_healthcheck(command, timeout)))
 }
 
+/// Escape the given string so it can be joined with other commands.
+async fn shell_escape(_content: Arc<RuntimeContext>, input: Arc<str>) -> miette::Result<Arc<str>> {
+    Ok(shell_words::quote(&input).into())
+}
+
 /// Return the list of prelude nodes
 pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
     vec![
@@ -884,9 +889,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ),
         (
             "GetEnv",
-            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(
-                get_env,
-            )),
+            Box::new(Wrap::<_, (containerd::ContainerLike, Arc<str>)>::new(get_env).uncached()),
         ),
         (
             "User",
@@ -900,9 +903,7 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
         ("All", Box::new(All)),
         (
             "ToService",
-            Box::new(Wrap::<_, (containerd::ContainerState, Arc<str>)>::new(
-                to_service,
-            )),
+            Box::new(Wrap::<_, (containerd::ContainerState, Arc<str>)>::new(to_service).uncached()),
         ),
         (
             "WithService",
@@ -915,7 +916,8 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
                         Arc<str>,
                     ),
                 >::new(with_service)
-                .passthrough(),
+                .passthrough()
+                .uncached(),
             ),
         ),
         (
@@ -923,6 +925,10 @@ pub fn prelude() -> Vec<(&'static str, Box<dyn NodeImpl>)> {
             Box::new(
                 Wrap::<_, (containerd::ServiceState, Arc<str>, i128)>::new(healthcheck).uncached(),
             ),
+        ),
+        (
+            "ShellEscape",
+            Box::new(Wrap::<_, Arc<str>>::new(shell_escape).uncached()),
         ),
     ]
 }
