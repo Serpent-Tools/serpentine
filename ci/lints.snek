@@ -10,9 +10,9 @@ clippy_hack = lib::rust
 def ClippyOnTarget(base, target) {
     return base
         > Exec("rustup component add clippy")
-        > Exec(Join("rustup target add ", target))
-        > lib::Cooked(Join("--clippy --all-targets -p serpentine --target ", target))
-        > Exec(Join("cargo clippy --locked --all-targets --target ", target, " -p serpentine -- -Dwarnings"));
+        > Exec(Join("rustup target add ", ShellEscape(target)))
+        > lib::Cooked(Join("--clippy --all-targets -p serpentine --target ", ShellEscape(target)))
+        > Exec(Join("cargo clippy --locked --all-targets --target ", ShellEscape(target), " -p serpentine -- -Dwarnings"));
 }
 
 // ring's build script cross-compiles C, so the windows-gnu toolchain must be present.

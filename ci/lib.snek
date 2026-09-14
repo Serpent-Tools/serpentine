@@ -11,7 +11,7 @@ export def Binstall(container, crate, bin_name) {
     binary = rust 
         // cargo-binstall v1.23.0
         > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/b874e25ea559687bec77e281e9b271aa1367b624/install-from-binstall-release.sh | bash")
-        > Exec(Join("cargo binstall --root /out ", crate))
+        > Exec(Join("cargo binstall --root /out ", ShellEscape(crate)))
         > Export(Join("/out/bin/", bin_name));
 
     return container > With(binary, Join("/bin/", bin_name));
