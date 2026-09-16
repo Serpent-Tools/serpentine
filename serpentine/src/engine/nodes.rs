@@ -356,7 +356,7 @@ macro_rules! impl_node_impl {
                 }+)* 0;
                 if arguments.len() != count {
                     return Err(CompileError::ArgumentCountMismatch {
-                        expected: count,
+                        expected: count.to_string(),
                         got: arguments.len(),
                         location: node_span
                     })
@@ -384,7 +384,7 @@ macro_rules! impl_node_impl {
                     // The return type is the same as the first argument's type.
                     // This is used for nodes that operate on a ContainerLike and return the same variant.
                     first_type.ok_or_else(|| CompileError::ArgumentCountMismatch {
-                        expected: 1,
+                        expected: "1".into(),
                         got: 0,
                         location: node_span,
                     })
@@ -452,7 +452,7 @@ impl NodeImpl for Noop {
             Ok(**arg)
         } else {
             Err(CompileError::ArgumentCountMismatch {
-                expected: 1,
+                expected: "1".into(),
                 got: arguments.len(),
                 location: node_span,
             })
@@ -537,7 +537,7 @@ impl NodeImpl for All {
             Ok(first_arg.take())
         } else {
             Err(CompileError::ArgumentCountMismatch {
-                expected: 1,
+                expected: "1+".into(),
                 got: 0,
                 location: node_span,
             })

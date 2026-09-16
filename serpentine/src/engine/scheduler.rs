@@ -15,11 +15,9 @@ use crate::snek::span::Span;
 
 /// An error from a node, i.e. a runtime error with an associated span.
 #[derive(Debug, Error, Diagnostic)]
-#[error("Error in node {node_id:?}")]
+#[error("Error in node")]
 #[diagnostic(code(node_error))]
 pub struct NodeError {
-    /// Which node the error occurred in
-    node_id: NodeInstanceId,
     /// The location of the node
     #[label("Error occurred in this node")]
     span: crate::snek::span::Span,
@@ -80,7 +78,6 @@ impl Scheduler {
     /// Attach `node_id`'s span to an error from the work that node did itself.
     pub fn node_error(&self, node_id: NodeInstanceId, error: Report) -> Report {
         NodeError {
-            node_id,
             span: self.span_for(node_id),
             inner: error.into(),
         }

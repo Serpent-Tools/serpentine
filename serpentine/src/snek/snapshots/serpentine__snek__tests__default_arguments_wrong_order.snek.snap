@@ -1,0 +1,14 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: "$crate :: test_support :: render_error(& error)"
+---
+compiler::argument_order
+
+  x Required arguments can not come after default ones
+   ,-[<redacted-path>:1:16]
+ 1 | def Foo(a = 5, b) {
+   :                |
+   :                `-- This non-default argument comes after a default argument.
+ 2 | 
+   `----
+  help: snek does not have keyword syntax in callsites, hence its not possible to specify this argument without specifying any pre-ceding default arguments.

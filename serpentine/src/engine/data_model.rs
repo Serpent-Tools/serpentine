@@ -165,6 +165,7 @@ impl DataType {
 }
 
 /// A push-only store of T, returning stable IDs.
+#[derive(Debug)]
 pub struct Store<T> {
     /// The backing storage of the items
     items: Vec<T>,
@@ -213,7 +214,12 @@ impl<T> Clone for StoreId<T> {
 impl<T> Copy for StoreId<T> {}
 impl<T> std::fmt::Debug for StoreId<T> {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(fmt, "StoreId({})", self.index)
+        write!(
+            fmt,
+            "StoreId::<{}>({})",
+            std::any::type_name::<T>(),
+            self.index
+        )
     }
 }
 
@@ -283,7 +289,7 @@ pub type NodeKindId = StoreId<Box<dyn NodeImpl>>;
 pub type NodeStorage = Store<Box<dyn NodeImpl>>;
 
 /// A node in the graph
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Node {
     /// The kind of this node
     pub kind: NodeKindId,

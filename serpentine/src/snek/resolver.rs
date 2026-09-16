@@ -289,6 +289,15 @@ pub struct ResolveResult {
     pub noop: NodeKindId,
 }
 
+impl std::fmt::Debug for ResolveResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolveResult")
+            .field("ir", &self.ir)
+            .field("noop", &self.noop)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Compile the given file to a IR
 pub fn resolve(
     virtual_file: &VirtualFile,
@@ -403,6 +412,7 @@ impl<'file> Resolver<'file> {
         let (file_id, code) = self.file.push(module.to_owned(), code.into());
         let tokens = super::tokenizer::Tokenizer::tokenize(file_id, code)?;
         let ast = super::parser::Parser::parse_file(tokens)?;
+        log::trace!("{}: {ast:?}", module.display());
 
         let mut exports = Scope::root();
         let mut statement_context = StatementContext::Module {
@@ -484,16 +494,39 @@ impl<'file> Resolver<'file> {
             ast::Statement::Function {
                 export,
                 name,
-                parameters,
+                required_parameters,
+                default_parameters,
                 statements,
             } => {
                 let mut function_scope = scope.child();
 
-                let mut parameter_symbols = Vec::with_capacity(parameters.len());
-                for parameter in parameters {
+                let mut required_parameter_symbols = Vec::with_capacity(required_parameters.len());
+                let mut default_parameter_symbols = Vec::with_capacity(required_parameters.len());
+
+                for parameter in required_parameters {
                     let symbol = self.new_symbol();
                     function_scope.insert(parameter.0.take(), ScopeItem::Label(symbol));
-                    parameter_symbols.push(symbol);
+                    required_parameter_symbols.push(symbol);
+                }
+                for (parameter, default) in default_parameters {
+                    let mut default_body = Vec::new();
+                    let default_symbol = self.resolve_expression(
+                        &function_scope,
+                        top_level_body,
+                        &mut StatementContext::Function {
+                            return_value: &mut None,
+                            function_body: &mut default_body,
+                        },
+                        default,
+                    )?;
+
+                    let param_symbol = self.new_symbol();
+                    function_scope.insert(parameter.0.take(), ScopeItem::Label(param_symbol));
+                    default_parameter_symbols.push((
+                        param_symbol,
+                        default_symbol,
+                        ir::Body(default_body.into()),
+                    ));
                 }
 
                 let mut return_value = None;
@@ -520,7 +553,8 @@ impl<'file> Resolver<'file> {
                 };
 
                 let function = ir::Function::Custom {
-                    parameters: parameter_symbols.into(),
+                    required_parameters: required_parameter_symbols.into(),
+                    default_parameters: default_parameter_symbols.into(),
                     body: ir::Body(function_body.into()),
                     return_value,
                 };

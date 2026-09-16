@@ -51,6 +51,8 @@ struct Compiler {
 
 /// Compile the given resolved ir to a graph
 pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, CompileError> {
+    log::trace!("{resolve_result:?}");
+
     let ResolveResult {
         ir:
             ir::Pipeline {
@@ -78,6 +80,9 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, CompileEr
     }
 
     let start_node = compiler.get_symbol(start_point).node;
+
+    log::trace!("{:?}", compiler.graph);
+
     Ok(CompileResult {
         nodes: context.nodes,
         graph: compiler.graph,
@@ -115,11 +120,19 @@ impl Compiler {
                 self.compile_builtin(context, *node_impl_id, arguments, phantom_inputs, *span)?
             }
             ir::Function::Custom {
-                parameters,
+                required_parameters,
+                default_parameters,
                 body,
                 return_value,
             } => {
-                self.set_symbols_from_arguments(parameters, arguments, *span)?;
+                self.handle_custom_arguments(
+                    context,
+                    required_parameters,
+                    default_parameters,
+                    arguments,
+                    *span,
+                )?;
+
                 for function_node in &body.0 {
                     self.compile_node(context, function_node)?;
                 }
@@ -176,22 +189,59 @@ impl Compiler {
     }
 
     /// Update the symbol map from the argument and parameter pairing.
-    fn set_symbols_from_arguments(
+    fn handle_custom_arguments(
         &mut self,
-        parameters: &[ir::Symbol],
+        context: &ImmutableContext,
+        required_parameters: &[ir::Symbol],
+        default_parameters: &[(ir::Symbol, ir::Symbol, ir::Body)],
         arguments: Box<[SymbolValue]>,
         span: Span,
     ) -> Result<(), CompileError> {
-        if arguments.len() != parameters.len() {
+        if arguments.len() < required_parameters.len()
+            || arguments.len()
+                > (required_parameters
+                    .len()
+                    .saturating_add(default_parameters.len()))
+        {
             return Err(CompileError::ArgumentCountMismatch {
-                expected: parameters.len(),
+                expected: if default_parameters.is_empty() {
+                    required_parameters.len().to_string()
+                } else {
+                    format!(
+                        "{}-{}",
+                        required_parameters.len(),
+                        required_parameters
+                            .len()
+                            .saturating_add(default_parameters.len())
+                    )
+                },
                 got: arguments.len(),
                 location: span,
             });
         }
 
-        for (argument, parameter) in arguments.into_iter().zip(parameters) {
-            self.symbol_mapping.insert(*parameter, argument);
+        let mut arguments = arguments.into_iter();
+
+        for parameter in required_parameters {
+            if let Some(argument) = arguments.next() {
+                self.symbol_mapping.insert(*parameter, argument);
+            } else {
+                return Err(CompileError::internal(
+                    "not enough arguments even tho we checked above.",
+                ));
+            }
+        }
+
+        for (paramter, default_symbol, default_body) in default_parameters {
+            if let Some(argument) = arguments.next() {
+                self.symbol_mapping.insert(*paramter, argument);
+            } else {
+                for node in &default_body.0 {
+                    self.compile_node(context, node)?;
+                }
+                self.symbol_mapping
+                    .insert(*paramter, *self.get_symbol(*default_symbol));
+            }
         }
 
         Ok(())

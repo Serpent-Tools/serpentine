@@ -1,5 +1,6 @@
 ---
 source: serpentine/src/main.rs
+assertion_line: 538
 expression: "$crate :: test_support :: render_error(& err)"
 ---
 all
@@ -16,7 +17,7 @@ all
 
 Error: node_error
 
-  x Error in node
+  x Error in node StoreId::<serpentine::snek::span::Spanned<serpentine::engine::data_model::Node>>(3)
   `-> command_execution_error
       
         x Failed to execute command (exit code 1): "exit 1"
@@ -32,7 +33,7 @@ Error: node_error
 
 Error: node_error
 
-  x Error in node
+  x Error in node StoreId::<serpentine::snek::span::Spanned<serpentine::engine::data_model::Node>>(5)
   `-> command_execution_error
       
         x Failed to execute command (exit code 2): "exit 2"
