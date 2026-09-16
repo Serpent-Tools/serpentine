@@ -112,29 +112,29 @@ impl<'arena> Parser<'arena> {
 
         self.expect(&Token::OpenParen)?;
         let parameters = self.parse_list(&Token::ClosingParen, Some(&Token::Comma), |parser| {
-            let paramter_name = parser.expect_ident()?;
+            let parameter_name = parser.expect_ident()?;
             if parser.next_if(&Token::Eq)?.is_some() {
                 let default = parser.parse_expression()?;
-                Ok((paramter_name, Some(default)))
+                Ok((parameter_name, Some(default)))
             } else {
-                Ok((paramter_name, None))
+                Ok((parameter_name, None))
             }
         })?;
 
-        let mut required_paramters = Vec::new();
-        let mut default_paramters = Vec::new();
+        let mut required_parameters = Vec::new();
+        let mut default_parameters = Vec::new();
         let mut done_required = false;
 
-        for (paramter_name, maybe_default) in parameters {
+        for (parameter_name, maybe_default) in parameters {
             match (done_required, maybe_default) {
-                (false, None) => required_paramters.push(paramter_name),
+                (false, None) => required_parameters.push(parameter_name),
                 (false | true, Some(default)) => {
                     done_required = true;
-                    default_paramters.push((paramter_name, default));
+                    default_parameters.push((parameter_name, default));
                 }
                 (true, None) => {
                     return Err(CompileError::RequiredAfterDefault {
-                        location: paramter_name.0.span(),
+                        location: parameter_name.0.span(),
                     });
                 }
             }
@@ -146,8 +146,8 @@ impl<'arena> Parser<'arena> {
         Ok(ast::Statement::Function {
             export,
             name: function_name,
-            required_parameters: required_paramters.into_boxed_slice(),
-            default_parameters: default_paramters.into_boxed_slice(),
+            required_parameters: required_parameters.into_boxed_slice(),
+            default_parameters: default_parameters.into_boxed_slice(),
             statements: statements.into_boxed_slice(),
         })
     }

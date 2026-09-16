@@ -435,6 +435,10 @@ impl<'file> Resolver<'file> {
     }
 
     /// Resolve a statement
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a resolve_function method would need to take in a LOT of arguments"
+    )]
     fn resolve_statement(
         &mut self,
         resolve_context: &ImmutableContext<'file>,

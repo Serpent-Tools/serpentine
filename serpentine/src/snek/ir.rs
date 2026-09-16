@@ -24,11 +24,11 @@ pub enum Function {
     Custom {
         /// The symbol ids set for the parameters
         required_parameters: Box<[Symbol]>,
-        /// The symbol ids for default paramters, with a body that should be emitted as a prefix to
-        /// the function body if the paramter isnt specified (in the order that the paramters are
+        /// The symbol ids for default parameters, with a body that should be emitted as a prefix to
+        /// the function body if the parameter isnt specified (in the order that the parameters are
         /// listed).
         ///
-        /// The first symbol is the value to paramter should be ultimately set to, if no value is
+        /// The first symbol is the value to parameter should be ultimately set to, if no value is
         /// given then body should be inlined (which will set the second symbol), and then the
         /// second symbol should be copied into the first.
         default_parameters: Box<[(Symbol, Symbol, Body)]>,
