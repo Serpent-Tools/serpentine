@@ -1,47 +1,12 @@
-// Most of this will be moved into the stdlib
+import "@/rust.snek" as rust;
 
 export debian = Image("debian:bookworm@sha256:9344f8b8992482f80cba753f323adeaf17690076c095ccff6cc9536be98185dc");
 
-export rust = Image("rustlang/rust:nightly@sha256:4065ce8560d9c29ec7c4458a85960fb263bb1aee496d62835a5bc2938b4e3b48")
-    > WorkingDir("/app")
+export rust = rust::nightly
     > Exec("apt-get update && apt-get install -y protobuf-compiler")
     > Env("RUST_LOG", "serpentine=trace");
 
-export def Binstall(container, crate, bin_name) {
-    binary = rust 
-        // cargo-binstall v1.23.0
-        > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/b874e25ea559687bec77e281e9b271aa1367b624/install-from-binstall-release.sh | bash")
-        > Exec(Join("cargo binstall --root /out ", ShellEscape(crate)))
-        > Export(Join("/out/bin/", bin_name));
-
-    return container > With(binary, Join("/bin/", bin_name));
-}
-
 export source_code = FromHost(".");
-
-recipe = rust
-    > Binstall("cargo-chef@=0.1.78", "cargo-chef")
-    > With(source_code, ".")
-    > Exec("cargo chef prepare --recipe-path recipe.json")
-    > Export("recipe.json");
-
-export def Cooked(container, build_kind) {
-    return container
-        > Binstall("cargo-chef@=0.1.78", "cargo-chef")
-        > With(recipe, "recipe.json")
-        > Exec(Join("cargo chef cook ", build_kind, " --recipe-path recipe.json"))
-        > With(source_code, ".");
-}
-
-// Like Cooked, but warms the cache with the real build command for flags chef can't replicate.
-export def CookedCustom(container, warm_command) {
-    return container
-        > Binstall("cargo-chef@=0.1.78", "cargo-chef")
-        > With(recipe, "recipe.json")
-        > Exec("cargo chef cook --no-build --recipe-path recipe.json")
-        > Exec(warm_command)
-        > With(source_code, ".");
-}
 
 export container_image = FromHost("./target/containerd.tar");
 

@@ -44,6 +44,7 @@
       ],
       "matchStrings": [
         "Binstall\\(\"(?<depName>[a-zA-Z0-9_-]+)@=?(?<currentValue>[0-9][^\"]*)\"",
+        "WithBinstall\\(\"(?<depName>[a-zA-Z0-9_-]+)@=?(?<currentValue>[0-9][^\"]*)\"",
         "cargo install (?<depName>[a-zA-Z0-9_-]+)@=?(?<currentValue>[0-9][^ \"]*)"
       ],
       "datasourceTemplate": "crate",
