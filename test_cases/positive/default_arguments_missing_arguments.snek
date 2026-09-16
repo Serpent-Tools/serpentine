@@ -1,5 +1,0 @@
-def Foo(a, b = 5) {
-    return a;
-}
-
-export DEFAULT = Foo();

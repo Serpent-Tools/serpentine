@@ -232,15 +232,15 @@ impl Compiler {
             }
         }
 
-        for (paramter, default_symbol, default_body) in default_parameters {
+        for (parameter, default_symbol, default_body) in default_parameters {
             if let Some(argument) = arguments.next() {
-                self.symbol_mapping.insert(*paramter, argument);
+                self.symbol_mapping.insert(*parameter, argument);
             } else {
                 for node in &default_body.0 {
                     self.compile_node(context, node)?;
                 }
                 self.symbol_mapping
-                    .insert(*paramter, *self.get_symbol(*default_symbol));
+                    .insert(*parameter, *self.get_symbol(*default_symbol));
             }
         }
 

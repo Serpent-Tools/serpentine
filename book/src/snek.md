@@ -153,6 +153,39 @@ flowchart LR
     EB --> EX["Export(/out/bin/typos)"] --> W["With"]
     I["image(debian:bookworm-slim)"] --> W
 ```
+#### Default arguments
+Snek supports functions have arguments with default values, these can be arbitrary expressions referencing/using any value defined before the function.
+```snek
+def TestCode(code, rust_image = Image("...")) {
+    // ...
+}
+```
+
+Default arguments will be automatically used if not specified, for example `TestCode(FromHost("."))` will use the `rust_image` define by the function.
+
+> [!NOTE]
+> Snek does not support "keyword arguments" at the call site, i.e `TestCode(..., rust_image = ...)` is ***not*** valid. Hence you should try to define default arguments in the order of most likely to be overwritten to least.
+
+A neat feature of snek default arguments *is that they can reference other arguments* defined before them, default or otherwise. For example
+```snek
+def Binstall(container, crate, bin_name = crate) {
+    binary = Image("rust:latest")
+        > Exec("cargo install cargo-binstall")
+        > Exec(Join("cargo binstall ", crate, " --root /out"))
+        > Export(Join("/out/bin/", bin_name));
+
+    return container > With(binary, Join("/bin/", bin_name));
+}
+```
+
+You can even use them in more complex default expressions:
+```snek
+def Foo(a, b = Bar(a)) {
+    // ...
+}
+```
+
+The standard library uses this feature extensibly for stuff like base containers, cli arguments, etc.
 
 ## Modules 
 While snek has a nice selection of builtins it is often nice to share more complex functions or even just labels between files, in fact everything in the standard library (except the prelude) is implemented in snek itself. 
