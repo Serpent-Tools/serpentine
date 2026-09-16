@@ -245,6 +245,39 @@ pub fn compile_graph(
     Ok(compiled)
 }
 
+/// Print out the IR, and graph of the given pipeline
+pub fn debug_pipeline(pipeline: &Path) -> miette::Result<()> {
+    let virtual_file = VirtualFile::new();
+    let resolved = resolver::resolve(&virtual_file, pipeline, "DEFAULT")?;
+
+    println!("================== IR");
+    println!("{}", resolved.ir.pretty_debug());
+
+    println!("================== GRAPH");
+    let compiled = compiler::compile(resolved)?;
+    for (id, node) in compiled.graph.into_iter().enumerate() {
+        let node = node.take();
+
+        let phantom = node
+            .phantom_inputs
+            .into_iter()
+            .map(|phantom| format!("%{}", phantom.index()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let arguments = node
+            .inputs
+            .into_iter()
+            .map(|argument| format!("%{}", argument.index()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        println!("%{id} = !({phantom}) ${}({arguments})", node.kind.index());
+    }
+
+    Ok(())
+}
+
 /// Benchmarks for the snek compiler.
 #[cfg(feature = "_bench")]
 #[expect(clippy::unwrap_used, reason = "benchmarks")]

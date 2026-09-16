@@ -271,6 +271,11 @@ impl<T> Store<T> {
     pub fn len(&self) -> usize {
         self.items.len()
     }
+
+    /// Return a iterator over this stores items
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.into_iter()
+    }
 }
 
 impl<T> IntoIterator for Store<T> {
@@ -279,6 +284,15 @@ impl<T> IntoIterator for Store<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
+    }
+}
+
+impl<'items, T> IntoIterator for &'items Store<T> {
+    type IntoIter = std::slice::Iter<'items, T>;
+    type Item = &'items T;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
     }
 }
 

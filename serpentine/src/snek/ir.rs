@@ -1,6 +1,8 @@
 //! This represents a snek program where all symbols have been resolved
 //! and modules have been merged into a unified symbol table.
 
+use std::fmt::Write;
+
 use crate::engine::data_model::{NodeKindId, Store, StoreId};
 use crate::snek::span::Span;
 
@@ -13,6 +15,22 @@ pub struct Pipeline {
     pub functions: FunctionStore,
     /// The symbol to start execution at
     pub start_point: Symbol,
+}
+
+impl Pipeline {
+    /// Print out a plaintext version of the pipeline
+    pub fn pretty_debug(&self) -> String {
+        let mut result = String::new();
+
+        for (id, function) in self.functions.iter().enumerate() {
+            let _ = writeln!(result, "def ${id}{}", function.pretty_debug());
+        }
+        for node in &self.top_level.0 {
+            let _ = writeln!(result, "{}", node.pretty_debug());
+        }
+
+        result
+    }
 }
 
 /// A function definition
@@ -39,6 +57,45 @@ pub enum Function {
     },
 }
 
+impl Function {
+    /// Pretty print this function definition (after the `def $123` part)
+    fn pretty_debug(&self) -> String {
+        match self {
+            Self::BuiltinFunction(id) => format!("(...) {{/* builtin {} */}}", id.index()),
+            Self::Custom {
+                required_parameters,
+                default_parameters,
+                body,
+                return_value,
+            } => {
+                let mut parameters = Vec::new();
+                for param in required_parameters {
+                    parameters.push(format!("%{}", param.0));
+                }
+                for (param, default_symbol, default_body) in default_parameters {
+                    let mut body_repr = String::new();
+                    for node in &default_body.0 {
+                        let _ = write!(body_repr, "{} ", node.pretty_debug());
+                    }
+                    parameters.push(format!(
+                        "%{} = %{} {{ {body_repr}}}",
+                        param.0, default_symbol.0
+                    ));
+                }
+                let parameters = parameters.join(", ");
+
+                let mut body_repr = String::new();
+                for node in &body.0 {
+                    let _ = writeln!(body_repr, "\t{}", node.pretty_debug());
+                }
+                let _ = writeln!(body_repr, "\treturn %{};", return_value.0);
+
+                format!("({parameters}) {{\n{body_repr}}}")
+            }
+        }
+    }
+}
+
 /// A store of the various functions.
 pub type FunctionStore = Store<Function>;
 
@@ -62,6 +119,33 @@ pub struct Node {
     pub phantom_inputs: Box<[Symbol]>,
     /// The span of this value
     pub span: Span,
+}
+
+impl Node {
+    /// Provide a pretty string of the given node for debugging
+    pub fn pretty_debug(&self) -> String {
+        let arguments = self
+            .arguments
+            .iter()
+            .map(|arg| format!("%{}", arg.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let phantom_inputs = self
+            .phantom_inputs
+            .iter()
+            .map(|arg| format!("%{}", arg.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        format!(
+            "%{} = !({}) ${}({});",
+            self.name.0,
+            phantom_inputs,
+            self.function.index(),
+            arguments
+        )
+    }
 }
 
 /// The top level body or the body of a function.
