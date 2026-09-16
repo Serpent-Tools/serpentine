@@ -56,6 +56,7 @@ typed-arena = { version = "2.0.2", default-features = false }
 # bench
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"], optional = true }
 tempfile = { version = "3.27.0", default-features = false, optional = true }
+rust-embed = { version = "8.12.0", default-features = false, features = ["debug-embed", "compression"] }
 
 [dev-dependencies]
 bolero.workspace = true

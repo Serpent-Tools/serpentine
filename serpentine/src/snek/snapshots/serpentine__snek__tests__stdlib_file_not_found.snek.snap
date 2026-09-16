@@ -1,0 +1,15 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: "$crate :: test_support :: render_error(& error)"
+---
+  x Importing module '@/not_found.snek' failed
+  |-> file_error
+  |   
+  |     x Could not read file @/not_found.snek
+  |   
+  `-> File not found
+   ,-[<redacted-path>:1:8]
+ 1 | import "@/not_found.snek" as foo;
+   :        ^^^^^^^^^|^^^^^^^^
+   :                 `-- In this import statement
+   `----

@@ -1,0 +1,3 @@
+import "@/rust.snek" as rust;
+
+export DEFAULT = rust::TEST;
