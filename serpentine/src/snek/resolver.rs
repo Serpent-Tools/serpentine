@@ -1,5 +1,6 @@
 //! The resolver parses the input file into an ast, resolves and parses all imported modules,
 //! and processes everything into a simplified IR for further processing and type checking.
+#![expect(clippy::same_name_method, reason = "rust_embed triggers this lint")]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,19 @@ use std::sync::Arc;
 use crate::engine::data_model::{Data, NodeKindId, NodeStorage, Store, StoreId};
 use crate::snek::span::{Span, Spanned, VirtualFile};
 use crate::snek::{CompileError, ast, ir};
+
+/// A `rust_embed` type for accessing the standlibrary bundled with the binary.
+#[derive(rust_embed::Embed)]
+#[folder = "../standard_library"]
+#[prefix = "@/"]
+struct StandardLibrary;
+
+impl StandardLibrary {
+    /// Is the given path a standard library path?
+    fn is_stdlib_path(path: &Path) -> bool {
+        path.iter().next().is_some_and(|root| root == "@")
+    }
+}
 
 /// A snek module
 struct Module<'arena> {
@@ -376,13 +390,13 @@ impl<'file> Resolver<'file> {
         top_level_body: &mut Vec<ir::Node>,
         module_path: &Path,
     ) -> Result<ModuleId<'file>, CompileError> {
-        let module_path =
+        let module_path = if StandardLibrary::is_stdlib_path(module_path) {
+            module_path.to_path_buf()
+        } else {
             module_path
                 .canonicalize()
-                .map_err(|io_err| CompileError::FileReading {
-                    file: module_path.into(),
-                    inner: io_err,
-                })?;
+                .unwrap_or_else(|_| module_path.to_path_buf())
+        };
 
         match self.module_cache.get(&module_path) {
             Some(Some(module)) => Ok(*module),
@@ -404,7 +418,16 @@ impl<'file> Resolver<'file> {
         top_level_body: &mut Vec<ir::Node>,
         module: &Path,
     ) -> Result<Module<'file>, CompileError> {
-        let code = std::fs::read_to_string(module).map_err(|io_err| CompileError::FileReading {
+        let code = if StandardLibrary::is_stdlib_path(module) {
+            StandardLibrary::get(&module.to_string_lossy())
+                .ok_or_else(|| std::io::Error::other("File not found"))
+                .and_then(|file| {
+                    String::from_utf8(file.data.to_vec()).map_err(std::io::Error::other)
+                })
+        } else {
+            std::fs::read_to_string(module)
+        }
+        .map_err(|io_err| CompileError::FileReading {
             file: module.into(),
             inner: io_err,
         })?;
@@ -451,10 +474,16 @@ impl<'file> Resolver<'file> {
         match statement {
             ast::Statement::Import { export, path, name } => {
                 let error_span = path.span();
-                let path = current_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("/"))
-                    .join(&*path.take());
+
+                let path = PathBuf::from(path.take().to_string());
+                let path = if StandardLibrary::is_stdlib_path(&path) {
+                    path
+                } else {
+                    current_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("/"))
+                        .join(path)
+                };
 
                 let module_id = self
                     .get_module(resolve_context, top_level_body, &path)
