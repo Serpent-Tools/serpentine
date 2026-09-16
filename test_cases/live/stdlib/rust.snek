@@ -1,0 +1,16 @@
+import "@/rust.snek" as rust;
+
+small_project = rust::stable
+    > Exec("cargo init --lib my_test_app")
+    > Export("./my_test_app");
+
+alpine = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0");
+
+export DEFAULT = All(
+    rust::BasicCI(small_project, rust::stable),
+    rust::BasicCI(small_project, rust::nightly),
+
+    alpine > rust::WithBinstall("typos-cli", "typos") > Exec("typos --help"),
+    // cargo-bounds doesnt have any releases, so this tests the source install path.
+    rust::stable > rust::WithBinstall("cargo-bounds") > Exec("cargo bounds --help")
+);

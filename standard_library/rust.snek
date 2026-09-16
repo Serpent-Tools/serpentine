@@ -1,1 +1,73 @@
-export TEST = 10;
+export stable = Image("docker.io/library/rust:latest") > WorkingDir("/app");
+export nightly = Image("rustlang/rust:nightly") > WorkingDir("/app");
+
+// Core helper functions.
+export def Binstall(crate, bin_name = crate, build_container = stable) { 
+    return build_container
+        // cargo-binstall v1.23.0
+        > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/b874e25ea559687bec77e281e9b271aa1367b624/install-from-binstall-release.sh | bash")
+        > Exec(Join("cargo binstall -y --no-track --disable-telemetry --root /out ", ShellEscape(crate)))
+        > Export(Join("/out/bin/", bin_name));
+}
+
+export def WithBinstall(target_container, crate, bin_name = crate, build_container = stable) {
+    return With(target_container, Binstall(crate, bin_name, build_container), Join("/bin/", bin_name));
+}
+
+export def Chef(container, source_code, command) {
+    recipe = container
+        > WithBinstall("cargo-chef@=0.1.78", "cargo-chef")
+        > With(source_code, ".")
+        > Exec("cargo chef prepare --recipe-path recipe.json")
+        > Export("recipe.json");
+
+    return container
+        > WithBinstall("cargo-chef@=0.1.78", "cargo-chef")
+        > With(recipe, "recipe.json")
+        > Exec("cargo chef cook --no-build --recipe-path recipe.json")
+        > Exec(command)
+        > With(source_code, ".");
+}
+
+export def WithChef(container, source_code, command, cook_command = Join(command, " || true")) {
+    return container 
+        > Chef(source_code, cook_command)
+        > Exec(command);
+}
+
+// Functions for common CI operations, but more advanced projects will likely roll their own versions of these.
+export def Clippy(source_code, container = stable) {
+    return container
+        > Exec("rustup component add clippy")
+        > WithChef(source_code, "cargo clippy --all-targets --all-features");
+}
+
+export def Nextest(source_code, container = stable) {
+    return container
+        > WithBinstall("cargo-nextest")
+        > WithChef(source_code, "cargo nextest run --all-features --no-fail-fast");
+}
+
+export def Doctests(source_code, container = stable) {
+    return container
+        > WithChef(source_code, "cargo test --doc --all-features");
+}
+
+export def Tests(source_code, container = stable) {
+    return All(Nextest(source_code, container), Doctests(source_code, container));
+}
+
+export def FmtCheck(source_code, container = stable) {
+    return container
+        > Exec("rustup component add rustfmt")
+        > With(source_code, ".")
+        > Exec("cargo fmt --check");
+}
+
+export def BasicCI(source_code, container = stable) {
+    return All(
+        Clippy(source_code, container),
+        Tests(source_code, container),
+        FmtCheck(source_code, container)
+    );
+}

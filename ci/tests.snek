@@ -1,16 +1,16 @@
+import "@/rust.snek" as rust;
 import "./lib.snek" as lib;
 
 
 export simple = lib::rust
-    > lib::Binstall("cargo-nextest@=0.9.143", "cargo-nextest")
-    > lib::Cooked("--tests")
-    > Exec("cargo nextest run");
+    > rust::WithBinstall("cargo-nextest@=0.9.143", "cargo-nextest")
+    > rust::WithChef(lib::source_code, "cargo nextest run");
 
 // `cargo bolero list` and `test` use separate build trees, so the warmup builds both.
 export fuzz = lib::rust
     > Exec("apt-get update && apt-get install -y jq parallel")
-    > Exec("cargo install cargo-bolero@=0.13.4 --no-default-features --locked")
-    > lib::CookedCustom("cargo bolero list || true; cargo bolero test --workspace -s NONE -r 1 cache_warmup || true")
+    > rust::WithBinstall("cargo-bolero@=0.13.4", "cargo-bolero")
+    > rust::Chef(lib::source_code, "cargo bolero list || true; cargo bolero test --workspace -s NONE -r 1 cache_warmup || true")
     // Each job's output is held back until it fails, and the first failure kills the rest, so the
     // failing input is the only thing on stderr rather than being buried under sibling progress.
     > Exec("cargo bolero list | jq -r '[.package, .test] | @tsv' | parallel --will-cite --halt now,fail=1 --colsep '\t' 'cargo bolero test -p {1} -s NONE -T 30s {2} >/tmp/fuzz.{#} 2>&1 || (cat /tmp/fuzz.{#} >&2; exit 1)'");
