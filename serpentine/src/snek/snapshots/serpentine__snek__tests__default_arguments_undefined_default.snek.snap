@@ -1,0 +1,14 @@
+---
+source: serpentine/src/snek/mod.rs
+expression: "$crate :: test_support :: render_error(& error)"
+---
+compiler::item_not_found
+
+  x 'not_found' not found in scope
+   ,-[<redacted-path>:1:16]
+ 1 | def Foo(a, b = not_found) {
+   :                ^^^^|^^^^
+   :                    `-- Item with this name not found
+ 2 | 
+   `----
+  help: Serpentine cannot reference items (including functions) before they are defined.

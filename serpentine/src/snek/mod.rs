@@ -116,11 +116,23 @@ pub enum CompileError {
     ))]
     ArgumentCountMismatch {
         /// The expected number of arguments
-        expected: usize,
+        expected: String,
         /// The number of arguments we got
         got: usize,
         /// The location of the node in the source code
         #[label("This node expects {expected} arguments")]
+        location: Span,
+    },
+
+    /// required argument after default one
+    #[error("Required arguments can not come after default ones")]
+    #[diagnostic(code(compiler::argument_order))]
+    #[diagnostic(help(
+        "snek does not have keyword syntax in callsites, hence its not possible to specify this argument without specifying any pre-ceding default arguments."
+    ))]
+    RequiredAfterDefault {
+        /// The location of the argument
+        #[label("This non-default argument comes after a default argument.")]
         location: Span,
     },
 

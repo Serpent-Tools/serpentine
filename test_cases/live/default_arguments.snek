@@ -1,0 +1,28 @@
+base = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0");
+
+def IsEq(a, b) {
+    return base > Exec(Join("[ ", ShellEscape(a), " = ", ShellEscape(b), " ]"));    
+}
+
+def Foo(a, b = "test") {
+    return Join(a, " ", b);
+}
+
+def Bar(a = "hello", b = a) {
+    return Join(a, " ", b);
+}
+
+def Baz(a = "hello", b = Join(a, " world")) {
+    return Join(a, " ", b);
+}
+
+export DEFAULT = All(
+    IsEq(Foo("hello"), "hello test"),
+    IsEq(Foo("hello", "vivax"), "hello vivax"),
+    IsEq(Bar(), "hello hello"),
+    IsEq(Bar("test"), "test test"),
+    IsEq(Bar("hello", "world"), "hello world"),
+    IsEq(Baz(), "hello hello world"),
+    IsEq(Baz("test"), "test test world"),
+    IsEq(Baz("test", "vivax"), "test vivax")
+);

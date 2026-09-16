@@ -4,10 +4,11 @@ expression: "$crate :: test_support :: render_error(& error)"
 ---
 compiler::argument_count
 
-  x Expected 1+ arguments got 0
-   ,-[<redacted-path>:1:18]
- 1 | export DEFAULT = All();
+  x Expected 1-2 arguments got 0
+   ,-[<redacted-path>:5:18]
+ 4 | 
+ 5 | export DEFAULT = Foo();
    :                  ^|^
-   :                   `-- This node expects 1+ arguments
+   :                   `-- This node expects 1-2 arguments
    `----
   help: Remember that chaining counts as a argument, `... > Foo(1, 2)` has 3 arguments passed for example.

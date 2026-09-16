@@ -108,22 +108,46 @@ impl<'arena> Parser<'arena> {
         &mut self,
         export: Option<Span>,
     ) -> Result<ast::Statement<'arena>, CompileError> {
-        let name = self.expect_ident()?;
+        let function_name = self.expect_ident()?;
 
         self.expect(&Token::OpenParen)?;
-        let parameters = self.parse_list(
-            &Token::ClosingParen,
-            Some(&Token::Comma),
-            Self::expect_ident,
-        )?;
+        let parameters = self.parse_list(&Token::ClosingParen, Some(&Token::Comma), |parser| {
+            let paramter_name = parser.expect_ident()?;
+            if parser.next_if(&Token::Eq)?.is_some() {
+                let default = parser.parse_expression()?;
+                Ok((paramter_name, Some(default)))
+            } else {
+                Ok((paramter_name, None))
+            }
+        })?;
+
+        let mut required_paramters = Vec::new();
+        let mut default_paramters = Vec::new();
+        let mut done_required = false;
+
+        for (paramter_name, maybe_default) in parameters {
+            match (done_required, maybe_default) {
+                (false, None) => required_paramters.push(paramter_name),
+                (false | true, Some(default)) => {
+                    done_required = true;
+                    default_paramters.push((paramter_name, default));
+                }
+                (true, None) => {
+                    return Err(CompileError::RequiredAfterDefault {
+                        location: paramter_name.0.span(),
+                    });
+                }
+            }
+        }
 
         self.expect(&Token::OpenBracket)?;
         let statements = self.parse_list(&Token::ClosingBracket, None, Self::parse_statement)?;
 
         Ok(ast::Statement::Function {
             export,
-            name,
-            parameters: parameters.into_boxed_slice(),
+            name: function_name,
+            required_parameters: required_paramters.into_boxed_slice(),
+            default_parameters: default_paramters.into_boxed_slice(),
             statements: statements.into_boxed_slice(),
         })
     }

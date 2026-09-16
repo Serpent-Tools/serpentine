@@ -3,6 +3,7 @@
 use super::span::{Span, Spanned};
 
 /// A `.snek` file
+#[derive(Debug)]
 pub struct File<'arena>(pub Box<[Statement<'arena>]>);
 
 /// A statement
@@ -41,8 +42,10 @@ pub enum Statement<'arena> {
         export: Option<Span>,
         /// Name of the Function
         name: Ident<'arena>,
-        /// Parameters to the Function
-        parameters: Box<[Ident<'arena>]>,
+        /// Parameters to the Function that dont have a default
+        required_parameters: Box<[Ident<'arena>]>,
+        /// Parameters to the Function that have a default
+        default_parameters: Box<[(Ident<'arena>, Expression<'arena>)]>,
         /// The list of the statements in this function.
         statements: Box<[Statement<'arena>]>,
     },

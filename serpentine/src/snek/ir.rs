@@ -5,6 +5,7 @@ use crate::engine::data_model::{NodeKindId, Store, StoreId};
 use crate::snek::span::Span;
 
 /// A snek pipeline
+#[derive(Debug)]
 pub struct Pipeline {
     /// The top level symbols
     pub top_level: Body,
@@ -15,13 +16,22 @@ pub struct Pipeline {
 }
 
 /// A function definition
+#[derive(Debug)]
 pub enum Function {
     /// A builtin function.
     BuiltinFunction(NodeKindId),
     /// A custom function
     Custom {
         /// The symbol ids set for the parameters
-        parameters: Box<[Symbol]>,
+        required_parameters: Box<[Symbol]>,
+        /// The symbol ids for default paramters, with a body that should be emitted as a prefix to
+        /// the function body if the paramter isnt specified (in the order that the paramters are
+        /// listed).
+        ///
+        /// The first symbol is the value to paramter should be ultimately set to, if no value is
+        /// given then body should be inlined (which will set the second symbol), and then the
+        /// second symbol should be copied into the first.
+        default_parameters: Box<[(Symbol, Symbol, Body)]>,
         /// The body of the function
         body: Body,
         /// The return symbol of the function
@@ -40,6 +50,7 @@ pub type FunctionId = StoreId<Function>;
 pub struct Symbol(pub usize);
 
 /// A node in the graph
+#[derive(Debug)]
 pub struct Node {
     /// The name to reference the node by
     pub name: Symbol,
@@ -54,4 +65,5 @@ pub struct Node {
 }
 
 /// The top level body or the body of a function.
+#[derive(Debug)]
 pub struct Body(pub Box<[Node]>);
