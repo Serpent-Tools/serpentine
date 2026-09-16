@@ -63,6 +63,13 @@ enum Command {
         /// The cache directory to clean
         cache: Option<PathBuf>,
     },
+    /// For debugging, will print out the IR, and DAG of the given pipeline.
+    ///
+    /// This will use a more readable format than the one printed to logs.
+    Debug {
+        /// Pipeline to print IR and graph for
+        pipeline: PathBuf,
+    },
 }
 
 /// Arguments for the run command
@@ -381,6 +388,7 @@ fn main() -> miette::Result<()> {
         Command::Clean { cache } => clean_caches(&cache.map_or(get_default_cache_dir(), |path| {
             PlatformPathBuf::from(path.as_os_str().as_encoded_bytes())
         })),
+        Command::Debug { pipeline } => snek::debug_pipeline(&pipeline),
     }
 }
 
