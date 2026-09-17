@@ -1,7 +1,6 @@
 # Summary
 
 - [Getting Started](getting_started.md)
-    - [Examples](examples.md)
 - [CLI](cli.md)
 - [Snek](snek.md)
     - [Comparison with Dockerfile](dockerfile.md)

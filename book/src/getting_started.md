@@ -8,7 +8,7 @@ Serpentine requires a docker or podman daemon installed on your system to run it
 > Serpentine currently is not distributed anywhere, this section will ofc be updated once thats the case.
 > For now please following instructions in `CONTRIBUTING.md` to run Serpentine from source.
 
-## Hello ~World~ Clippy
+## Hello ~World~ Cargo
 
 While this section can't explain everything in the following snippets, it hopes to give you a taste of the basics of serpentine.
 Serpentine uses a custom DSL called snek to define workflows, by default serpentine will look for the `DEFAULT` entrypoint in the `./main.snek` file,
@@ -28,4 +28,3 @@ Further chapters in the book (and the examples page) will show patterns for maki
 
 * [Snek](./snek.md) - documentation of the snek language.
 * [Builtins/Prelude](./prelude.md) - documentation of the most important nodes/functions.
-* [Examples](./examples.md) - If you prefer to jump straight into some code the example page has a lot of nice patterns and snippets you can use to get started quickly.
