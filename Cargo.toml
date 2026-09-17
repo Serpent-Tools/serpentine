@@ -3,7 +3,7 @@ resolver = "3"
 members = ["serpentine", "serpentine_internal", "sidecar"]
 
 [workspace.dependencies]
-serpentine_internal = { version = "=0.2.1", path = "serpentine_internal" }
+serpentine_internal = { version = "=0.2.2", path = "serpentine_internal" }
 tokio = { version = "1.50.0", default-features = false }
 tokio-stream = { version = "0.1.19", default-features = false }
 log = { version = "0.4.29", default-features = false }

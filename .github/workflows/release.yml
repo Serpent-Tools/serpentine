@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 env:
   CONTAINERD_IMAGE: ghcr.io/serpent-tools/containerd
-  PAGES_PROJECT: serpentine
+  WORKER_NAME: serpentine
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -246,4 +246,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy book --project-name=${{ env.PAGES_PROJECT }} --branch=main --commit-dirty=true
+          command: deploy --assets=book --name=${{ env.WORKER_NAME }} --compatibility-date=2026-09-17
