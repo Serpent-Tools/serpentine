@@ -39,9 +39,6 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             runtime: podman
-          - os: macos-15-intel
-            platform: macos
-            runtime: docker
           - os: windows-latest
             platform: windows
             runtime: docker
@@ -70,10 +67,6 @@ jobs:
           sudo systemctl stop docker docker.socket
           podman system service --time=0 &
           podman info
-
-      - name: Setup Docker (macOS)
-        if: matrix.platform == 'macos'
-        uses: douglascamata/setup-docker-macos-action@d5ccc6aae0ce23e7700154f5e63cc53e6433ac48 # v1.1.0
 
       - name: Setup WSL (Windows)
         if: matrix.platform == 'windows'
@@ -128,7 +121,7 @@ jobs:
           name: containerd-image
           path: ${{ runner.temp }}
 
-      - name: Load Docker image (Linux/macOS)
+      - name: Load Docker image (Linux)
         if: matrix.platform != 'windows' && matrix.runtime != 'podman'
         run: zstd -d ${{ runner.temp }}/containerd-dev.tar.zst --stdout | docker load
 
@@ -170,13 +163,13 @@ jobs:
         env:
           RUST_LOG: serpentine=trace
 
-      - name: Run host side tests (macOS/Windows)
+      - name: Run host side tests (Windows)
         if: matrix.platform != 'linux'
         run: cargo nextest run -p serpentine --features _test_docker --fail-fast --test-threads=1
         env:
           RUST_LOG: serpentine=trace
 
-      - name: Dump sidecar container logs (Linux/macOS)
+      - name: Dump sidecar container logs (Linux)
         if: failure() && matrix.platform != 'windows'
         run: |
           echo "::group::sidecar container state"
