@@ -1,0 +1,17 @@
+# Third-party licenses
+
+Serpentine bundles the Rust crates listed below. Each section reproduces the full
+license text, followed by the crates distributed under it.
+
+{{#each licenses}}
+## {{{name}}}
+
+{{#each used_by}}
+* {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} — {{{crate.repository}}}{{/if}}
+{{/each}}
+
+```
+{{{text}}}
+```
+
+{{/each}}

@@ -1,0 +1,14 @@
+ignore-dev-dependencies = true
+
+# Kept in step with the `licenses.allow` list in deny.toml.
+accepted = [
+    "MIT",
+    "Unicode-3.0",
+    "Apache-2.0",
+    "MPL-2.0",
+    "Zlib",
+    "ISC",
+    "CDLA-Permissive-2.0",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+]
