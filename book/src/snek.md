@@ -108,6 +108,9 @@ Phantom inputs lets you make the scheduler wait on certain other nodes before co
 tests = !(unit_tests, integration_tests) Noop(0);
 ```
 
+> [!TIP]
+> See also the builtin `All` node which provides a version of this that runs all branches to completion.
+
 ### Functions
 Functions are effectively macros and allows the re-use of more complex steps, for example a one might use a function to install packages and also clear the package cache in one layer so one doesnt have to copy paste the command for that everywhere.
 functions are defined with the `def` keyword, followed by a name and then arguments, and then a body delimited by `{}`. They are called like normal nodes.

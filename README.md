@@ -36,3 +36,16 @@ flowchart TD
     E -.-> F
     F --> G["Output"]
 ```
+
+Serpentine also comes with a standard library that makes the above even more cache efficient
+```snek
+import "@/rust.snek" as rust;
+
+source_code = FromHost(".");
+test = rust::Nextest(source_code);
+clippy = rust::Clippy(source_code);
+
+export DEFAULT = rust::stable 
+    > With(source_code, ".")
+    > !(test, clippy) rust::WithChef("cargo build");
+```

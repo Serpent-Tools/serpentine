@@ -34,7 +34,7 @@ test:
       - name: Install serpentine
         run: TODO_FOR_v1.0.0
       - name: Run serpentine pipeline
-        run: serpentine run --cache-backend github --standalone-cache
+        run: serpentine run --jobs 1 --cache-backend github --standalone-cache
 ```
 
 Serpentine should be able to detect the backend automatically, but it doesnt hurt to set the backend explicitly. 
