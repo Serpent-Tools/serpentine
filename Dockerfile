@@ -5,6 +5,7 @@ ARG TINI_VERSION=v0.19.0
 RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static" -o /tini && \
     echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum -c - && \
     chmod +x /tini
+RUN curl -fsSL "https://raw.githubusercontent.com/krallin/tini/${TINI_VERSION}/LICENSE" -o /tini.LICENSE
 
 FROM docker.io/library/golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go_base
 
@@ -103,20 +104,24 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM docker.io/library/rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 as chef
+FROM docker.io/library/rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 as rust_base
 RUN cargo install cargo-chef@=0.1.78 --locked
+# cargo-about puts its binary behind `cli`; without it the install is a no-op that still exits 0.
+RUN cargo install cargo-about@=0.9.2 --locked --features cli
 WORKDIR /app
 
-FROM chef as planner
+FROM rust_base as planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM chef as builder
+FROM rust_base as builder
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release -p sidecar --target x86_64-unknown-linux-gnu --recipe-path recipe.json
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
+RUN cargo about generate -c about.toml -m sidecar/Cargo.toml \
+    --target x86_64-unknown-linux-gnu about.hbs -o /THIRD-PARTY.md
 
 FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 RUN apk add --no-cache iptables
@@ -126,6 +131,16 @@ COPY --from=runc /src/runc/runc /bin/runc
 COPY --from=download /tini /bin/tini
 COPY --from=cni /cni /cni
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/sidecar /bin
+
+COPY --from=containerd /src/containerd/LICENSE /src/containerd/NOTICE /usr/share/licenses/containerd/
+COPY --from=runc /src/runc/LICENSE /src/runc/NOTICE /usr/share/licenses/runc/
+COPY --from=cni /src/cni-plugins/LICENSE /usr/share/licenses/cni-plugins/
+COPY --from=download /tini.LICENSE /usr/share/licenses/tini/LICENSE
+COPY --from=builder /THIRD-PARTY.md /usr/share/licenses/rust-crates/
+
+# Alpine ships no license files of its own, so record what is installed and where its source is.
+RUN apk info -v > /usr/share/licenses/alpine-packages.txt && \
+    echo "Source: https://gitlab.alpinelinux.org/alpine/aports" >> /usr/share/licenses/alpine-packages.txt
 
 EXPOSE 8000
 ENTRYPOINT ["/bin/tini", "--", "/bin/sidecar"]

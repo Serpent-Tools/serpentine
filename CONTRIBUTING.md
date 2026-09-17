@@ -47,3 +47,28 @@ Serpentine's integration tests and linting can be run locally:
 * `just sidecar_logs` — dump the containerd sidecar's logs, useful when an integration test fails.
 * `just clean` — drop serpentine's cache along with its containerd volume.
 
+## Building the book
+
+The book is [`mdbook`](https://rust-lang.github.io/mdBook/), with diagrams rendered by the [`mdbook-mermaid`](https://github.com/badboy/mdbook-mermaid) preprocessor:
+
+```bash
+cargo binstall mdbook mdbook-mermaid
+mdbook-mermaid install book
+mdbook serve book
+```
+
+`mdbook-mermaid install` writes the `additional-js` assets `book.toml` expects. They are gitignored, so a fresh clone needs this once before `mdbook build`/`serve` will work.
+
+## Releasing
+
+Releases are cut by pushing a `v*` tag, which runs [`release.yml`](.github/workflows/release.yml). Bump every crate in the workspace to the version being tagged first; the workflow refuses to publish anything if the tag and the manifests disagree:
+
+```bash
+jj bookmark set main -r @    # with the version bump committed
+jj git push
+jj tag set v0.2.0 -r main
+jj git push --tag v0.2.0
+```
+
+The workflow builds the engine image, the release binaries and the book, and only then starts publishing: the image goes to Docker Hub first, then the crates, then the GitHub release and the book. Publishing needs `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`, `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the repository secrets.
+

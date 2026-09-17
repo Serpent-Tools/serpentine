@@ -1,4 +1,8 @@
-#![doc = include_str!(concat!("../../", std::env!("CARGO_PKG_README")))]
+#![doc = include_str!(concat!(
+    std::env!("CARGO_MANIFEST_DIR"),
+    "/",
+    std::env!("CARGO_PKG_README")
+))]
 #![cfg_attr(
     feature = "_bench",
     expect(unreachable_code, reason = "bench feature replaces main body")

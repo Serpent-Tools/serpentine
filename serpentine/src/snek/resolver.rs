@@ -10,9 +10,9 @@ use crate::engine::data_model::{Data, NodeKindId, NodeStorage, Store, StoreId};
 use crate::snek::span::{Span, Spanned, VirtualFile};
 use crate::snek::{CompileError, ast, ir};
 
-/// A `rust_embed` type for accessing the standlibrary bundled with the binary.
+/// A `rust_embed` type for accessing the standard library bundled with the binary.
 #[derive(rust_embed::Embed)]
-#[folder = "../standard_library"]
+#[folder = "standard_library"]
 #[prefix = "@/"]
 struct StandardLibrary;
 

@@ -1,8 +1,8 @@
 [package]
 name = "serpentine"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-readme = "README.md"
+readme = "../README.md"
 description = "Powerful simplistic workflow runner."
 license = "MIT"
 keywords = ["docker", "containers", "build-system", "testing", "CI"]
