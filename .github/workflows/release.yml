@@ -8,7 +8,7 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 env:
-  CONTAINERD_IMAGE: serpent-tools/containerd
+  CONTAINERD_IMAGE: ghcr.io/serpent-tools/containerd
   PAGES_PROJECT: serpentine
 jobs:
   verify:
@@ -173,6 +173,9 @@ jobs:
   publish-image:
     needs: [verify, build-image, build-binaries, build-book]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -182,8 +185,9 @@ jobs:
         run: zstd -d /tmp/containerd.tar.zst --stdout | docker load
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push the engine image
         run: |
           docker push "$CONTAINERD_IMAGE:${{ needs.verify.outputs.version }}"
@@ -242,4 +246,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy book --project-name=${{ env.PAGES_PROJECT }} --branch=main --commit-dirty=true
+          command: deploy book --project-name=${{ env.PAGES_PROJECT }} --branch=main --commit-dirty=true

@@ -61,7 +61,7 @@ pub(crate) const CONTAINERD_IMAGE_TAG: &str =
     };
 
 /// The container image to use for containerd
-const CONTAINERD_IMAGE: &str = "serpent-tools/containerd";
+const CONTAINERD_IMAGE: &str = "ghcr.io/serpent-tools/containerd";
 
 /// Create a new containerd client, by either connecting to an existing container or spinning up a
 /// new one.

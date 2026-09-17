@@ -22,8 +22,8 @@ build_container:
     docker container rm -f serpent-tools.containerd
     rm -f ./target/containerd.tar
     mkdir -p ./target
-    docker build -t serpent-tools/containerd:dev . --pull=false
-    docker image save serpent-tools/containerd:dev -o ./target/containerd.tar
+    docker build -t ghcr.io/serpent-tools/containerd:dev . --pull=false
+    docker image save ghcr.io/serpent-tools/containerd:dev -o ./target/containerd.tar
 
 clean:
     cargo run -p serpentine -- clean || exit 0
@@ -32,7 +32,7 @@ sidecar_logs:
     docker logs serpent-tools.containerd
 
 run_sidecar: build_container
-    docker run --rm -it serpent-tools/containerd:dev
+    docker run --rm -it ghcr.io/serpent-tools/containerd:dev
 
 pull_images:
     grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | grep / | sort -u | xargs -n1 docker pull || exit 0
