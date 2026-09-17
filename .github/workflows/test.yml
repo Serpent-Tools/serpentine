@@ -16,11 +16,11 @@ jobs:
         with:
           context: .
           load: true
-          tags: serpent-tools/containerd:dev
+          tags: ghcr.io/serpent-tools/containerd:dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Export Docker image
-        run: docker save serpent-tools/containerd:dev | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
+        run: docker save ghcr.io/serpent-tools/containerd:dev | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: containerd-image

@@ -70,5 +70,5 @@ jj tag set v0.2.0 -r main
 jj git push --tag v0.2.0
 ```
 
-The workflow builds the engine image, the release binaries and the book, and only then starts publishing: the image goes to Docker Hub first, then the crates, then the GitHub release and the book. Publishing needs `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`, `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the repository secrets.
+The workflow builds the engine image, the release binaries and the book, and only then starts publishing: the image goes to the GitHub Container Registry first, then the crates, then the GitHub release and the book. Pushing the image uses the workflow's own `GITHUB_TOKEN`; publishing needs `CARGO_REGISTRY_TOKEN`, `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the repository secrets.
 
