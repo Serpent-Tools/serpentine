@@ -12,6 +12,10 @@ It uses its own custom DSL called snek which lets you define a graph of steps to
 Serpentine does **not** have the concept of jobs, pipelines, etc. it has the concept of the node, and which nodes depend on which, the end.
 This makes it trivially easy to share setup logic, parallelize workflows, etc.
 
+You can read the book/docs at <https://serpentine.vivax.dev/> (or locally in the `book` folder).
+
+## Example
+
 ```snek
 base = Image("rust:latest") > With(FromHost("."), "/app") > WorkingDir("/app");
 
