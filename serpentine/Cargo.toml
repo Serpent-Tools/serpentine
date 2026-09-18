@@ -2,12 +2,14 @@
 name = "serpentine"
 version = "1.0.0"
 edition = "2024"
+rust-version = "1.98.1"
 readme = "../README.md"
 description = "Powerful simplistic workflow runner."
 license = "MIT"
 keywords = ["docker", "containers", "build-system", "testing", "CI"]
 categories = ["command-line-utilities", "compilers", "development-tools::build-utils", "development-tools::testing", "virtualization"]
 repository = "https://github.com/Serpent-Tools/serpentine"
+homepage = "https://serpentine.vivax.dev/"
 
 [dependencies]
 serpentine_internal.workspace = true

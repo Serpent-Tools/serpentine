@@ -17,7 +17,9 @@ Serpentine employs a combination of `cargo-deny` and `trivy` to vet its dependen
 > Yes we are aware not all vulnerabilities will affect serpentine, but we elect to try and eliminate vulnerable versions as a principle, as it's often less work to just upgrade a dependency than it is to maintain justifications for why a known security hole doesn't affect us.
 
 ### `cargo-deny`
-cargo-deny both vets our dependencies for *known* vulnerabilities/malware, as well as restrictive licenses. We will never publish a version of serpentine where `cargo-deny` is failing with a security warning.
+cargo-deny both vets our dependencies for *known* vulnerabilities/malware, as well as restrictive licenses. The aim is to know what is in our tree and keep it moving: renovate opens grouped dependency PRs weekly, and cargo-deny is what tells us when one of them is worth hurrying.
+
+We don't promise a tree with zero open advisories though. Serpentine pulls in a lot of networking code, so most of what gets flagged assumes a malicious peer on the other end of a connection, which is an attacker the threat model above already puts out of scope.
 
 Note that this only covers *known* issues, there is always a window between a bad version being published and an advisory existing. We accept this risk rather than pre-emptively auditing dependencies, which is not realistic at our team size.
 
@@ -25,4 +27,4 @@ Note that this only covers *known* issues, there is always a window between a ba
 > **This does not constitute a legal guarantee of the inclusion or lack of certain licenses in our dependency tree, and if license compliance is important for your team/company you should run your own analysis**
 
 ### `trivy`
-Serpentine runs `trivy` on its own sidecar image, we aim to reduce the number of active vulnerabilities, but because most of the image is third-party code there is only so much we can do (for example we currently patch containerd to use a more recent version of a vulnerable dependency.)
+Serpentine runs `trivy` on its own sidecar image, we aim to reduce the number of active vulnerabilities, but because most of the image is third-party code there is only so much we can do.
