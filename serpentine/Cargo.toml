@@ -1,6 +1,6 @@
 [package]
 name = "serpentine"
-version = "0.2.2"
+version = "1.0.0"
 edition = "2024"
 readme = "../README.md"
 description = "Powerful simplistic workflow runner."
