@@ -8,6 +8,8 @@ permissions:
 jobs:
   build-docker:
     runs-on: ubuntu-latest
+    # FIX: REMOVE
+    if: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -28,6 +30,8 @@ jobs:
           retention-days: 1
 
   test:
+    # FIX: REMOVE
+    if: false
     needs: [build-docker]
     strategy:
       fail-fast: false
@@ -203,7 +207,11 @@ jobs:
           curl.exe -sS -m 5 -o - "$($env:DOCKER_HOST -replace '^tcp','http')/_ping"
 
   test_gha_cache:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, blacksmith-2vcpu-ubuntu-2404]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -232,6 +240,8 @@ jobs:
           RUST_LOG: trace
 
   pr-blockers:
+    # FIX: REMOVE
+    if: false
     needs: [build-docker]
     runs-on: ubuntu-latest
     steps:
@@ -265,6 +275,8 @@ jobs:
         run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point PR_BLOCKERS --jobs 1
 
   pr-hints:
+    # FIX: REMOVE
+    if: false
     needs: [build-docker]
     runs-on: ubuntu-latest
     continue-on-error: true

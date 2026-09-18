@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use futures_util::future::BoxFuture;
-use futures_util::{FutureExt, TryStreamExt};
+use futures_util::{FutureExt, TryFutureExt, TryStreamExt};
 use miette::{Context, IntoDiagnostic};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWrite;
@@ -42,6 +42,48 @@ const AZURE_VERSION: &str = "2023-11-03";
 
 /// The prefix to use for cache entries for serpentine
 const CACHE_PREFIX: &str = "serpentine-";
+
+/// A trait for easier handling and logging request errors
+trait HandleError {
+    /// The result of `handle_error`
+    type Output;
+
+    /// Handle the given error.
+    async fn handle_error(self) -> Self::Output;
+}
+
+impl<F> HandleError for F
+where
+    F: Future<Output = Result<reqwest::Response, reqwest::Error>>,
+{
+    type Output = Result<reqwest::Response, std::io::Error>;
+
+    async fn handle_error(self) -> Self::Output {
+        match self.await {
+            Err(err) => {
+                log::error!("{err})");
+                Err(std::io::Error::other(err))
+            }
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    Ok(response)
+                } else {
+                    match response.text().await {
+                        Ok(body) => {
+                            log::error!("{status}: {body}");
+                            Err(std::io::Error::other(body))
+                        }
+                        Err(err) => {
+                            log::error!("{status}: {err}");
+                            Err(std::io::Error::other(err))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// A caching backend for github action cache service, using their undocumented api that everyone
 /// uses :P.
@@ -149,8 +191,8 @@ impl GithubActionsBackend {
             .post(format!("{}/GetCacheEntryDownloadURL", self.base_url))
             .json(&request)
             .send()
+            .handle_error()
             .await
-            .inspect_err(|err| log::error!("{err:?}"))
             .ok()?;
 
         if !response.status().is_success() {
@@ -178,9 +220,8 @@ impl GithubActionsBackend {
             .azure_client
             .get(&*url)
             .send()
+            .handle_error()
             .await
-            .and_then(reqwest::Response::error_for_status)
-            .inspect_err(|err| log::error!("{err:?}"))
             .ok()?
             .bytes_stream()
             .map_err(io::Error::other);
@@ -204,8 +245,9 @@ impl GithubActionsBackend {
             .post(format!("{}/CreateCacheEntry", self.base_url))
             .json(&create_request)
             .send()
+            .handle_error()
             .await
-            .wrap_internal("Failed to create cache entry")?;
+            .into_diagnostic()?;
 
         if !response.status().is_success() {
             log::error!("Got status: {}", response.status());
@@ -343,7 +385,7 @@ struct AzureBlobWriter {
     /// the buffer of bytes of the next block to write
     buffer: Vec<u8>,
     /// The inflight futures uploading blocks .
-    upload_futures: tokio::task::JoinSet<Result<(), reqwest::Error>>,
+    upload_futures: tokio::task::JoinSet<Result<(), std::io::Error>>,
     /// Total amount of bytes written so far, or specifically the amount of bytes queued to be
     /// written so far. up to `CONCURRENT_UPLOADS` * `BLOCK_SIZE` bytes might still be in flight.
     bytes_written: u64,
@@ -362,9 +404,9 @@ enum BlobWriterShutdownState {
     /// Currently flushing
     Flush,
     /// Currently performing azure commit request
-    CommittingAzure(BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>),
+    CommittingAzure(BoxFuture<'static, Result<reqwest::Response, std::io::Error>>),
     /// Currently performing github commit request
-    CommittingGithub(BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>),
+    CommittingGithub(BoxFuture<'static, Result<reqwest::Response, std::io::Error>>),
     /// Shutdown is done
     Done,
 }
@@ -433,11 +475,8 @@ impl AzureBlobWriter {
             .query(&[("blockid", block_id)])
             .body(buffer)
             .send()
-            .map(|response| {
-                response
-                    .and_then(reqwest::Response::error_for_status)
-                    .map(|_response| ())
-            });
+            .handle_error()
+            .map_ok(|_response| ());
         self.upload_futures.spawn(upload_future);
     }
 }
@@ -594,15 +633,14 @@ impl AsyncWrite for AzureBlobWriter {
                         .query(&[("comp", "blocklist")])
                         .header(reqwest::header::CONTENT_TYPE, "application/xml")
                         .body(request_body)
-                        .send();
+                        .send()
+                        .handle_error();
                     let commit_future = Box::pin(commit_future);
                     self.shutdown_state =
                         Some(BlobWriterShutdownState::CommittingAzure(commit_future));
                 }
                 Some(BlobWriterShutdownState::CommittingAzure(future)) => {
-                    ready!(future.poll_unpin(cx))
-                        .and_then(reqwest::Response::error_for_status)
-                        .map_err(io::Error::other)?;
+                    ready!(future.poll_unpin(cx))?;
 
                     log::debug!("Azure commit done, committing to github.");
                     let request = FinalizeCacheEntryUpload {
@@ -618,15 +656,15 @@ impl AsyncWrite for AzureBlobWriter {
                             self.github_client.base_url
                         ))
                         .json(&request)
-                        .send();
+                        .send()
+                        .handle_error();
                     self.shutdown_state = Some(BlobWriterShutdownState::CommittingGithub(
                         Box::pin(commit_future),
                     ));
                 }
                 Some(BlobWriterShutdownState::CommittingGithub(future)) => {
-                    ready!(future.poll_unpin(cx))
-                        .and_then(reqwest::Response::error_for_status)
-                        .map_err(io::Error::other)?;
+                    ready!(future.poll_unpin(cx))?;
+
                     self.shutdown_state = Some(BlobWriterShutdownState::Done);
 
                     log::debug!("Github commit done");
