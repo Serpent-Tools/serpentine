@@ -43,7 +43,7 @@ non_ascii_idents = "deny"
 pedantic = {level = "warn", priority = 1}
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
-module-name-repetitions = "allow" # This is not a public library, and we like importing the typed directly. 
+module_name_repetitions = "allow" # This is not a public library, and we like importing the type directly.
 
 # robust code
 todo = "deny"
@@ -74,7 +74,6 @@ infinite_loop = "warn"
 lossy_float_literal = "warn"
 missing_assert_message = "warn"
 mixed_read_write_in_expression = "warn"
-module_name_repetitions = "warn"
 multiple_unsafe_ops_per_block = "warn"
 mutex_atomic = "warn"
 needless_raw_strings = "warn"

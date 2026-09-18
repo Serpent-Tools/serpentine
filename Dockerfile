@@ -19,12 +19,6 @@ RUN git clone https://github.com/containernetworking/plugins.git /src/cni-plugin
     git -C /src/cni-plugins checkout ${CNI_COMMIT}
 WORKDIR /src/cni-plugins
 
-# Bump golang.org/x/sys to a release that fixes CVE-2026-39824 (>= v0.44.0);
-# no tagged cni-plugins release pins it yet.
-RUN GOFLAGS=-mod=mod go get golang.org/x/sys@v0.44.0 && \
-    GOFLAGS=-mod=mod go mod tidy && \
-    go mod vendor
-
 ENV CGO_ENABLED=0
 ENV GOFLAGS="-mod=vendor"
 ENV LDFLAGS="-w -s -extldflags -static -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=${CNI_VERSION}"
@@ -67,13 +61,6 @@ RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
 
 WORKDIR /src/containerd
 
-# Bump golang.org/x/net, golang.org/x/text and google.golang.org/grpc to releases
-# that fix CVE-2026-46600, CVE-2026-56852 and GHSA-hrxh-6v49-42gf; no tagged
-# containerd release pins them yet.
-RUN GOFLAGS=-mod=mod go get golang.org/x/net@v0.56.0 golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.82.1 && \
-    GOFLAGS=-mod=mod go mod tidy && \
-    go mod vendor
-
 RUN sed -i \
     -e '/plugins\/imageverifier/d' \
     -e '/plugins\/nri/d' \
@@ -104,7 +91,7 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM docker.io/library/rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 as rust_base
+FROM docker.io/library/rust:1.98.1-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa as rust_base
 RUN cargo install cargo-chef@=0.1.78 --locked
 # cargo-about puts its binary behind `cli`; without it the install is a no-op that still exits 0.
 RUN cargo install cargo-about@=0.9.2 --locked --features cli

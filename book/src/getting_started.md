@@ -71,7 +71,7 @@ export DEFAULT = Image("rust:latest")
 ```
 
 Saving this to `main.snek` and running `serpentine run` should download the rust image, copy your source code into a container and run `cargo check`.
-Further chapters in the book (and the examples page) will show patterns for making this play nicer with caching and doing more complex stuff. 
+Further chapters in the book will show patterns for making this play nicer with caching and doing more complex stuff. 
 
 ## Further Reading
 

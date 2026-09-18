@@ -33,6 +33,7 @@ mod tui;
 
 /// Serpentine is a workflow runner driven by its own DSL, snek.
 #[derive(clap::Parser)]
+#[command(version)]
 struct Cli {
     /// Action to take
     #[command(subcommand)]

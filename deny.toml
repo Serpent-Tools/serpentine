@@ -16,5 +16,4 @@ allow = [
     "ISC",
     "CDLA-Permissive-2.0",
     "BSD-3-Clause",
-    "BSD-2-Clause",
 ]

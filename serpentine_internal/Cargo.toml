@@ -2,6 +2,7 @@
 name = "serpentine_internal"
 version = "1.0.0"
 edition = "2024"
+rust-version = "1.98.1"
 readme = "../README.md"
 description = "internal shared library for serpentine"
 license = "MIT"

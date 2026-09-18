@@ -725,8 +725,7 @@ async fn get_env(
     Ok(container
         .get_config()
         .get_env_var(&env)
-        .map(Arc::clone)
-        .unwrap_or_default())
+        .map_or_default(Arc::clone))
 }
 
 /// Set container user.
