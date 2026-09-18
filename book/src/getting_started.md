@@ -4,19 +4,26 @@
 
 Serpentine requires a docker or podman daemon installed on your system to run its daemon process.
 
-> [!CAUTION]
-> Serpentine currently is not distributed anywhere, this section will ofc be updated once thats the case.
-> For now please following instructions in `CONTRIBUTING.md` to run Serpentine from source.
+You can install it with binstall
+```bash
+cargo binstall serpentine
+```
+alternatively you can install from source with `cargo install`
+```bash
+cargo install serpentine
+```
+
+You can also download the release binaries yourself from github: <https://github.com/Serpent-Tools/serpentine/releases>
 
 ### Nix flake
 Serpentine also comes as a nix flake, which you can install as follows:
 ```bash
-nix profile add github:Serpent-Tools/serpentine/v0.2.2
+nix profile add github:Serpent-Tools/serpentine/v1.0.0
 ```
 
 Or run a pipeline without installing anything:
 ```bash
-nix run github:Serpent-Tools/serpentine/v0.2.2 -- run
+nix run github:Serpent-Tools/serpentine/v1.0.0 -- run
 ```
 
 > [!WARNING]
@@ -29,7 +36,7 @@ Or use in your own dev shells like:
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    serpentine.url = "github:Serpent-Tools/serpentine/v0.2.2";
+    serpentine.url = "github:Serpent-Tools/serpentine/v1.0.0";
   };
 
   outputs =

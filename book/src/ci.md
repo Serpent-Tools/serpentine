@@ -18,23 +18,5 @@ You must restore `/tmp/serpentine_cache` before running it, and save it afterwar
 
 ## Github Actions
 
-Similar to buildkit/docker serpentine has dedicated support for github actions cache, but github does not expose the needed token to `run` steps, so we need to use `github-script` to expose them:
+Serpentine also has a dedicated github action: <https://github.com/marketplace/actions/run-serpentine>
 
-```yaml
-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout
-      - uses: actions/github-script
-        with:
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL);
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
-
-      - name: Install serpentine
-        run: TODO_FOR_v1.0.0
-      - name: Run serpentine pipeline
-        run: serpentine run --jobs 1 --cache-backend github --standalone-cache
-```
-
-Serpentine should be able to detect the backend automatically, but it doesnt hurt to set the backend explicitly. 
