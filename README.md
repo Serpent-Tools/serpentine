@@ -1,6 +1,3 @@
-> [!IMPORTANT]
-> Serpentine is a work in progress and not suitable for production yet.
-
 # Serpentine 
 [![CI](https://github.com/Serpent-Tools/serpentine/actions/workflows/test.yml/badge.svg)](https://github.com/Serpent-Tools/serpentine/actions/workflows/test.yml)
 
