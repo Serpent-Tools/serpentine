@@ -267,6 +267,18 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
       - name: Run serpentine pipeline
         run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point PR_BLOCKERS --jobs 1
+      - name: Dump sidecar startup diagnostics
+        if: always()
+        run: |
+          echo "::group::client startup"
+          grep -hE 'Creating containerd container|Docker published the sidecar|containerd not ready after|containerd ready through' \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/serpentine/logs/"*.log || true
+          echo "::endgroup::"
+          echo "::group::sidecar startup"
+          docker inspect --format '{{json .State}}' serpent-tools.containerd || true
+          docker logs --timestamps serpent-tools.containerd 2>&1 \
+            | grep -m 100 -E 'Sidecar listening|Spawning containerd|containerd successfully booted|connecting to containerd at|Got connection' || true
+          echo "::endgroup::"
 
   pr-hints:
     needs: [build-docker]
@@ -302,6 +314,18 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
       - name: Run serpentine pipeline
         run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point PR_HINTS --jobs 1
+      - name: Dump sidecar startup diagnostics
+        if: always()
+        run: |
+          echo "::group::client startup"
+          grep -hE 'Creating containerd container|Docker published the sidecar|containerd not ready after|containerd ready through' \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/serpentine/logs/"*.log || true
+          echo "::endgroup::"
+          echo "::group::sidecar startup"
+          docker inspect --format '{{json .State}}' serpent-tools.containerd || true
+          docker logs --timestamps serpent-tools.containerd 2>&1 \
+            | grep -m 100 -E 'Sidecar listening|Spawning containerd|containerd successfully booted|connecting to containerd at|Got connection' || true
+          echo "::endgroup::"
 
   all-checks:
     if: always()

@@ -65,6 +65,7 @@ fn main() -> ! {
             let listener = net::TcpListener::bind(("0.0.0.0", PORT))
                 .await
                 .expect("Failed to bind address");
+            log::info!("Sidecar listening on port {PORT}");
             loop {
                 let (socket, _addr) = listener.accept().await.expect("Failed to get connection");
                 log::info!("Got connection");
@@ -174,7 +175,15 @@ async fn handle_connection(mut remote_socket: net::TcpStream) -> Result<(), Box<
 
 /// Proxy messages between the given socket and `SOCKET_LOCATION`
 async fn proxy_containerd(mut remote_socket: net::TcpStream) -> Result<(), Box<dyn Error>> {
-    let mut containerd_socket = net::UnixStream::connect(SOCKET_LOCATION).await?;
+    log::debug!("Proxy request received, connecting to containerd at {SOCKET_LOCATION}");
+    let mut containerd_socket = net::UnixStream::connect(SOCKET_LOCATION)
+        .await
+        .map_err(|err| {
+            std::io::Error::new(
+                err.kind(),
+                format!("connecting to containerd at {SOCKET_LOCATION}: {err}"),
+            )
+        })?;
     log::debug!("Connected to containerd, starting proxy");
 
     tokio::io::copy_bidirectional(&mut remote_socket, &mut containerd_socket).await?;
