@@ -38,7 +38,8 @@ jobs:
           - os: blacksmith-2vcpu-ubuntu-2404
             platform: linux
             runtime: podman
-          - os: blacksmith-2vcpu-windows-2025
+          # WSL2-backed Linux containers require nested virtualization unavailable on Blacksmith Windows runners.
+          - os: windows-latest
             platform: windows
             runtime: docker
     runs-on: ${{ matrix.os }}
