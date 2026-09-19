@@ -306,6 +306,7 @@ async fn spin_up_containerd(
     }
 
     let serpentine_port = wait_for_host_port(&docker).await?;
+    log::debug!("Docker published the sidecar on 127.0.0.1:{serpentine_port}");
 
     Ok(std::net::SocketAddr::new(
         std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),

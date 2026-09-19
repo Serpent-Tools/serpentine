@@ -7,18 +7,17 @@ permissions:
   contents: read
 jobs:
   build-docker:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@e4c1c000c95f9cc255f72940e9c56bcbd1239436 # v1
       - name: Build container
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2
         with:
           context: .
           load: true
           tags: ghcr.io/serpent-tools/containerd:dev
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       - name: Export Docker image
         run: docker save ghcr.io/serpent-tools/containerd:dev | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -33,12 +32,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404
             platform: linux
             runtime: docker
-          - os: ubuntu-latest
+          - os: blacksmith-2vcpu-ubuntu-2404
             platform: linux
             runtime: podman
+          # WSL2-backed Linux containers require nested virtualization unavailable on Blacksmith Windows runners.
           - os: windows-latest
             platform: windows
             runtime: docker
@@ -237,7 +237,7 @@ jobs:
 
   pr-blockers:
     needs: [build-docker]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -267,10 +267,22 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
       - name: Run serpentine pipeline
         run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point PR_BLOCKERS --jobs 1
+      - name: Dump sidecar startup diagnostics
+        if: always()
+        run: |
+          echo "::group::client startup"
+          grep -hE 'Creating containerd container|Docker published the sidecar|containerd not ready after|containerd ready through' \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/serpentine/logs/"*.log || true
+          echo "::endgroup::"
+          echo "::group::sidecar startup"
+          docker inspect --format '{{json .State}}' serpent-tools.containerd || true
+          docker logs --timestamps serpent-tools.containerd 2>&1 \
+            | grep -m 100 -E 'Sidecar listening|Spawning containerd|containerd successfully booted|connecting to containerd at|Got connection' || true
+          echo "::endgroup::"
 
   pr-hints:
     needs: [build-docker]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -302,6 +314,18 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN);
       - name: Run serpentine pipeline
         run: cargo run -p serpentine --locked -- run --cache-backend github --standalone-cache --entry-point PR_HINTS --jobs 1
+      - name: Dump sidecar startup diagnostics
+        if: always()
+        run: |
+          echo "::group::client startup"
+          grep -hE 'Creating containerd container|Docker published the sidecar|containerd not ready after|containerd ready through' \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/serpentine/logs/"*.log || true
+          echo "::endgroup::"
+          echo "::group::sidecar startup"
+          docker inspect --format '{{json .State}}' serpent-tools.containerd || true
+          docker logs --timestamps serpent-tools.containerd 2>&1 \
+            | grep -m 100 -E 'Sidecar listening|Spawning containerd|containerd successfully booted|connecting to containerd at|Got connection' || true
+          echo "::endgroup::"
 
   all-checks:
     if: always()
@@ -311,7 +335,7 @@ jobs:
       pr-blockers,
       pr-hints
     ]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
