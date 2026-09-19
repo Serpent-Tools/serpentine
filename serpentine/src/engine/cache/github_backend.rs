@@ -1,5 +1,11 @@
 //! a `CacheBackend` for github actions.
 
+// NOTE: The request structs use the protobuf field names, according to the spec a parser should
+// accept both field names and lowercamelCase names, but certain implementations only accept the
+// field names.
+//
+// Our response structs accept both.
+
 use std::io;
 use std::task::{Poll, ready};
 use std::time::Duration;
@@ -289,7 +295,6 @@ impl GithubActionsBackend {
 
 /// Create a new cache entry
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct CreateCacheEntry<'version> {
     /// The key to create the entry under
     key: String,
@@ -326,7 +331,6 @@ fn u64_as_str<S: serde::Serializer>(value: &u64, ser: S) -> Result<S::Ok, S::Err
 
 /// Finalize the cache upload on the github side.
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct FinalizeCacheEntryUpload {
     /// The key to store commit
     key: Box<str>,
@@ -339,7 +343,6 @@ struct FinalizeCacheEntryUpload {
 
 /// Get the url to download requests from
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct GetCacheEntryDownloadURL {
     /// The exact key to try restoring.
     key: Box<str>,
@@ -426,26 +429,37 @@ impl AzureBlobWriter {
         }
     }
 
+    /// Genreate the block id for the given index
+    ///
+    /// While azure (and github actions cache) supports any consistent length block id,
+    /// certain third party implemenetation specifically want (and use 'metadata' from) the exact
+    /// `block_id` format used by `actions/cache`.
+    ///
+    /// Namely a 48 byte ascii string encoded into base64, consisting of a uuidv4 and then a 0
+    /// padded index for the rest.
+    fn generate_block_id(index: u16) -> Box<str> {
+        let prefix = uuid::Uuid::nil().hyphenated().to_string();
+        let index = format!("{index:0>12}"); // 48 - 36 (uuid size) = 12
+
+        let raw_id = format!("{prefix}{index}");
+        log::trace!("Raw block id: {raw_id}");
+        let id = base64::prelude::BASE64_STANDARD_NO_PAD.encode(&raw_id);
+        log::trace!("base64 block id: {id}");
+        id.into_boxed_str()
+    }
+
     /// Returns the base64 encoding of the next block id to use, incrementing the internal counter
     /// to ensure the next block id is unique.
     fn get_next_block_id(&mut self) -> Box<str> {
-        // Azure requires these to always be the same *pre-encoded* size.
-
-        let raw_id = self.block_id_counter.to_le_bytes();
+        let index = self.block_id_counter;
         self.block_id_counter = self.block_id_counter.saturating_add(1);
-
-        let id = base64::prelude::BASE64_STANDARD.encode(raw_id);
-        id.into_boxed_str()
+        Self::generate_block_id(index)
     }
 
     /// Return a iterator of all block ids used (in order)
     #[inline]
     fn get_block_ids(&self) -> impl Iterator<Item = Box<str>> {
-        (0..self.block_id_counter).map(|raw_id| {
-            let raw_id = raw_id.to_le_bytes();
-            let id = base64::prelude::BASE64_STANDARD.encode(raw_id);
-            id.into_boxed_str()
-        })
+        (0..self.block_id_counter).map(Self::generate_block_id)
     }
 
     /// schedule the current buffer for upload to azure.
