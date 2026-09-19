@@ -429,10 +429,10 @@ impl AzureBlobWriter {
         }
     }
 
-    /// Genreate the block id for the given index
+    /// Generate the block id for the given index
     ///
     /// While azure (and github actions cache) supports any consistent length block id,
-    /// certain third party implemenetation specifically want (and use 'metadata' from) the exact
+    /// certain third party implementation specifically want (and use 'metadata' from) the exact
     /// `block_id` format used by `actions/cache`.
     ///
     /// Namely a 48 byte ascii string encoded into base64, consisting of a uuidv4 and then a 0
