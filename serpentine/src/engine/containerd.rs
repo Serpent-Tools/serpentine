@@ -2415,7 +2415,10 @@ mod startup_tests {
             Duration::from_secs(30),
             "Should honor the startup deadline"
         );
-        assert!(diagnostic.contains("within 30s"), "Should report the deadline");
+        assert!(
+            diagnostic.contains("within 30s"),
+            "Should report the deadline"
+        );
         assert!(
             diagnostic.contains("sidecar unavailable"),
             "Should preserve the cause"
