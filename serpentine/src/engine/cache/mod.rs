@@ -273,6 +273,42 @@ mod tests {
 
             #[tokio::test]
             #[test_log::test]
+            async fn test_read_write_key_big() {
+                let test_string = (0..1_000_000).map(|_| uuid::Uuid::new_v4().to_string()).collect::<String>();
+
+                let backend = $init;
+
+                let mut writer = backend
+                    .write_key($crate::engine::cache::CacheHash([1; _]))
+                    .await
+                    .expect("Expected to be able to write to key 1");
+                writer
+                    .write_all(test_string.as_bytes())
+                    .await
+                    .expect("Failed to write");
+                writer.shutdown().await.expect("Failed to close writer");
+
+                // ensure backends have time to sync any needed changes on their end
+                let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+
+                let mut reader = backend
+                    .read_key($crate::engine::cache::CacheHash([1; _]))
+                    .await
+                    .expect("Failed to key 1");
+                let mut read_content = String::new();
+                reader
+                    .read_to_string(&mut read_content)
+                    .await
+                    .expect("Failed to read content");
+
+                assert_eq!(
+                    read_content, test_string,
+                    "Read content didnt match written"
+                );
+            }
+
+            #[tokio::test]
+            #[test_log::test]
             async fn test_write_twice() {
                 const TEST_STRING: &str = "integration testing for life!";
 
