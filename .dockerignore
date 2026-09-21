@@ -1,5 +1,5 @@
 target
-.direnv
+__fuzz__
 .jj
 .git
-serpentine.svg
+book
