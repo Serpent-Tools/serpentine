@@ -550,8 +550,6 @@ impl AsyncWrite for AzureBlobWriter {
             Poll::Ready(value) => {
                 if value.is_some() {
                     log::debug!("block upload done.");
-                } else {
-                    log::debug!("No inflight uploads.");
                 }
             }
         }
