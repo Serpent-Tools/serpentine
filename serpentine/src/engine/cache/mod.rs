@@ -279,7 +279,7 @@ mod tests {
                 let backend = $init;
 
                 let mut writer = backend
-                    .write_key($crate::engine::cache::CacheHash([1; _]))
+                    .write_key($crate::engine::cache::CacheHash([2; _]))
                     .await
                     .expect("Expected to be able to write to key 1");
                 writer
@@ -292,7 +292,7 @@ mod tests {
                 let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
                 let mut reader = backend
-                    .read_key($crate::engine::cache::CacheHash([1; _]))
+                    .read_key($crate::engine::cache::CacheHash([2; _]))
                     .await
                     .expect("Failed to key 1");
                 let mut read_content = String::new();
@@ -315,7 +315,7 @@ mod tests {
                 let backend = $init;
 
                 let mut writer = backend
-                    .write_key($crate::engine::cache::CacheHash([1; _]))
+                    .write_key($crate::engine::cache::CacheHash([3; _]))
                     .await
                     .expect("Expected to be able to write to key 1");
 
@@ -333,7 +333,7 @@ mod tests {
                 let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
                 let mut reader = backend
-                    .read_key($crate::engine::cache::CacheHash([1; _]))
+                    .read_key($crate::engine::cache::CacheHash([3; _]))
                     .await
                     .expect("Failed to key 1");
                 let mut read_content = String::new();
@@ -357,7 +357,7 @@ mod tests {
                 let backend = $init;
 
                 let mut writer = backend
-                    .write_key($crate::engine::cache::CacheHash([2; _]))
+                    .write_key($crate::engine::cache::CacheHash([4; _]))
                     .await
                     .expect("Expected to be able to write to key 2");
                 writer
@@ -368,7 +368,7 @@ mod tests {
                 let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
                 let  writer = backend
-                    .write_key($crate::engine::cache::CacheHash([2; _]))
+                    .write_key($crate::engine::cache::CacheHash([4; _]))
                     .await;
                 assert!(writer.is_none(), "Expected trying to write key twice to return None, as caches are content addressed.");
             }

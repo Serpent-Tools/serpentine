@@ -682,6 +682,26 @@ impl Client {
 
     /// Export the given snapshot to the caching backend
     async fn export_snapshot(&self, snapshot: &str) -> miette::Result<()> {
+        let parent = self
+            .containerd
+            .snapshot()
+            .stat(containerd_services::snapshots::StatSnapshotRequest {
+                snapshotter: SNAPSHOTTER.into(),
+                key: snapshot.into(),
+            })
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("stating snapshot {snapshot}"))?
+            .into_inner()
+            .info
+            .wrap_internal("snapshot didnt have any info")?
+            .parent;
+        if !parent.is_empty() {
+            Box::pin(self.export_snapshot(&parent))
+                .await
+                .with_context(|| format!("exporting parent of {snapshot}"))?;
+        }
+
         log::debug!("Exporting snapshot {snapshot} to cache");
 
         let hash = CacheHash::from_data(CacheScope::Snapshot, snapshot).await?;
@@ -724,21 +744,6 @@ impl Client {
             .next()
             .wrap_internal("No mounts returned for snapshoter")?;
 
-        let parent = self
-            .containerd
-            .snapshot()
-            .stat(containerd_services::snapshots::StatSnapshotRequest {
-                snapshotter: SNAPSHOTTER.into(),
-                key: snapshot.into(),
-            })
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("stating snapshot {snapshot}"))?
-            .into_inner()
-            .info
-            .wrap_internal("snapshot didnt have any info")?
-            .parent;
-
         serpentine_internal::write_postcard_frame(&parent, &mut writer)
             .await
             .into_diagnostic()
@@ -757,12 +762,6 @@ impl Client {
         log::debug!("Finished exporting layer");
         self.drop_lease(lease).await?;
         drop(task);
-
-        if !parent.is_empty() {
-            Box::pin(self.export_snapshot(&parent))
-                .await
-                .with_context(|| format!("exporting parent of {snapshot}"))?;
-        }
 
         Ok(())
     }
