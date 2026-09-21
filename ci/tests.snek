@@ -3,7 +3,7 @@ import "./lib.snek" as lib;
 
 
 export simple = lib::rust
-    > rust::WithBinstall("cargo-nextest@=0.9.143", "cargo-nextest")
+    > rust::WithBinstall("cargo-nextest@=0.9.144", "cargo-nextest")
     > rust::WithChef(lib::source_code, "cargo nextest run");
 
 // `cargo bolero list` and `test` use separate build trees, so the warmup builds both.
