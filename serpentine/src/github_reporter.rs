@@ -52,7 +52,9 @@ pub fn start(events: Receiver<SerpentineEvent>) {
                 level,
                 target,
                 message,
-            } if level <= log::Level::Warn => println!("[{level}][{target}] {message}"),
+            } if level <= log::Level::Warn || cfg!(debug_assertions) => {
+                println!("[{level}][{target}] {message}");
+            }
             _ => {}
         }
     }
