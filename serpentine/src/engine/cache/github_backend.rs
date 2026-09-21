@@ -40,6 +40,17 @@ const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VE
 /// and stay within the repo limit.
 const BLOCK_SIZE: usize = 1024 * 1024 * 32; // 32 MiB
 
+/// The minimum size for a block, except the last one, if `flush` is called while the buffer is
+/// smaller than this it should not write the block.
+///
+/// While github actions (azure) accepts writes of any size (up to a max), some third party S3
+/// backed replacements (such as blacksmith) require a minimum block size.
+///
+/// NOTE: This is technically a violation of flushes protocol, as it says any buffered data should
+/// reach its destination, but flush is mostly used for one directional channels to just keep memory
+/// usage down (in a bi-direction call response flush not writing given bytes would be bad.).
+const MINIMUM_BLOCK_SIZE: usize = 1024 * 1024 * 5; // 5 MiB
+
 /// The amount of concurrent blob uploads
 const CONCURRENT_UPLOADS: usize = 4; // value actions/cache uses 
 
@@ -583,7 +594,7 @@ impl AsyncWrite for AzureBlobWriter {
     ) -> Poll<std::io::Result<()>> {
         log::trace!("polling flush blob uploader");
 
-        if !self.buffer.is_empty() {
+        if self.buffer.len() >= MINIMUM_BLOCK_SIZE {
             log::debug!("Flushing buffer");
             self.upload_buffer();
         }
@@ -622,6 +633,11 @@ impl AsyncWrite for AzureBlobWriter {
             match &mut self.shutdown_state {
                 None => self.shutdown_state = Some(BlobWriterShutdownState::Flush),
                 Some(BlobWriterShutdownState::Flush) => {
+                    if !self.buffer.is_empty() {
+                        log::debug!("Writing final part");
+                        self.upload_buffer();
+                    }
+
                     ready!(self.as_mut().poll_flush(cx))?;
 
                     log::debug!("All bytes flushed, committing to azure");
