@@ -103,31 +103,36 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM rust_base as builder
 ENV RUSTFLAGS="-C target-feature=+crt-static"
+
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release -p sidecar --target x86_64-unknown-linux-gnu --recipe-path recipe.json
-COPY . .
-RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
+
+COPY about.toml about.hbs .
 RUN cargo about generate -c about.toml -m sidecar/Cargo.toml \
     --target x86_64-unknown-linux-gnu about.hbs -o /THIRD-PARTY.md
 
+COPY . .
+RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
+
 FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 RUN apk add --no-cache iptables
+# Alpine ships no license files of its own, so record what is installed and where its source is.
+RUN mkdir -p  /usr/share/licenses/ && \
+    apk info -v > /usr/share/licenses/alpine-packages.txt && \
+    echo "Source: https://gitlab.alpinelinux.org/alpine/aports" >> /usr/share/licenses/alpine-packages.txt
 
 COPY --from=containerd /src/containerd/bin /bin
 COPY --from=runc /src/runc/runc /bin/runc
 COPY --from=download /tini /bin/tini
 COPY --from=cni /cni /cni
-COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/sidecar /bin
 
 COPY --from=containerd /src/containerd/LICENSE /src/containerd/NOTICE /usr/share/licenses/containerd/
 COPY --from=runc /src/runc/LICENSE /src/runc/NOTICE /usr/share/licenses/runc/
 COPY --from=cni /src/cni-plugins/LICENSE /usr/share/licenses/cni-plugins/
 COPY --from=download /tini.LICENSE /usr/share/licenses/tini/LICENSE
-COPY --from=builder /THIRD-PARTY.md /usr/share/licenses/rust-crates/
 
-# Alpine ships no license files of its own, so record what is installed and where its source is.
-RUN apk info -v > /usr/share/licenses/alpine-packages.txt && \
-    echo "Source: https://gitlab.alpinelinux.org/alpine/aports" >> /usr/share/licenses/alpine-packages.txt
+COPY --from=builder /THIRD-PARTY.md /usr/share/licenses/rust-crates/
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/sidecar /bin
 
 EXPOSE 8000
 ENTRYPOINT ["/bin/tini", "--", "/bin/sidecar"]
