@@ -783,22 +783,29 @@ impl Client {
             .into_diagnostic()
             .context("reading the parent snapshot from the cache")?;
 
-        if !parent.is_empty() {
-            let was_found = Box::pin(self.ensure_snapshot(&parent)).await;
-            if !was_found {
-                return Ok(false);
+        let download_parent = async {
+            if parent.is_empty() {
+                true
+            } else {
+                Box::pin(self.ensure_snapshot(&parent)).await
             }
-        }
+        };
 
         let lease = self.new_lease().await?;
 
         let task = self
             .reporter
             .start_task(TaskKind::Status, "importing layer");
+
         log::debug!("Importing {snapshot} into content store");
-        let (total_size, digest) = self
-            .import_reader_into_content_store(reader, &lease)
-            .await?;
+        let import_to_content_store = self.import_reader_into_content_store(reader, &lease);
+
+        let (parent_found, import_result) =
+            futures_util::join!(download_parent, import_to_content_store);
+        let (total_size, digest) = import_result?;
+        if !parent_found {
+            return Ok(false);
+        }
 
         let temp_snapshot = uuid::Uuid::new_v4().to_string();
         log::debug!("Creating temporary snapshot {temp_snapshot} from {parent}");
