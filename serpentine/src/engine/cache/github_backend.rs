@@ -7,6 +7,7 @@
 // Our response structs accept both.
 
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::task::{Poll, ready};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use base64::Engine;
 use futures_util::future::BoxFuture;
 use futures_util::{FutureExt, TryFutureExt, TryStreamExt};
 use miette::{Context, IntoDiagnostic};
+use nohash::IntSet;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWrite;
 use tokio_util::io::StreamReader;
@@ -116,6 +118,11 @@ pub struct GithubActionsBackend {
     ///
     /// Must be 64 bytes long
     version: Box<str>,
+    /// Locks for blob store.
+    ///
+    /// If another task is already attempting to write the key we will return None for further
+    /// readers
+    locks: Arc<Mutex<IntSet<CacheHash>>>,
 }
 
 impl GithubActionsBackend {
@@ -185,6 +192,7 @@ impl GithubActionsBackend {
             azure_client,
             base_url: base_url.into(),
             version,
+            locks: Arc::default(),
         })
     }
 
@@ -386,6 +394,13 @@ impl CacheBackend for GithubActionsBackend {
     }
 
     fn write_key(&self, key: CacheHash) -> BoxFuture<'_, Option<BoxedWriter>> {
+        if let Ok(mut lock) = self.locks.lock() {
+            let new = lock.insert(key);
+            if !new {
+                return Box::pin(std::future::ready(None));
+            }
+        }
+
         let key = Self::hash_to_key(key);
         Box::pin(self.create_writer_for_github_key(key).map(Result::ok))
     }
