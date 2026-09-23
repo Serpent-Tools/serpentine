@@ -84,12 +84,7 @@ impl CacheBackend for LocalCacheBackend {
     }
 
     fn write_key(&self, key: CacheHash) -> BoxFuture<'static, Option<BoxedWriter>> {
-        {
-            let Ok(mut lock) = self.locks.lock() else {
-                log::error!("Failed to get mutex on cache lock");
-                return Box::pin(std::future::ready(None));
-            };
-
+        if let Ok(mut lock) = self.locks.lock() {
             let new = lock.insert(key);
             if !new {
                 return Box::pin(std::future::ready(None));

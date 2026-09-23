@@ -651,7 +651,7 @@ struct FullLayerManifest {
 ///
 /// Which can help it detect data corruption as well as provide better progress reporting.
 ///
-/// NOTE: While techically its more "correct" for these fields to be `Option` (instead of the
+/// NOTE: While technically its more "correct" for these fields to be `Option` (instead of the
 /// function taking a `Option` of this), but the only two current call sites either provide all or
 /// none of these fields.
 #[derive(Clone, Debug)]
@@ -1097,7 +1097,7 @@ impl Client {
                             action: containerd_services::WriteAction::Commit.into(),
                             r#ref: upload_ref,
                             total: total_size.try_into().unwrap_or(0),
-                            expected: extra.map(|extra| extra.digest.clone()).unwrap_or_default(),
+                            expected: extra.map_or_default(|extra| extra.digest),
                             offset: (total_size).try_into().unwrap_or(0),
                             data: Vec::new(),
                             labels: HashMap::new(),
