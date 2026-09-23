@@ -31,7 +31,7 @@ pub use github_backend::GithubActionsBackend;
 /// * Changes to builtin node names.
 /// * Changes to the cli
 /// * Etc...
-pub const CACHE_COMPATIBILITY_VERSION: u8 = 7;
+pub const CACHE_COMPATIBILITY_VERSION: u8 = 8;
 
 /// Wrapper around the raw blake3 hash output as its trait implementations (`Hash` and `Eq`) use
 /// constant time functions, which we do not require

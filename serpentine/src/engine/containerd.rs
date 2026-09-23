@@ -32,6 +32,13 @@ use crate::engine::{
 };
 use crate::events::{Lifecycle, Reporter, TaskHandle, TaskId, TaskKind};
 
+/// Label that when set to `1` makes containerd not clean up a resource.
+const CONTAINERD_GC_ROOT_LABEL: &str = "containerd.io/gc.root";
+
+/// Label serpentine sets on pulled image layers to allow pulling them again from cache without it
+/// counting as a pull.
+const SERPENTINE_LAYER_DIGEST_LABEL: &str = "serpentine/manifest";
+
 /// A command failed to execute
 #[derive(Debug, Error, Diagnostic)]
 #[error("Failed to execute command (exit code {code}): {command:?} \n{output}")]
@@ -558,6 +565,88 @@ struct ContainerHandle {
     exec_task: TaskHandle,
 }
 
+/// postcard does not support skipping certain fields, like `oci_client`s Serialize does.
+/// <https://github.com/jamesmunns/postcard/issues/125>
+///
+/// So instead we go via json
+mod as_json {
+    use std::marker::PhantomData;
+
+    /// Serialize the given value as as json string
+    pub fn serialize<S: serde::Serializer, T: serde::Serialize>(
+        value: T,
+        ser: S,
+    ) -> Result<S::Ok, S::Error> {
+        let json_string = serde_json::to_string(&value).map_err(serde::ser::Error::custom)?;
+        ser.serialize_str(&json_string)
+    }
+
+    /// A visitor that attempts to extra a string from the deserializer and parse it as json into
+    /// the given type.
+    struct JsonVisitor<T>(PhantomData<T>);
+
+    impl<T: for<'json_de> serde::Deserialize<'json_de>> serde::de::Visitor<'_> for JsonVisitor<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(formatter, "a string thats valid json for the given type")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            serde_json::from_str(value).map_err(serde::de::Error::custom)
+        }
+
+        fn visit_borrowed_str<E>(self, value: &'_ str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            serde_json::from_str(value).map_err(serde::de::Error::custom)
+        }
+    }
+
+    /// deerialize a json string as a value
+    pub fn deserialize<'de, D: serde::Deserializer<'de>, T: for<'any> serde::Deserialize<'any>>(
+        de: D,
+    ) -> Result<T, D::Error> {
+        de.deserialize_string(JsonVisitor::<T>(PhantomData))
+    }
+}
+
+/// A header for a snapshot cache entry.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SnapshotCacheEntryHeader {
+    /// The parent if there is any
+    parent: Option<String>,
+    /// The kind of snapshot entry
+    #[serde(with = "as_json")]
+    entry_kind: SnapshotCacheEntryKind,
+}
+
+/// The kind of snapshot cache entries
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Only exsists for a short time within one function"
+)]
+enum SnapshotCacheEntryKind {
+    /// A local entry, the layer data exsists after this header in the reader
+    Local,
+    /// The layer is stored at a remote location specified by the given `OciDescriptor`
+    Remote(FullLayerManifest),
+}
+
+/// All the info needed to pull a specific layer.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FullLayerManifest {
+    /// The image to pull from
+    image: oci_client::Reference,
+    /// The layer to pull
+    layer: oci_client::manifest::OciDescriptor,
+}
+
 /// A containerd client wrapper
 pub struct Client {
     /// Containerd client
@@ -682,7 +771,7 @@ impl Client {
 
     /// Export the given snapshot to the caching backend
     async fn export_snapshot(&self, snapshot: &str) -> miette::Result<()> {
-        let parent = self
+        let info = self
             .containerd
             .snapshot()
             .stat(containerd_services::snapshots::StatSnapshotRequest {
@@ -694,10 +783,13 @@ impl Client {
             .with_context(|| format!("stating snapshot {snapshot}"))?
             .into_inner()
             .info
-            .wrap_internal("snapshot didnt have any info")?
-            .parent;
-        if !parent.is_empty() {
-            Box::pin(self.export_snapshot(&parent))
+            .wrap_internal("snapshot didnt have any info")?;
+
+        let digest = info.labels.get(SERPENTINE_LAYER_DIGEST_LABEL);
+        let parent = (!info.parent.is_empty()).then_some(info.parent);
+
+        if let Some(parent) = parent.as_ref() {
+            Box::pin(self.export_snapshot(parent))
                 .await
                 .with_context(|| format!("exporting parent of {snapshot}"))?;
         }
@@ -710,49 +802,74 @@ impl Client {
             return Ok(());
         };
 
-        let task = self
-            .reporter
-            .start_task(TaskKind::Status, "exporting layer");
+        if let Some(manifest) = digest {
+            let manifest = serde_json::from_str(manifest)
+                .into_diagnostic()
+                .context("Reading oci descriptor from containerd label")?;
+            let header = SnapshotCacheEntryHeader {
+                parent,
+                entry_kind: SnapshotCacheEntryKind::Remote(manifest),
+            };
+            log::debug!("Writing header: {header:?}");
+            serpentine_internal::write_postcard_frame(&header, &mut writer)
+                .await
+                .into_diagnostic()
+                .context("Writing header")?;
+        } else {
+            let task = self
+                .reporter
+                .start_task(TaskKind::Status, "exporting layer");
 
-        let view_name = format!("{snapshot}/view/{}", uuid::Uuid::new_v4());
-        let lease = self.new_lease().await?;
+            let view_name = format!("{snapshot}/view/{}", uuid::Uuid::new_v4());
+            let lease = self.new_lease().await?;
 
-        let mounts = self
-            .containerd
-            .snapshot()
-            .view(
-                containerd_services::snapshots::ViewSnapshotRequest {
-                    snapshotter: SNAPSHOTTER.into(),
-                    key: view_name,
-                    parent: snapshot.into(),
-                    labels: HashMap::new(),
-                }
-                .with_lease(&lease),
-            )
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("viewing snapshot {snapshot}"))?
-            .into_inner()
-            .mounts;
+            let mounts = self
+                .containerd
+                .snapshot()
+                .view(
+                    containerd_services::snapshots::ViewSnapshotRequest {
+                        snapshotter: SNAPSHOTTER.into(),
+                        key: view_name,
+                        parent: snapshot.into(),
+                        labels: HashMap::new(),
+                    }
+                    .with_lease(&lease),
+                )
+                .await
+                .into_diagnostic()
+                .with_context(|| format!("viewing snapshot {snapshot}"))?
+                .into_inner()
+                .mounts;
 
-        debug_assert!(
-            mounts.len() == 1,
-            "Expected overlayfs mounts to only have one mount returned"
-        );
-        let mount = mounts
-            .into_iter()
-            .next()
-            .wrap_internal("No mounts returned for snapshoter")?;
+            debug_assert!(
+                mounts.len() == 1,
+                "Expected overlayfs mounts to only have one mount returned"
+            );
+            let mount = mounts
+                .into_iter()
+                .next()
+                .wrap_internal("No mounts returned for snapshoter")?;
 
-        serpentine_internal::write_postcard_frame(&parent, &mut writer)
-            .await
-            .into_diagnostic()
-            .context("writing the parent snapshot to the cache")?;
-        let mut tar_stream = self.sidecar.export_layer(mount).await?;
-        tokio::io::copy(&mut tar_stream, &mut writer)
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("writing snapshot {snapshot} to the cache"))?;
+            let header = SnapshotCacheEntryHeader {
+                parent,
+                entry_kind: SnapshotCacheEntryKind::Local,
+            };
+            log::debug!("Writing header: {header:?}");
+            serpentine_internal::write_postcard_frame(&header, &mut writer)
+                .await
+                .into_diagnostic()
+                .context("Writing header")?;
+
+            let mut tar_stream = self.sidecar.export_layer(mount).await?;
+            tokio::io::copy(&mut tar_stream, &mut writer)
+                .await
+                .into_diagnostic()
+                .with_context(|| format!("writing snapshot {snapshot} to the cache"))?;
+
+            self.drop_lease(lease).await?;
+            drop(task);
+        }
+
         writer
             .shutdown()
             .await
@@ -760,8 +877,6 @@ impl Client {
             .context("flushing the snapshot to the cache")?;
 
         log::debug!("Finished exporting layer");
-        self.drop_lease(lease).await?;
-        drop(task);
 
         Ok(())
     }
@@ -769,6 +884,7 @@ impl Client {
     /// Attempt to load the given snapshot from the cache backend.
     ///
     /// returns whether the snapshot was imported
+    #[expect(clippy::too_many_lines, reason = "Tightly coupled linear task")]
     async fn import_layer(&self, snapshot: &str) -> miette::Result<bool> {
         log::debug!("Attempting to import {snapshot}");
 
@@ -778,16 +894,18 @@ impl Client {
             return Ok(false);
         };
 
-        let parent: String = serpentine_internal::read_postcard_frame(&mut reader)
-            .await
-            .into_diagnostic()
-            .context("reading the parent snapshot from the cache")?;
+        let header: SnapshotCacheEntryHeader =
+            serpentine_internal::read_postcard_frame(&mut reader)
+                .await
+                .into_diagnostic()
+                .context("reading the header from the cache")?;
+        log::debug!("Read header {header:?}");
 
         let download_parent = async {
-            if parent.is_empty() {
-                true
+            if let Some(parent) = header.parent.as_ref() {
+                Box::pin(self.ensure_snapshot(parent)).await
             } else {
-                Box::pin(self.ensure_snapshot(&parent)).await
+                true
             }
         };
 
@@ -797,66 +915,91 @@ impl Client {
             .reporter
             .start_task(TaskKind::Status, "importing layer");
 
-        log::debug!("Importing {snapshot} into content store");
-        let import_to_content_store = self.import_reader_into_content_store(reader, &lease);
-
-        let (parent_found, import_result) =
-            futures_util::join!(download_parent, import_to_content_store);
-        let (total_size, digest) = import_result?;
-        if !parent_found {
-            return Ok(false);
-        }
-
-        let temp_snapshot = uuid::Uuid::new_v4().to_string();
-        log::debug!("Creating temporary snapshot {temp_snapshot} from {parent}");
-        let mounts = self
-            .containerd
-            .snapshot()
-            .prepare(
-                containerd_services::snapshots::PrepareSnapshotRequest {
-                    snapshotter: SNAPSHOTTER.into(),
-                    key: temp_snapshot.clone(),
-                    parent,
-                    labels: HashMap::new(),
+        match header.entry_kind {
+            SnapshotCacheEntryKind::Remote(manifest) => {
+                let parent_found = download_parent.await;
+                if !parent_found {
+                    return Ok(false);
                 }
-                .with_lease(&lease),
-            )
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("preparing snapshot {temp_snapshot}"))?
-            .into_inner()
-            .mounts;
 
-        log::debug!("Applying layer diff {digest} to {temp_snapshot}");
-        let descriptor = containerd_client::types::Descriptor {
-            media_type: "application/vnd.oci.image.layer.v1.tar+zstd".into(),
-            digest,
-            size: total_size.try_into().unwrap_or(0),
-            annotations: HashMap::new(),
-        };
-        self.containerd
-            .diff()
-            .apply(containerd_services::ApplyRequest {
-                mounts,
-                diff: Some(descriptor),
-                payloads: HashMap::new(),
-                sync_fs: true,
-            })
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("applying the layer diff to {temp_snapshot}"))?;
-        log::debug!("Diff applied, committing snapshot to {snapshot}");
-        self.containerd
-            .snapshot()
-            .commit(containerd_services::snapshots::CommitSnapshotRequest {
-                snapshotter: SNAPSHOTTER.into(),
-                key: temp_snapshot,
-                name: snapshot.to_owned(),
-                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
-            })
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("committing snapshot {snapshot}"))?;
+                self.fetch_layer(
+                    manifest,
+                    &lease,
+                    header.parent.unwrap_or_default(),
+                    &task,
+                    snapshot.to_owned(),
+                )
+                .await?;
+            }
+            SnapshotCacheEntryKind::Local => {
+                log::debug!("Importing {snapshot} into content store");
+                let import_to_content_store = self.import_reader_into_content_store(reader, &lease);
+
+                let (parent_found, import_result) =
+                    futures_util::join!(download_parent, import_to_content_store);
+                let (total_size, digest) = import_result?;
+                if !parent_found {
+                    return Ok(false);
+                }
+
+                let temp_snapshot = uuid::Uuid::new_v4().to_string();
+                log::debug!(
+                    "Creating temporary snapshot {temp_snapshot} from {:?}",
+                    header.parent
+                );
+                let mounts = self
+                    .containerd
+                    .snapshot()
+                    .prepare(
+                        containerd_services::snapshots::PrepareSnapshotRequest {
+                            snapshotter: SNAPSHOTTER.into(),
+                            key: temp_snapshot.clone(),
+                            parent: header.parent.unwrap_or_default(),
+                            labels: HashMap::new(),
+                        }
+                        .with_lease(&lease),
+                    )
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("preparing snapshot {temp_snapshot}"))?
+                    .into_inner()
+                    .mounts;
+
+                log::debug!("Applying layer diff {digest} to {temp_snapshot}");
+                let descriptor = containerd_client::types::Descriptor {
+                    media_type: "application/vnd.oci.image.layer.v1.tar+zstd".into(),
+                    digest,
+                    size: total_size.try_into().unwrap_or(0),
+                    annotations: HashMap::new(),
+                };
+                self.containerd
+                    .diff()
+                    .apply(containerd_services::ApplyRequest {
+                        mounts,
+                        diff: Some(descriptor),
+                        payloads: HashMap::new(),
+                        sync_fs: true,
+                    })
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("applying the layer diff to {temp_snapshot}"))?;
+                log::debug!("Diff applied, committing snapshot to {snapshot}");
+                self.containerd
+                    .snapshot()
+                    .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                        snapshotter: SNAPSHOTTER.into(),
+                        key: temp_snapshot,
+                        name: snapshot.to_owned(),
+                        labels: HashMap::from([(
+                            CONTAINERD_GC_ROOT_LABEL.to_owned(),
+                            "1".to_owned(),
+                        )]),
+                    })
+                    .await
+                    .into_diagnostic()
+                    .with_context(|| format!("committing snapshot {snapshot}"))?;
+            }
+        }
 
         self.drop_lease(lease).await?;
         drop(task);
@@ -996,7 +1139,7 @@ impl Client {
 
         let lock = acquire_file_lock(&format!("import/{snapshot}")).await;
         if let Err(err) = &lock {
-            log::warn!("Proceeding without an import lock for {snapshot}: {err}");
+            log::warn!("Proceeding without an import lock for {snapshot}: {err:?}");
         }
 
         if self
@@ -1019,8 +1162,8 @@ impl Client {
             match result {
                 Ok(imported) => imported,
                 Err(err) => {
-                    log::error!("Failed to import layer: {err}");
-                    debug_assert!(false, "Failed to import layer");
+                    log::error!("Failed to import layer: {err:?}");
+                    debug_assert!(false, "Failed to import layer: {err:?}");
                     false
                 }
             }
@@ -1045,7 +1188,7 @@ impl Client {
     /// Export all the referenced snapshots from this config.
     pub async fn export_snapshots_from(&self, config: &ContainerState) {
         if let Err(err) = self.export_snapshot(&config.snapshot).await {
-            log::error!("Failed to export snapshot: {err}");
+            log::error!("Failed to export snapshot: {err:?}");
         }
 
         for service in config.config.services.values() {
@@ -1185,11 +1328,10 @@ impl Client {
         self.reporter.task_layer_progress(task.id(), 0, layer_count);
 
         let mut layer_stack_hash = blake3::Hasher::new();
-        let mut snapshot_name = String::new();
 
         for (index, layer) in manifest.layers.into_iter().enumerate() {
             layer_stack_hash.update(layer.digest.as_bytes());
-            snapshot_name = layer_stack_hash.finalize().to_hex().to_string();
+            let snapshot_name = layer_stack_hash.finalize().to_hex().to_string();
 
             let pull_guard = acquire_file_lock(&snapshot_name).await?;
 
@@ -1203,93 +1345,116 @@ impl Client {
                 .await
                 .is_ok();
 
-            let is_final_layer = index == layer_count.saturating_sub(1);
-
             if layer_exists {
                 log::debug!("Snapshot {snapshot_name} already exists.");
             } else {
-                self.pull_layer(image, &layer, lease, task.id()).await?;
-
-                let key = uuid::Uuid::new_v4().to_string();
-                log::debug!("Applying layer {} to {key}", layer.digest);
-                let mounts = self
-                    .containerd
-                    .snapshot()
-                    .prepare(
-                        containerd_services::snapshots::PrepareSnapshotRequest {
-                            key: key.clone(),
-                            snapshotter: SNAPSHOTTER.to_owned(),
-                            labels: HashMap::new(),
-                            parent: parent.clone(),
-                        }
-                        .with_lease(lease),
-                    )
-                    .await
-                    .into_diagnostic()
-                    .with_context(|| format!("preparing snapshot {key}"))?
-                    .into_inner()
-                    .mounts;
-
-                self.containerd
-                    .diff()
-                    .apply(containerd_services::ApplyRequest {
-                        diff: Some(containerd_client::types::Descriptor {
-                            media_type: layer.media_type,
-                            digest: layer.digest.clone(),
-                            size: layer.size,
-                            annotations: HashMap::new(),
-                        }),
-                        mounts: mounts.clone(),
-                        payloads: HashMap::new(),
-                        sync_fs: false,
-                    })
-                    .await
-                    .into_diagnostic()
-                    .with_context(|| format!("applying layer {} to {key}", layer.digest))?;
-
-                log::debug!("Committing {key} to {snapshot_name}");
-                let labels = if is_final_layer {
-                    HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())])
-                } else {
-                    HashMap::new()
-                };
-                let commit = self
-                    .containerd
-                    .snapshot()
-                    .commit(
-                        containerd_services::snapshots::CommitSnapshotRequest {
-                            snapshotter: SNAPSHOTTER.to_owned(),
-                            name: snapshot_name.clone(),
-                            key,
-                            labels,
-                        }
-                        .with_lease(lease),
-                    )
-                    .await;
-                if let Err(status) = commit
-                    && !Self::is_already_exists(&status)
-                {
-                    return Err(status)
-                        .into_diagnostic()
-                        .with_context(|| format!("committing snapshot {snapshot_name}"));
-                }
+                self.fetch_layer(
+                    FullLayerManifest {
+                        image: image.clone(),
+                        layer,
+                    },
+                    lease,
+                    parent,
+                    &task,
+                    snapshot_name.clone(),
+                )
+                .await?;
             }
 
             pull_guard.unlock();
 
             self.reporter
                 .task_layer_progress(task.id(), index.saturating_add(1), layer_count);
-            parent = snapshot_name.clone();
+            parent = snapshot_name;
         }
 
-        Ok(snapshot_name)
+        Ok(parent)
+    }
+
+    /// Pull the given layer and convert into a snapshot under the given name
+    async fn fetch_layer(
+        &self,
+        manifest: FullLayerManifest,
+        lease: &str,
+        parent: String,
+        task: &TaskHandle,
+        snapshot_name: String,
+    ) -> Result<(), miette::Error> {
+        self.pull_layer(&manifest, lease, task.id()).await?;
+        let key = uuid::Uuid::new_v4().to_string();
+        log::debug!("Applying layer {} to {key}", manifest.layer.digest);
+        let mounts = self
+            .containerd
+            .snapshot()
+            .prepare(
+                containerd_services::snapshots::PrepareSnapshotRequest {
+                    key: key.clone(),
+                    snapshotter: SNAPSHOTTER.to_owned(),
+                    labels: HashMap::new(),
+                    parent,
+                }
+                .with_lease(lease),
+            )
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("preparing snapshot {key}"))?
+            .into_inner()
+            .mounts;
+        self.containerd
+            .diff()
+            .apply(containerd_services::ApplyRequest {
+                diff: Some(containerd_client::types::Descriptor {
+                    media_type: manifest.layer.media_type.clone(),
+                    digest: manifest.layer.digest.clone(),
+                    size: manifest.layer.size,
+                    annotations: HashMap::new(),
+                }),
+                mounts: mounts.clone(),
+                payloads: HashMap::new(),
+                sync_fs: false,
+            })
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("applying layer {} to {key}", manifest.layer.digest))?;
+        log::debug!("Committing {key} to {snapshot_name}");
+        let mut labels = HashMap::new();
+        labels.insert(
+            SERPENTINE_LAYER_DIGEST_LABEL.to_owned(),
+            serde_json::to_string(&manifest)
+                .wrap_internal("layer manifest could not be serialized to json")?,
+        );
+        labels.insert(CONTAINERD_GC_ROOT_LABEL.to_owned(), "1".to_owned());
+        let commit = self
+            .containerd
+            .snapshot()
+            .commit(
+                containerd_services::snapshots::CommitSnapshotRequest {
+                    snapshotter: SNAPSHOTTER.to_owned(),
+                    name: snapshot_name,
+                    key,
+                    labels,
+                }
+                .with_lease(lease),
+            )
+            .await;
+
+        if let Err(status) = commit
+            && !Self::is_already_exists(&status)
+        {
+            return Err(status).into_diagnostic().context("committing snapshot");
+        }
+
+        Ok(())
     }
 
     /// Pull the given layer into containerd.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Very cohesive singular (complex) task"
+    )]
     async fn pull_layer(
         &self,
-        image: &oci_client::Reference,
-        layer: &oci_client::manifest::OciDescriptor,
+        manifest: &FullLayerManifest,
         lease: &str,
         task_id: TaskId,
     ) -> miette::Result<()> {
@@ -1297,32 +1462,37 @@ impl Client {
             .containerd
             .content()
             .read(containerd_services::ReadContentRequest {
-                digest: layer.digest.clone(),
+                digest: manifest.layer.digest.clone(),
                 offset: 0,
                 size: 1,
             })
             .await
             .is_ok()
         {
-            log::debug!("layer {} already exists", layer.digest);
+            log::debug!("layer {} already exists", manifest.layer.digest);
             return Ok(());
         }
 
-        log::debug!("Pulling layer {layer}");
+        log::debug!("Pulling layer {}", manifest.layer);
 
         let layer_stream = self
             .oci
-            .pull_blob_stream(image, &layer)
+            .pull_blob_stream(&manifest.image, &manifest.layer)
             .await
             .into_diagnostic()
-            .with_context(|| format!("pulling layer {} of {image}", layer.digest))?;
+            .with_context(|| {
+                format!(
+                    "pulling layer {} of {}",
+                    manifest.layer.digest, manifest.image
+                )
+            })?;
         let total_size: i64 = layer_stream
             .content_length
             .and_then(|len| len.try_into().ok())
             .unwrap_or(0);
         let upload_ref = uuid::Uuid::new_v4().to_string();
         let upload_ref_clone = upload_ref.clone();
-        let digest = layer.digest.clone();
+        let digest = manifest.layer.digest.clone();
         let digest_clone = digest.clone();
 
         self.reporter
@@ -1356,12 +1526,22 @@ impl Client {
             )
             .await
             .into_diagnostic()
-            .with_context(|| format!("writing layer {} to the content store", layer.digest))?
+            .with_context(|| {
+                format!(
+                    "writing layer {} to the content store",
+                    manifest.layer.digest
+                )
+            })?
             .into_inner()
             .try_for_each(async |_| Ok(()))
             .await
             .into_diagnostic()
-            .with_context(|| format!("writing layer {} to the content store", layer.digest))?;
+            .with_context(|| {
+                format!(
+                    "writing layer {} to the content store",
+                    manifest.layer.digest
+                )
+            })?;
 
         log::debug!("Finished pulling {digest_clone}.");
         let commit = self
@@ -1383,7 +1563,7 @@ impl Client {
             )
             .await
             .into_diagnostic()
-            .with_context(|| format!("committing layer {}", layer.digest))?
+            .with_context(|| format!("committing layer {}", manifest.layer.digest))?
             .into_inner()
             .try_for_each(async |_| Ok(()))
             .await;
@@ -1392,7 +1572,7 @@ impl Client {
         {
             return Err(status)
                 .into_diagnostic()
-                .with_context(|| format!("committing layer {}", layer.digest));
+                .with_context(|| format!("committing layer {}", manifest.layer.digest));
         }
 
         Ok(())
@@ -2086,7 +2266,7 @@ impl Client {
                 snapshotter: SNAPSHOTTER.to_owned(),
                 name: snapshot_name.clone(),
                 key: handle.snapshot.clone(),
-                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
+                labels: HashMap::from([(CONTAINERD_GC_ROOT_LABEL.to_owned(), "1".to_owned())]),
             })
             .await;
         if let Err(status) = commit
@@ -2224,7 +2404,7 @@ impl Client {
                 snapshotter: SNAPSHOTTER.to_owned(),
                 name: final_snapshot.clone(),
                 key: snapshot.clone(),
-                labels: HashMap::from([("containerd.io/gc.root".to_owned(), "1".to_owned())]),
+                labels: HashMap::from([(CONTAINERD_GC_ROOT_LABEL.to_owned(), "1".to_owned())]),
             })
             .await;
         if let Err(status) = commit
