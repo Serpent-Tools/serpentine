@@ -428,7 +428,6 @@ impl<'arena> Parser<'arena> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use strum::IntoEnumIterator;
 
@@ -440,12 +439,13 @@ mod tests {
     const UNIT_TOKEN_SOURCE: &str = "( ) { } ; > , = ! :: return def import export as";
 
     /// Tokenize [`UNIT_TOKEN_SOURCE`] into the payload-free token alphabet (plus EOF).
-    fn unit_tokens() -> Vec<Token<'static>> {
-        Tokenizer::tokenize(FileId(0), UNIT_TOKEN_SOURCE)
-            .expect("the alphabet source must tokenize")
+    fn unit_tokens() -> miette::Result<Vec<Token<'static>>> {
+        let tokens = Tokenizer::tokenize(FileId(0), UNIT_TOKEN_SOURCE)?
             .into_iter()
             .map(|token| token.0)
-            .collect()
+            .collect();
+
+        Ok(tokens)
     }
 
     /// Generator-friendly [`Token`], carrying payloads only where [`Token`] does.
@@ -483,8 +483,8 @@ mod tests {
     }
 
     #[test]
-    fn fuzz_alphabet_is_complete() {
-        let alphabet = unit_tokens();
+    fn fuzz_alphabet_is_complete() -> miette::Result<()> {
+        let alphabet = unit_tokens()?;
         for variant in TokenDiscriminants::iter() {
             let generated = matches!(
                 variant,
@@ -496,11 +496,13 @@ mod tests {
                 .any(|token| TokenDiscriminants::from(token) == variant);
             assert!(generated, "the fuzzer cannot produce {variant:?}");
         }
+
+        Ok(())
     }
 
     #[test]
     fn doesnt_panic() {
-        let alphabet = unit_tokens();
+        let alphabet = unit_tokens().expect("the alphabet source must tokenize");
         bolero::check!()
             .with_type()
             .for_each(|stream: &Vec<FuzzToken>| {

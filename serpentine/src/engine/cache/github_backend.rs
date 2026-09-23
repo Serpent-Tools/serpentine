@@ -707,14 +707,10 @@ impl AsyncWrite for AzureBlobWriter {
 
 #[cfg(test)]
 #[cfg(feature = "_test_gha")]
-#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
-    use super::*;
+    use super::GithubActionsBackend;
 
-    crate::test_well_behaved_cache!(
-        GithubActionsBackend::new(
-            format!("{:032x}{:032x}", uuid::Uuid::new_v4().as_u128(), 0u128).into_boxed_str()
-        )
-        .expect("Failed to create github cache backend")
-    );
+    crate::test_well_behaved_cache!(GithubActionsBackend::new(
+        format!("{:032x}{:032x}", uuid::Uuid::new_v4().as_u128(), 0u128).into_boxed_str()
+    )?);
 }

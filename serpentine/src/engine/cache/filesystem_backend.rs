@@ -201,18 +201,15 @@ impl AsyncWrite for ScratchFile {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
-    use super::*;
+    use typed_path::PlatformPathBuf;
+
+    use super::LocalCacheBackend;
 
     crate::test_well_behaved_cache!({
-        let folder = tempfile::tempdir()
-            .expect("Failed to create temp dir")
-            .keep();
+        let folder = tempfile::tempdir().into_diagnostic()?.keep();
         let folder = PlatformPathBuf::from(folder.as_os_str().as_encoded_bytes());
 
-        LocalCacheBackend::new(folder)
-            .await
-            .expect("Failed to create cache backend")
+        LocalCacheBackend::new(folder).await.into_diagnostic()?
     });
 }

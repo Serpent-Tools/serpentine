@@ -629,10 +629,10 @@ struct SnapshotCacheEntryHeader {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "Only exsists for a short time within one function"
+    reason = "Only exists for a short time within one function"
 )]
 enum SnapshotCacheEntryKind {
-    /// A local entry, the layer data exsists after this header in the reader
+    /// A local entry, the layer data exists after this header in the reader
     Local,
     /// The layer is stored at a remote location specified by the given `OciDescriptor`
     Remote(FullLayerManifest),
@@ -2540,16 +2540,13 @@ impl FileSystemProvider for ContainerFileExport {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "Tests")]
 mod startup_tests {
     use super::*;
 
     #[tokio::test(start_paused = true)]
-    async fn ready_sidecar_does_not_wait() {
+    async fn ready_sidecar_does_not_wait() -> miette::Result<()> {
         let start = tokio::time::Instant::now();
-        let client = Client::wait_for_containerd_ready(|| std::future::ready(Ok(42)))
-            .await
-            .expect("Ready sidecar should connect immediately");
+        let client = Client::wait_for_containerd_ready(|| std::future::ready(Ok(42))).await?;
 
         assert_eq!(client, 42, "Should return the ready client");
         assert_eq!(
@@ -2557,10 +2554,12 @@ mod startup_tests {
             Duration::ZERO,
             "Should not delay a ready sidecar"
         );
+
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn retries_connection_and_version_probe_failures() {
+    async fn retries_connection_and_version_probe_failures() -> miette::Result<()> {
         let mut attempts = [
             Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
                 .into_diagnostic()
@@ -2573,10 +2572,13 @@ mod startup_tests {
         .into_iter();
         let start = tokio::time::Instant::now();
         let client = Client::wait_for_containerd_ready(|| {
-            std::future::ready(attempts.next().expect("Unexpected extra startup attempt"))
+            std::future::ready(
+                attempts
+                    .next()
+                    .unwrap_or_else(|| Err(miette::miette!("Unexpected extra startup attempt"))),
+            )
         })
-        .await
-        .expect("Should recover when the sidecar and containerd become ready");
+        .await?;
 
         assert_eq!(client, 42, "Should return only after a successful probe");
         assert_eq!(
@@ -2584,16 +2586,20 @@ mod startup_tests {
             Duration::from_millis(200),
             "Should retry both stages"
         );
+
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn persistent_failure_preserves_last_error() {
+    async fn persistent_failure_preserves_last_error() -> miette::Result<()> {
         let start = tokio::time::Instant::now();
-        let error = Client::wait_for_containerd_ready(|| {
+        let result = Client::wait_for_containerd_ready(|| {
             std::future::ready(Err::<(), _>(miette::miette!("sidecar unavailable")))
         })
-        .await
-        .expect_err("An unavailable sidecar must time out");
+        .await;
+        let Err(error) = result else {
+            miette::bail!("An unavailable sidecar must time out");
+        };
         let diagnostic = format!("{error:?}");
 
         assert_eq!(
@@ -2609,14 +2615,18 @@ mod startup_tests {
             diagnostic.contains("sidecar unavailable"),
             "Should preserve the cause"
         );
+
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stalled_attempt_respects_startup_deadline() {
+    async fn stalled_attempt_respects_startup_deadline() -> miette::Result<()> {
         let start = tokio::time::Instant::now();
-        let error = Client::wait_for_containerd_ready(std::future::pending::<miette::Result<()>>)
-            .await
-            .expect_err("A stalled handshake or probe must time out");
+        let result =
+            Client::wait_for_containerd_ready(std::future::pending::<miette::Result<()>>).await;
+        let Err(error) = result else {
+            miette::bail!("A stalled handshake or probe must time out");
+        };
 
         assert_eq!(
             start.elapsed(),
@@ -2627,12 +2637,13 @@ mod startup_tests {
             format!("{error:?}").contains("did not complete"),
             "Should report the stalled attempt"
         );
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 #[cfg(feature = "_test_docker")]
-#[expect(clippy::expect_used, reason = "Tests")]
 mod integration_tests {
     use rstest::{fixture, rstest};
     use typed_path::PlatformPathBuf;
@@ -2642,7 +2653,7 @@ mod integration_tests {
     const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0";
 
     #[fixture]
-    async fn containerd_client() -> Client {
+    async fn containerd_client() -> miette::Result<Client> {
         Client::new(
             Reporter::none(),
             Arc::new(crate::engine::cache::NoneCacheBackend),
@@ -2650,179 +2661,175 @@ mod integration_tests {
             "serpentine-test",
         )
         .await
-        .expect("Failed to create Docker client")
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn pull_image(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn pull_image(#[future] containerd_client: miette::Result<Client>) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        containerd_client.pull_image(TEST_IMAGE).await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_in_container(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn exec_in_container(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         containerd_client
             .exec(&image, "echo hello world".to_owned())
-            .await
-            .expect("Failed to exec in container");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_in_container_fail(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn exec_in_container_fail(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
 
         let res = containerd_client
             .exec(&image, "cat hello.txt".to_owned())
             .await;
         assert!(res.is_err(), "Expected exec to fail");
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_cmd_not_found(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn exec_cmd_not_found(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
 
         let res = containerd_client
             .exec(&image, "I_AM_NOT_REAL".to_owned())
             .await;
         assert!(res.is_err(), "Expected exec to fail");
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn chained_exec(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn chained_exec(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
 
         let image = containerd_client
             .exec(&image, "touch /tmp/hello".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         containerd_client
             .exec(&image, "cat /tmp/hello".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn forked_image(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn forked_image(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
 
         let image = containerd_client
             .exec(&image, "touch /tmp/hello".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         containerd_client
             .exec(&image, "rm /tmp/hello".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         containerd_client
             .exec(&image, "cat /tmp/hello".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_output(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn exec_output(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         let output = containerd_client
             .exec_get_output(&image, "echo -n hello world".to_owned())
-            .await
-            .expect("Failed to exec in container");
+            .await?;
 
         assert_eq!(output, "hello world");
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_output_has_writable_filesystem(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn exec_output_has_writable_filesystem(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         let output = containerd_client
             .exec_get_output(&image, "echo hello world > hello.txt".to_owned())
-            .await
-            .expect("Failed to exec in container");
+            .await?;
         assert_eq!(output, "");
 
         // Ensure we didnt modify the filesystem in `image`
-        containerd_client
+        let result = containerd_client
             .exec(&image, "cat hello.txt".to_owned())
-            .await
-            .expect_err("File was created in filesystem when it shouldnt have been");
+            .await;
+        if result.is_ok() {
+            miette::bail!("File was created in filesystem when it shouldnt have been");
+        }
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_non_utf8(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn exec_non_utf8(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         containerd_client
             .exec(&image, r"printf '\xff\xfe\xfa'".to_owned())
-            .await
-            .expect(
-                "Exec failed on non-utf8 stdout, even tho we werent explicitly capturing it here. ",
-            );
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn exec_output_non_utf8(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn exec_output_non_utf8(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         let output = containerd_client
             .exec_get_output(&image, r"printf '\xff\xfe\xfa'".to_owned())
             .await;
@@ -2831,194 +2838,171 @@ mod integration_tests {
             output.is_err(),
             "No way to represent the non-utf8 data, so should be a error"
         );
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn copy_file_between_containers(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let base = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn copy_file_between_containers(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let base = containerd_client.pull_image(TEST_IMAGE).await?;
 
         let from = containerd_client
             .exec(&base, "echo hello > /tmp/hello.txt".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         let file = containerd_client
             .export_path(&from, UnixPath::new("/tmp/hello.txt"))
-            .await
-            .expect("Export failed");
+            .await?;
 
         let to = containerd_client
             .copy_fs_into_container(&base, file, UnixPath::new("nice.txt"))
-            .await
-            .expect("Failed to copy into container");
+            .await?;
 
-        containerd_client
-            .exec(&to, "ls".to_owned())
-            .await
-            .expect("Exec failed");
+        containerd_client.exec(&to, "ls".to_owned()).await?;
 
         containerd_client
             .exec(&to, "grep -q hello nice.txt || exit 1".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn copy_folder_between_containers(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let base = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn copy_folder_between_containers(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let base = containerd_client.pull_image(TEST_IMAGE).await?;
 
         let from = containerd_client
             .exec(&base, "mkdir -p /tmp/foo/bar/baz".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         let from = containerd_client
             .exec(&from, "echo hello > /tmp/foo/bar/baz/nice.txt".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         let file = containerd_client
             .export_path(&from, UnixPath::new("/tmp/foo"))
-            .await
-            .expect("Export failed");
+            .await?;
 
         let to = containerd_client
             .copy_fs_into_container(&base, file, UnixPath::new("hello"))
-            .await
-            .expect("Failed to copy into container");
+            .await?;
 
         containerd_client
             .exec(&to, "ls hello/bar/baz".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         containerd_client
             .exec(
                 &to,
                 "grep -q hello hello/bar/baz/nice.txt || exit 1".to_owned(),
             )
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn copy_folder_between_containers_relative_paths(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let base = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn copy_folder_between_containers_relative_paths(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let base = containerd_client.pull_image(TEST_IMAGE).await?;
         let base = base.update_config(|config| config.set_working_dir(UnixPath::new("/testing")));
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         let from = containerd_client
             .exec(&from, "echo hello > ./foo/bar/baz/nice.txt".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         let file = containerd_client
             .export_path(&from, UnixPath::new("./foo"))
-            .await
-            .expect("Export failed");
+            .await?;
 
         let to = containerd_client
             .copy_fs_into_container(&base, file, UnixPath::new("./hello"))
-            .await
-            .expect("Failed to copy into container");
+            .await?;
 
         containerd_client
             .exec(&to, "ls ./hello/bar/baz".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         containerd_client
             .exec(
                 &to,
                 "grep -q hello ./hello/bar/baz/nice.txt || exit 1".to_owned(),
             )
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
     async fn copy_folder_between_containers_relative_paths_dot(
-        #[future] containerd_client: Client,
-    ) {
-        let containerd_client = containerd_client.await;
-        let base = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let base = containerd_client.pull_image(TEST_IMAGE).await?;
         let base = base.update_config(|config| config.set_working_dir(UnixPath::new("/testing")));
 
         let from = containerd_client
             .exec(&base, "mkdir -p ./foo/bar/baz".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         let from = containerd_client
             .exec(&from, "echo hello > ./foo/bar/baz/nice.txt".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         let file = containerd_client
             .export_path(&from, UnixPath::new("."))
-            .await
-            .expect("Export failed");
+            .await?;
 
         let to = containerd_client
             .copy_fs_into_container(&base, file, UnixPath::new("."))
-            .await
-            .expect("Failed to copy into container");
+            .await?;
 
         containerd_client
             .exec(&to, "ls ./foo/bar/baz".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
 
         containerd_client
             .exec(
                 &to,
                 "grep -q hello ./foo/bar/baz/nice.txt || exit 1".to_owned(),
             )
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn export_path_not_found(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let base = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn export_path_not_found(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let base = containerd_client.pull_image(TEST_IMAGE).await?;
 
         let fs = containerd_client
             .export_path(&base, UnixPath::new("i_am_not_real.txt"))
-            .await
-            .expect("Export only creates lazy reader");
+            .await?;
 
         let result = containerd_client
             .copy_fs_into_container(&base, fs, UnixPath::new("huh.txt"))
@@ -3028,32 +3012,28 @@ mod integration_tests {
             result.is_err(),
             "Expected reading non-existent path to fail"
         );
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn set_working_dir(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn set_working_dir(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         let image = containerd_client
             .exec(&image, "mkdir -p /foo/bar".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
         let image = image.update_config(|config| config.set_working_dir(UnixPath::new("/foo")));
-        containerd_client
-            .exec(&image, "ls bar".to_owned())
-            .await
-            .expect("Exec failed");
+        containerd_client.exec(&image, "ls bar".to_owned()).await?;
 
         let image = image.update_config(|config| config.set_working_dir(UnixPath::new("./bar")));
         let working_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
         assert_eq!(
             working_dir_pwd.trim(),
             "/foo/bar".to_owned(),
@@ -3063,77 +3043,76 @@ mod integration_tests {
         let image = image.update_config(|config| config.set_working_dir(UnixPath::new("/app")));
         let working_absolute_dir_pwd = containerd_client
             .exec_get_output(&image, "pwd".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
         assert_eq!(
             working_absolute_dir_pwd.trim(),
             "/app".to_owned(),
             "pwd reported wrong working directory"
         );
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn set_env_var(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn set_env_var(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         let image =
             image.update_config(|config| config.set_env_var("HELLO".into(), "WORLD".into()));
         let exec = containerd_client
             .exec_get_output(&image, "echo -n $HELLO".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
         let get_env = image
             .get_config()
             .get_env_var("HELLO")
-            .expect("Env var not found");
+            .ok_or_else(|| miette::miette!("HELLO not set in the image config"))?;
 
         assert_eq!(exec, "WORLD", "echo $HELLO");
         assert_eq!(get_env.as_ref(), "WORLD", "get_env");
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn network_access(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn network_access(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         containerd_client
             .exec(&image, "curl 1.1.1.1".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[rstest]
     #[tokio::test]
     #[test_log::test]
-    async fn dns_access(#[future] containerd_client: Client) {
-        let containerd_client = containerd_client.await;
-        let image = containerd_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+    async fn dns_access(#[future] containerd_client: miette::Result<Client>) -> miette::Result<()> {
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
         containerd_client
             .exec(&image, "curl https://google.com".to_owned())
-            .await
-            .expect("Exec failed");
+            .await?;
+
+        Ok(())
     }
 
     #[tokio::test]
     #[test_log::test]
-    async fn export_import_cache() {
-        let caching_dir = tempfile::TempDir::new().unwrap();
+    async fn export_import_cache() -> miette::Result<()> {
+        let caching_dir = tempfile::TempDir::new().into_diagnostic()?;
         let caching_dir = PlatformPathBuf::from(caching_dir.path().as_os_str().as_encoded_bytes());
         let cache = crate::engine::cache::LocalCacheBackend::new(caching_dir)
             .await
-            .unwrap();
+            .into_diagnostic()?;
         let cache = Arc::new(cache) as Arc<dyn CacheBackend + Send + Sync>;
 
         let first_client = Client::new(
@@ -3142,13 +3121,9 @@ mod integration_tests {
             1,
             uuid::Uuid::new_v4().to_string(),
         )
-        .await
-        .unwrap();
+        .await?;
 
-        let image = first_client
-            .pull_image(TEST_IMAGE)
-            .await
-            .expect("Failed to create image");
+        let image = first_client.pull_image(TEST_IMAGE).await?;
         let first_layer = first_client
             .exec(
                 &image,
@@ -3174,8 +3149,7 @@ touch opaque/test1.txt
 ",
                 ),
             )
-            .await
-            .expect("Failed to run exec");
+            .await?;
 
         let second_layer = first_client
             .exec(
@@ -3196,8 +3170,7 @@ touch opaque/test2.txt
 ",
                 ),
             )
-            .await
-            .expect("Failed to run exec");
+            .await?;
 
         let test_command = String::from(
             "
@@ -3223,8 +3196,7 @@ cat opaque/test2.txt
 
         first_client
             .exec(&second_layer, test_command.clone())
-            .await
-            .expect("Failed to run test command on original containerd.");
+            .await?;
 
         first_client.export_snapshots_from(&second_layer).await;
 
@@ -3234,13 +3206,13 @@ cat opaque/test2.txt
             1,
             uuid::Uuid::new_v4().to_string(),
         )
-        .await
-        .unwrap();
+        .await?;
 
         second_client.healthcheck_value(&second_layer).await;
         second_client
             .exec(&second_layer, test_command.clone())
-            .await
-            .expect("Failed to run test command on new containerd.");
+            .await?;
+
+        Ok(())
     }
 }

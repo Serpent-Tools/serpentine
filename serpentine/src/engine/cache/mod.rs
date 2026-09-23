@@ -192,7 +192,6 @@ impl ContentHash for CacheKey<'_> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use std::time::Duration;
 
@@ -222,22 +221,26 @@ mod tests {
     #[macro_export]
     macro_rules! test_well_behaved_cache {
         ($init:expr) => {
+            use ::miette::IntoDiagnostic as _;
             use ::tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            use $crate::engine::cache::CacheBackend as _;
 
             #[tokio::test]
             #[test_log::test]
-            async fn test_cant_read_undefined() {
+            async fn test_cant_read_undefined() -> ::miette::Result<()> {
                 let backend = $init;
 
                 let result = backend
                     .read_key($crate::engine::cache::CacheHash([0; _]))
                     .await;
                 assert!(result.is_none(), "Expected unwritten key to be None");
+
+                Ok(())
             }
 
             #[tokio::test]
             #[test_log::test]
-            async fn test_read_write_key() {
+            async fn test_read_write_key() -> ::miette::Result<()> {
                 const TEST_STRING: &str = "integration testing for life!";
 
                 let backend = $init;
@@ -245,12 +248,12 @@ mod tests {
                 let mut writer = backend
                     .write_key($crate::engine::cache::CacheHash([1; _]))
                     .await
-                    .expect("Expected to be able to write to key 1");
+                    .ok_or_else(|| ::miette::miette!("Expected to be able to write to key 1"))?;
                 writer
                     .write_all(TEST_STRING.as_bytes())
                     .await
-                    .expect("Failed to write");
-                writer.shutdown().await.expect("Failed to close writer");
+                    .into_diagnostic()?;
+                writer.shutdown().await.into_diagnostic()?;
 
                 // ensure backends have time to sync any needed changes on their end
                 let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -258,22 +261,24 @@ mod tests {
                 let mut reader = backend
                     .read_key($crate::engine::cache::CacheHash([1; _]))
                     .await
-                    .expect("Failed to key 1");
+                    .ok_or_else(|| ::miette::miette!("Failed to read key 1"))?;
                 let mut read_content = String::new();
                 reader
                     .read_to_string(&mut read_content)
                     .await
-                    .expect("Failed to read content");
+                    .into_diagnostic()?;
 
                 assert_eq!(
                     read_content, TEST_STRING,
                     "Read content didnt match written"
                 );
+
+                Ok(())
             }
 
             #[tokio::test]
             #[test_log::test]
-            async fn test_read_write_key_big() {
+            async fn test_read_write_key_big() -> ::miette::Result<()> {
                 let test_string = (0..1_000_000).map(|_| uuid::Uuid::new_v4().to_string()).collect::<String>();
 
                 let backend = $init;
@@ -281,12 +286,12 @@ mod tests {
                 let mut writer = backend
                     .write_key($crate::engine::cache::CacheHash([2; _]))
                     .await
-                    .expect("Expected to be able to write to key 1");
+                    .ok_or_else(|| ::miette::miette!("Expected to be able to write to key 2"))?;
                 writer
                     .write_all(test_string.as_bytes())
                     .await
-                    .expect("Failed to write");
-                writer.shutdown().await.expect("Failed to close writer");
+                    .into_diagnostic()?;
+                writer.shutdown().await.into_diagnostic()?;
 
                 // ensure backends have time to sync any needed changes on their end
                 let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -294,22 +299,24 @@ mod tests {
                 let mut reader = backend
                     .read_key($crate::engine::cache::CacheHash([2; _]))
                     .await
-                    .expect("Failed to key 1");
+                    .ok_or_else(|| ::miette::miette!("Failed to read key 2"))?;
                 let mut read_content = String::new();
                 reader
                     .read_to_string(&mut read_content)
                     .await
-                    .expect("Failed to read content");
+                    .into_diagnostic()?;
 
                 assert_eq!(
                     read_content, test_string,
                     "Read content didnt match written"
                 );
+
+                Ok(())
             }
 
             #[tokio::test]
             #[test_log::test]
-            async fn test_read_write_small_flushes() {
+            async fn test_read_write_small_flushes() -> ::miette::Result<()> {
                 let test_string = (0..1_000).map(|_| uuid::Uuid::new_v4().to_string()).collect::<Vec<_>>();
 
                 let backend = $init;
@@ -317,17 +324,17 @@ mod tests {
                 let mut writer = backend
                     .write_key($crate::engine::cache::CacheHash([3; _]))
                     .await
-                    .expect("Expected to be able to write to key 1");
+                    .ok_or_else(|| ::miette::miette!("Expected to be able to write to key 3"))?;
 
                 for part in &test_string {
                     writer
                         .write_all(part.as_bytes())
                         .await
-                        .expect("Failed to write");
-                    writer.flush().await.expect("Failed to flush");
+                        .into_diagnostic()?;
+                    writer.flush().await.into_diagnostic()?;
                 }
 
-                writer.shutdown().await.expect("Failed to close writer");
+                writer.shutdown().await.into_diagnostic()?;
 
                 // ensure backends have time to sync any needed changes on their end
                 let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -335,23 +342,25 @@ mod tests {
                 let mut reader = backend
                     .read_key($crate::engine::cache::CacheHash([3; _]))
                     .await
-                    .expect("Failed to key 1");
+                    .ok_or_else(|| ::miette::miette!("Failed to read key 3"))?;
                 let mut read_content = String::new();
                 reader
                     .read_to_string(&mut read_content)
                     .await
-                    .expect("Failed to read content");
+                    .into_diagnostic()?;
 
                 let test_string = test_string.join("");
                 assert_eq!(
                     read_content, test_string,
                     "Read content didnt match written"
                 );
+
+                Ok(())
             }
 
             #[tokio::test]
             #[test_log::test]
-            async fn test_write_twice() {
+            async fn test_write_twice() -> ::miette::Result<()> {
                 const TEST_STRING: &str = "integration testing for life!";
 
                 let backend = $init;
@@ -359,26 +368,28 @@ mod tests {
                 let mut writer = backend
                     .write_key($crate::engine::cache::CacheHash([4; _]))
                     .await
-                    .expect("Expected to be able to write to key 2");
+                    .ok_or_else(|| ::miette::miette!("Expected to be able to write to key 4"))?;
                 writer
                     .write_all(TEST_STRING.as_bytes())
                     .await
-                    .expect("Failed to write");
-                writer.shutdown().await.expect("Failed to close writer");
+                    .into_diagnostic()?;
+                writer.shutdown().await.into_diagnostic()?;
                 let _ = tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
                 let  writer = backend
                     .write_key($crate::engine::cache::CacheHash([4; _]))
                     .await;
                 assert!(writer.is_none(), "Expected trying to write key twice to return None, as caches are content addressed.");
+
+                Ok(())
             }
         };
     }
 
-    fn runtime() -> tokio::runtime::Runtime {
+    fn runtime() -> miette::Result<tokio::runtime::Runtime> {
         tokio::runtime::Builder::new_current_thread()
             .build()
-            .expect("failed to build runtime")
+            .into_diagnostic()
     }
 
     fn simple_container() -> ContainerState {
@@ -442,77 +453,81 @@ mod tests {
     #[case::file("file", Data::FileSystem(file()))]
     #[case::folder("folder", Data::FileSystem(folder()))]
     #[test_log::test]
-    fn snapshot_hashes(#[case] name: &str, #[case] value: Data) {
-        let rt = runtime();
+    fn snapshot_hashes(#[case] name: &str, #[case] value: Data) -> miette::Result<()> {
+        let rt = runtime()?;
         rt.block_on(async {
-            let hash = CacheHash::from_data(CacheScope::Data, &value)
-                .await
-                .expect("Failed to hash value");
+            let hash = CacheHash::from_data(CacheScope::Data, &value).await?;
 
             insta::assert_debug_snapshot!(format!("hash_{name}"), hash, &format!("{value:?}"));
-        });
+
+            Ok(())
+        })
     }
 
-    #[test]
-    #[test_log::test]
-    fn different_entries_hash_differently() {
-        let rt = runtime();
-        bolero::check!().with_type().for_each(
-            |(node, data1, data2): &(NodeKindId, Vec<CacheableData>, Vec<CacheableData>)| {
-                rt.block_on(async {
-                    if data1 == data2 {
-                        return;
-                    }
+    mod fuzz {
+        use super::*;
 
-                    let data1 = data1
-                        .iter()
-                        .cloned()
-                        .map(Data::from_cacheable)
-                        .collect::<Vec<_>>();
-                    let data2 = data2
-                        .iter()
-                        .cloned()
-                        .map(Data::from_cacheable)
-                        .collect::<Vec<_>>();
+        #[test]
+        #[test_log::test]
+        fn different_entries_hash_differently() {
+            let rt = runtime().expect("failed to build runtime");
+            bolero::check!().with_type().for_each(
+                |(node, data1, data2): &(NodeKindId, Vec<CacheableData>, Vec<CacheableData>)| {
+                    rt.block_on(async {
+                        if data1 == data2 {
+                            return;
+                        }
 
-                    let key1 = CacheKey {
-                        node: *node,
-                        inputs: &data1,
-                    };
+                        let data1 = data1
+                            .iter()
+                            .cloned()
+                            .map(Data::from_cacheable)
+                            .collect::<Vec<_>>();
+                        let data2 = data2
+                            .iter()
+                            .cloned()
+                            .map(Data::from_cacheable)
+                            .collect::<Vec<_>>();
 
-                    let key2 = CacheKey {
-                        node: *node,
-                        inputs: &data2,
-                    };
+                        let key1 = CacheKey {
+                            node: *node,
+                            inputs: &data1,
+                        };
 
-                    let hash_1 = CacheHash::from_data(CacheScope::Data, &key1).await.unwrap();
-                    let hash_2 = CacheHash::from_data(CacheScope::Data, &key2).await.unwrap();
+                        let key2 = CacheKey {
+                            node: *node,
+                            inputs: &data2,
+                        };
 
-                    assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
+                        let hash_1 = CacheHash::from_data(CacheScope::Data, &key1).await.unwrap();
+                        let hash_2 = CacheHash::from_data(CacheScope::Data, &key2).await.unwrap();
+
+                        assert_ne!(hash_1, hash_2, "Keys different expected different hash.");
+                    });
+                },
+            );
+        }
+
+        #[test]
+        #[test_log::test]
+        fn same_entry_hashes_equal() {
+            let rt = runtime().expect("failed to build runtime");
+            bolero::check!()
+                .with_type()
+                .for_each(|(node, data): &(NodeKindId, Vec<Data>)| {
+                    rt.block_on(async {
+                        let key = CacheKey {
+                            node: *node,
+                            inputs: data,
+                        };
+
+                        assert_eq!(
+                            CacheHash::from_data(CacheScope::Data, &key).await.unwrap(),
+                            CacheHash::from_data(CacheScope::Data, &key).await.unwrap(),
+                            "Same key expected same hash."
+                        );
+                    });
                 });
-            },
-        );
-    }
-
-    #[test]
-    #[test_log::test]
-    fn same_entry_hashes_equal() {
-        let rt = runtime();
-        bolero::check!()
-            .with_type()
-            .for_each(|(node, data): &(NodeKindId, Vec<Data>)| {
-                rt.block_on(async {
-                    let key = CacheKey {
-                        node: *node,
-                        inputs: data,
-                    };
-
-                    assert_eq!(
-                        CacheHash::from_data(CacheScope::Data, &key).await.unwrap(),
-                        CacheHash::from_data(CacheScope::Data, &key).await.unwrap(),
-                        "Same key expected same hash."
-                    );
-                });
-            });
+        }
     }
 }

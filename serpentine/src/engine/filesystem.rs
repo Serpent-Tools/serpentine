@@ -253,7 +253,6 @@ fn discover_gitignore(within_dir: &Path) -> Option<Gitignore> {
 
 /// Generation of valid filesystem streams for fuzzing.
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests")]
 pub mod fuzz {
     use futures_util::FutureExt as _;
     use serpentine_internal::FileSystemEntryHeader;

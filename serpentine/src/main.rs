@@ -483,7 +483,6 @@ fn run_pipeline(command: &Run, reporter: Reporter) -> miette::Result<()> {
 }
 
 #[cfg(test)]
-#[expect(clippy::panic, reason = "Tests")]
 #[cfg(feature = "_test_docker")]
 mod tests {
     use std::path::PathBuf;
@@ -494,45 +493,39 @@ mod tests {
 
     #[rstest]
     #[test_log::test]
-    fn live_examples(#[files("../test_cases/live/**/*.snek")] path: PathBuf) {
+    fn live_examples(#[files("../test_cases/live/**/*.snek")] path: PathBuf) -> miette::Result<()> {
         let virtual_file = VirtualFile::new();
-        let graph = match crate::snek::compile_graph(&virtual_file, &path, "DEFAULT") {
-            Ok(graph) => graph,
-            Err(err) => {
-                let err = miette::Report::new(err);
-                let err = format!("{err:?}");
-                panic!("Failed to compile {path:?}\n{err}")
-            }
-        };
 
-        let cli = crate::Run {
-            pipeline: path.clone(),
-            output: crate::OutputKind::None,
-            cache_folder: None,
-            cache_backend: crate::CacheBackendKind::None,
-            standalone_cache: false,
-            entry_point: "DEFAULT".into(),
-            jobs: 1,
-            containerd_namespace: "serpentine-test".into(),
-        };
+        let result = crate::snek::compile_graph(&virtual_file, &path, "DEFAULT")
+            .map_err(miette::Report::new)
+            .and_then(|graph| {
+                let cli = crate::Run {
+                    pipeline: path.clone(),
+                    output: crate::OutputKind::None,
+                    cache_folder: None,
+                    cache_backend: crate::CacheBackendKind::None,
+                    standalone_cache: false,
+                    entry_point: "DEFAULT".into(),
+                    jobs: 1,
+                    containerd_namespace: "serpentine-test".into(),
+                };
 
-        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
-            let err = err.with_source_code(virtual_file.into_readonly());
-            let err = format!("{err:?}");
-            panic!("Failed to run {path:?}\n{err}")
-        }
+                crate::engine::run(graph, crate::events::Reporter::none(), &cli)
+            });
+
+        result.map_err(|err| err.with_source_code(virtual_file.into_readonly()))
     }
 
     #[rstest]
     #[test_log::test]
-    fn live_fails(#[files("../test_cases/live_negative/**/*.snek")] path: PathBuf) {
+    fn live_fails(
+        #[files("../test_cases/live_negative/**/*.snek")] path: PathBuf,
+    ) -> miette::Result<()> {
         let virtual_file = VirtualFile::new();
         let graph = match crate::snek::compile_graph(&virtual_file, &path, "DEFAULT") {
             Ok(graph) => graph,
             Err(err) => {
-                let err = miette::Report::new(err).with_source_code(virtual_file.into_readonly());
-                let err = format!("{err:?}");
-                panic!("Failed to compile {path:?}\n{err}")
+                return Err(miette::Report::new(err).with_source_code(virtual_file.into_readonly()));
             }
         };
 
@@ -546,14 +539,17 @@ mod tests {
             jobs: 1,
             containerd_namespace: "serpentine-test".into(),
         };
-        if let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) {
-            let err = err.with_source_code(virtual_file.into_readonly());
-            crate::test_support::assert_error_snapshot!(
-                path.file_name().unwrap().to_string_lossy().into_owned(),
-                err
-            );
-        } else {
-            panic!("Expected failure when running {path:?}, but it succeeded");
-        }
+
+        let Err(err) = crate::engine::run(graph, crate::events::Reporter::none(), &cli) else {
+            miette::bail!("Expected failure when running {path:?}, but it succeeded");
+        };
+        let err = err.with_source_code(virtual_file.into_readonly());
+
+        let Some(name) = path.file_name() else {
+            miette::bail!("Test case {path:?} has no file name");
+        };
+        crate::test_support::assert_error_snapshot!(name.to_string_lossy().into_owned(), err);
+
+        Ok(())
     }
 }

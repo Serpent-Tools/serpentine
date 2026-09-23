@@ -286,7 +286,6 @@ impl<'file> Tokenizer<'file> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use rstest::rstest;
 
@@ -315,26 +314,30 @@ mod tests {
     #[case::quote_start(r#""\"hello""#, r#""hello"#)]
     #[case::quote_end(r#""hello\"""#, r#"hello""#)]
     #[case::unknown_escape(r#""\v""#, r"\v")]
-    fn string_parsing(#[case] code: String, #[case] expected: String) {
-        let res = Tokenizer::tokenize(FileId(0), &code).expect("Failed to tokenize");
+    fn string_parsing(#[case] code: String, #[case] expected: String) -> miette::Result<()> {
+        let res = Tokenizer::tokenize(FileId(0), &code)?;
 
         assert_eq!(res.len(), 2, "Expected 2 tokens, string, EOF");
         let string_token = res
             .into_iter()
             .next()
-            .expect("Already checked we got 2 tokens");
+            .ok_or_else(|| miette::miette!("Already checked we got 2 tokens"))?;
 
         let token_dbg = format!("{string_token:?}");
         assert!(
             matches!(string_token.take(), Token::String(value) if *value == *expected),
             "Expected first token to be a string with value {expected:?}, got {token_dbg}",
         );
+
+        Ok(())
     }
 
     #[test]
-    fn empty_comment() {
-        let res = Tokenizer::tokenize(FileId(0), "/**/123").expect("Failed to tokenize");
+    fn empty_comment() -> miette::Result<()> {
+        let res = Tokenizer::tokenize(FileId(0), "/**/123")?;
         assert_eq!(res.len(), 2, "Expected 2 tokens, number, EOF");
+
+        Ok(())
     }
 
     #[rstest]
