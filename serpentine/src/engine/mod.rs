@@ -95,11 +95,11 @@ impl<T, E: std::error::Error + Send + Sync + 'static> WrapInternal<T> for Result
 /// A newtype rather than a type alias, as an alias leaves the `dyn`'s region in the type, which
 /// rustc universally quantifies and then fails to discharge once the reader reaches the bounds of a
 /// future that must be `Send` (rust-lang/rust#102870).
-pub(crate) struct BoxedReader(Box<dyn AsyncRead + Send + Unpin>);
+pub(crate) struct BoxedReader(Box<dyn AsyncRead + Send + Sync + Unpin>);
 
 impl BoxedReader {
     /// Erase `reader` behind the box.
-    pub(crate) fn new(reader: impl AsyncRead + Send + Unpin + 'static) -> Self {
+    pub(crate) fn new(reader: impl AsyncRead + Send + Sync + Unpin + 'static) -> Self {
         Self(Box::new(reader))
     }
 }

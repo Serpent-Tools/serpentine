@@ -1,7 +1,6 @@
 //! Wrapper around containerd API client and other container related operations
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write as _;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,13 +10,14 @@ use base64::Engine;
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
 use futures_util::future::BoxFuture;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{Stream, StreamExt, TryStreamExt};
 use miette::{Context, Diagnostic, IntoDiagnostic};
 use serpentine_internal::{FileSystemEntryHeader, network};
-use sha2::Digest as _;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
+use tokio_util::bytes::Bytes;
+use tokio_util::io::ReaderStream;
 use typed_path::{UnixPath, UnixPathBuf};
 
 use crate::engine::cache::{CacheBackend, CacheHash, CacheScope};
@@ -647,6 +647,23 @@ struct FullLayerManifest {
     layer: oci_client::manifest::OciDescriptor,
 }
 
+/// Optional extra data that `import_stream_into_content_store` might optionally take for known manifests.
+///
+/// Which can help it detect data corruption as well as provide better progress reporting.
+///
+/// NOTE: While techically its more "correct" for these fields to be `Option` (instead of the
+/// function taking a `Option` of this), but the only two current call sites either provide all or
+/// none of these fields.
+#[derive(Clone, Debug)]
+struct ImportStreamIntoContentStoreExtra {
+    /// Th expected digest
+    digest: String,
+    /// The total amount of bytes to pull
+    total_size: usize,
+    /// The task id to report progress to
+    task_id: TaskId,
+}
+
 /// A containerd client wrapper
 pub struct Client {
     /// Containerd client
@@ -933,7 +950,11 @@ impl Client {
             }
             SnapshotCacheEntryKind::Local => {
                 log::debug!("Importing {snapshot} into content store");
-                let import_to_content_store = self.import_reader_into_content_store(reader, &lease);
+                let import_to_content_store = self.import_stream_into_content_store(
+                    ReaderStream::new(reader).map(IntoDiagnostic::into_diagnostic),
+                    &lease,
+                    None,
+                );
 
                 let (parent_found, import_result) =
                     futures_util::join!(download_parent, import_to_content_store);
@@ -1011,35 +1032,38 @@ impl Client {
     ///
     /// returns the total size in bytes, as well as the digest.
     #[expect(clippy::too_many_lines, reason = "Tightly coupled linear task")]
-    async fn import_reader_into_content_store(
+    async fn import_stream_into_content_store(
         &self,
-        reader: BoxedReader,
+        stream: impl Stream<Item = miette::Result<Bytes>> + Send + 'static,
         lease: &str,
+        extra: Option<ImportStreamIntoContentStoreExtra>,
     ) -> miette::Result<(usize, String)> {
         let upload_ref = uuid::Uuid::new_v4().to_string();
         let upload_ref_clone = upload_ref.clone();
-        // Give it a 1MiB buffer instead of the default 4KiB because h2 has a ddos protection that
-        // a lot of small writes trips.
-        let reader = tokio_util::io::ReaderStream::with_capacity(reader, 1024 * 1024);
         let current_offset = Arc::new(AtomicUsize::new(0));
         let current_offset_clone = Arc::clone(&current_offset);
-        // Containerd only reports the digest back on a successful commit, so it is hashed here to
-        // stay available when the commit finds the content already stored.
-        let hasher = Arc::new(std::sync::Mutex::new(sha2::Sha256::new()));
-        let hasher_clone = Arc::clone(&hasher);
-        self.containerd
+
+        let reporter = self.reporter.clone();
+        let extra_clone = extra.clone();
+
+        let digest = self
+            .containerd
             .content()
             .write(
-                reader
+                stream
                     .filter_map(async |layer_data| layer_data.ok())
                     .map(move |layer_data| {
                         let previous_offset =
                             current_offset_clone.fetch_add(layer_data.len(), Ordering::Relaxed);
-                        if let Ok(mut digest) = hasher_clone.lock() {
-                            digest.update(&layer_data);
+
+                        if let Some(extra_clone) = extra_clone.as_ref() {
+                            reporter.task_bytes(
+                                extra_clone.task_id,
+                                previous_offset as u64,
+                                extra_clone.total_size as u64,
+                            );
                         }
 
-                        // log::trace!("Writing {layer_data:?} at {previous_offset}");
                         containerd_services::WriteContentRequest {
                             action: containerd_services::WriteAction::Write.into(),
                             r#ref: upload_ref_clone.clone(),
@@ -1056,34 +1080,24 @@ impl Client {
             .into_diagnostic()
             .context("writing content to the containerd store")?
             .into_inner()
-            .try_for_each(async |_| Ok(()))
+            .try_fold(String::new(), async |_acc, response| Ok(response.digest))
             .await
             .into_diagnostic()?;
-        let total_size = current_offset.load(Ordering::Relaxed);
-        let digest = {
-            let Ok(hasher) = hasher.lock() else {
-                return Err(internal("Content hasher mutex was poisoned"));
-            };
-            let mut digest = String::from("sha256:");
-            for byte in hasher.clone().finalize() {
-                let _ = write!(digest, "{byte:02x}");
-            }
-            digest
-        };
 
-        log::debug!("Committing {total_size} bytes to the store as {digest}");
+        let total_size = current_offset.load(Ordering::Relaxed);
+
+        log::debug!("Committing {total_size} bytes to the store.");
         let committed = self
             .containerd
             .content()
             .write(
                 futures_util::stream::once({
-                    let digest = digest.clone();
                     async move {
                         containerd_services::WriteContentRequest {
                             action: containerd_services::WriteAction::Commit.into(),
                             r#ref: upload_ref,
                             total: total_size.try_into().unwrap_or(0),
-                            expected: digest,
+                            expected: extra.map(|extra| extra.digest.clone()).unwrap_or_default(),
                             offset: (total_size).try_into().unwrap_or(0),
                             data: Vec::new(),
                             labels: HashMap::new(),
@@ -1096,17 +1110,25 @@ impl Client {
 
         match committed {
             Ok(response) => {
-                response
+                let commit_digest = response
                     .into_inner()
                     .try_next()
                     .await
                     .into_diagnostic()
-                    .with_context(|| format!("committing content {digest}"))?
-                    .wrap_internal("No response for commit")?;
+                    .context("committing content")?
+                    .wrap_internal("No response for commit")?
+                    .digest;
+
+                debug_assert_eq!(
+                    commit_digest, digest,
+                    "Last write digest doesnt match commit digest"
+                );
+
+                Ok((total_size, digest))
             }
             // The store is content addressed, so this says the bytes are already there. They are
             // held by whichever lease stored them first, so ours is given a reference of its own.
-            Err(status) if status.code() == containerd_client::tonic::Code::AlreadyExists => {
+            Err(status) if Self::is_already_exists(&status) => {
                 log::warn!("Content {digest} ({total_size} bytes) was already in the store");
                 self.containerd
                     .leases()
@@ -1119,16 +1141,14 @@ impl Client {
                     })
                     .await
                     .into_diagnostic()
-                    .with_context(|| format!("leasing already stored content {digest}"))?;
-            }
-            Err(status) => {
-                return Err(status)
-                    .into_diagnostic()
-                    .with_context(|| format!("committing content {digest}"));
-            }
-        }
+                    .context("leasing already stored content")?;
 
-        Ok((total_size, digest))
+                Ok((total_size, digest))
+            }
+            Err(status) => Err(status)
+                .into_diagnostic()
+                .with_context(|| format!("committing content {digest}")),
+        }
     }
 
     /// Checks if the snapshot exists in containerd and if not tries to import it from the cache.
@@ -1448,10 +1468,6 @@ impl Client {
     }
 
     /// Pull the given layer into containerd.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Very cohesive singular (complex) task"
-    )]
     async fn pull_layer(
         &self,
         manifest: &FullLayerManifest,
@@ -1474,6 +1490,15 @@ impl Client {
         }
 
         log::debug!("Pulling layer {}", manifest.layer);
+        self.oci
+            .auth(
+                &manifest.image,
+                &oci_client::secrets::RegistryAuth::Anonymous,
+                oci_client::RegistryOperation::Pull,
+            )
+            .await
+            .into_diagnostic()
+            .with_context(|| format!("authenticating to pull from {}", manifest.image))?;
 
         let layer_stream = self
             .oci
@@ -1486,94 +1511,23 @@ impl Client {
                     manifest.layer.digest, manifest.image
                 )
             })?;
-        let total_size: i64 = layer_stream
+
+        let total_size: usize = layer_stream
             .content_length
             .and_then(|len| len.try_into().ok())
             .unwrap_or(0);
-        let upload_ref = uuid::Uuid::new_v4().to_string();
-        let upload_ref_clone = upload_ref.clone();
         let digest = manifest.layer.digest.clone();
-        let digest_clone = digest.clone();
 
-        self.reporter
-            .task_bytes(task_id, 0, total_size.cast_unsigned());
-        let reporter = self.reporter.clone();
-
-        self.containerd
-            .content()
-            .write(
-                layer_stream
-                    .filter_map(async |layer_data| layer_data.ok())
-                    .scan(0_usize, move |current_offset, layer_data| {
-                        let write = containerd_services::WriteContentRequest {
-                            action: containerd_services::WriteAction::Write.into(),
-                            r#ref: upload_ref.clone(),
-                            total: total_size,
-                            expected: digest.clone(),
-                            offset: (*current_offset).try_into().unwrap_or(0),
-                            data: layer_data.to_vec(),
-                            labels: HashMap::new(),
-                        };
-                        *current_offset = current_offset.saturating_add(layer_data.len());
-                        reporter.task_bytes(
-                            task_id,
-                            *current_offset as u64,
-                            total_size.cast_unsigned(),
-                        );
-                        futures_util::future::ready(Some(write))
-                    })
-                    .with_lease(lease),
-            )
-            .await
-            .into_diagnostic()
-            .with_context(|| {
-                format!(
-                    "writing layer {} to the content store",
-                    manifest.layer.digest
-                )
-            })?
-            .into_inner()
-            .try_for_each(async |_| Ok(()))
-            .await
-            .into_diagnostic()
-            .with_context(|| {
-                format!(
-                    "writing layer {} to the content store",
-                    manifest.layer.digest
-                )
-            })?;
-
-        log::debug!("Finished pulling {digest_clone}.");
-        let commit = self
-            .containerd
-            .content()
-            .write(
-                futures_util::stream::iter(std::iter::once(
-                    containerd_services::WriteContentRequest {
-                        action: containerd_services::WriteAction::Commit.into(),
-                        r#ref: upload_ref_clone,
-                        total: total_size,
-                        expected: digest_clone,
-                        offset: total_size,
-                        data: Vec::new(),
-                        labels: HashMap::new(),
-                    },
-                ))
-                .with_lease(lease),
-            )
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("committing layer {}", manifest.layer.digest))?
-            .into_inner()
-            .try_for_each(async |_| Ok(()))
-            .await;
-        if let Err(status) = commit
-            && !Self::is_already_exists(&status)
-        {
-            return Err(status)
-                .into_diagnostic()
-                .with_context(|| format!("committing layer {}", manifest.layer.digest));
-        }
+        self.import_stream_into_content_store(
+            layer_stream.map(IntoDiagnostic::into_diagnostic),
+            lease,
+            Some(ImportStreamIntoContentStoreExtra {
+                digest,
+                total_size,
+                task_id,
+            }),
+        )
+        .await?;
 
         Ok(())
     }
