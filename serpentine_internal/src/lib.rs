@@ -21,6 +21,8 @@ pub async fn write_postcard_frame<T: serde::Serialize>(
     let buffer = postcard::to_stdvec(value).map_err(io::Error::other)?;
     let length = buffer.len() as u64;
 
+    log::trace!("Writing {length} bytes: {buffer:?}");
+
     writer.write_u64_le(length).await?;
     writer.write_all(&buffer).await?;
 
@@ -38,6 +40,8 @@ pub async fn read_postcard_frame<T: serde::de::DeserializeOwned>(
 
     let mut buffer = vec![0u8; length.try_into().unwrap_or(usize::MAX)];
     reader.read_exact(&mut buffer).await?;
+
+    log::trace!("read {length} bytes: {buffer:?}");
 
     let value = postcard::from_bytes(&buffer).map_err(io::Error::other)?;
     Ok(value)
