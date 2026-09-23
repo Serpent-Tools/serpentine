@@ -297,6 +297,7 @@ impl OciUser {
 
 #[cfg(test)]
 mod tests {
+    use miette::IntoDiagnostic as _;
     use oci_spec::runtime::UserBuilder;
     use rstest::rstest;
 
@@ -437,7 +438,7 @@ cool:x:34:viv,ferris
         #[case] user_string: &str,
         #[case] expected_user: UserBuilder,
         #[case] expected_home: &str,
-    ) {
+    ) -> miette::Result<()> {
         let Ok(passwd): Result<Passwd, _> = "
 root:x:0:0:root:/root:/bin/bash
 ferris:x:1001:34:daemon:/home/ferris:/bin/bash
@@ -454,10 +455,12 @@ cool:x:34:viv,ferris
 
         let Ok(user): Result<OciUser, _> = user_string.parse();
 
-        let (full_user, home_directory) = user.resolve(passwd, &groups).unwrap();
+        let (full_user, home_directory) = user.resolve(passwd, &groups)?;
 
-        assert_eq!(full_user, expected_user.build().unwrap());
+        assert_eq!(full_user, expected_user.build().into_diagnostic()?);
         assert_eq!(&*home_directory, expected_home);
+
+        Ok(())
     }
 
     #[rstest]

@@ -318,7 +318,6 @@ pub(crate) mod benchmarks {
 }
 
 #[cfg(test)]
-#[expect(clippy::panic, reason = "tests")]
 mod tests {
     use rstest::rstest;
 
@@ -326,34 +325,34 @@ mod tests {
 
     #[rstest]
     #[test_log::test]
-    fn compile_positive(#[files("../test_cases/positive/**/*.snek")] path: PathBuf) {
-        let res = compile_graph(&VirtualFile::new(), &path, "DEFAULT");
-        match res {
-            Ok(_) => {}
-            Err(err) => {
-                let err = miette::Report::new(err);
-                let err = format!("{err:?}");
-                panic!("Failed to compile {path:?}:\n{err}");
-            }
-        }
+    fn compile_positive(
+        #[files("../test_cases/positive/**/*.snek")] path: PathBuf,
+    ) -> miette::Result<()> {
+        let virtual_file = VirtualFile::new();
+        compile_graph(&virtual_file, &path, "DEFAULT").map_err(|err| {
+            miette::Report::new(err).with_source_code(virtual_file.into_readonly())
+        })?;
+
+        Ok(())
     }
 
     #[rstest]
     #[test_log::test]
-    fn compile_negative(#[files("../test_cases/negative/**/*.snek")] path: PathBuf) {
+    fn compile_negative(
+        #[files("../test_cases/negative/**/*.snek")] path: PathBuf,
+    ) -> miette::Result<()> {
         let virtual_file = VirtualFile::new();
-        let res = compile_graph(&virtual_file, &path, "DEFAULT");
 
-        match res {
-            Ok(_) => panic!("Unexpectedly compiled {path:?} successfully"),
-            Err(err) => {
-                let error = miette::Report::new(err).with_source_code(virtual_file.into_readonly());
+        let Err(err) = compile_graph(&virtual_file, &path, "DEFAULT") else {
+            miette::bail!("Unexpectedly compiled {path:?} successfully");
+        };
+        let error = miette::Report::new(err).with_source_code(virtual_file.into_readonly());
 
-                crate::test_support::assert_error_snapshot!(
-                    path.file_name().unwrap().to_string_lossy().into_owned(),
-                    error
-                );
-            }
-        }
+        let Some(name) = path.file_name() else {
+            miette::bail!("Test case {path:?} has no file name");
+        };
+        crate::test_support::assert_error_snapshot!(name.to_string_lossy().into_owned(), error);
+
+        Ok(())
     }
 }
