@@ -1,0 +1,15 @@
+---
+source: serpentine/src/main.rs
+expression: "$crate :: test_support :: render_error(& err)"
+---
+node_error
+
+  x Error in node
+  `-> OS error <redacted>
+      
+   ,-[<redacted-path>:4:26]
+ 3 | missing_file = image > Export("/missing.txt");
+ 4 | export DEFAULT = image > With(missing_file, "foo.txt");
+   :                          ^^^^^^^^^^^^^^|^^^^^^^^^^^^^
+   :                                        `-- Error occurred in this node
+   `----
