@@ -13,6 +13,7 @@ compiler::type_mismatch
  3 | }
  4 | 
  5 | export DEFAULT = Foo("Hello");
-   :                      ^^^|^^^
-   :                         `-- Has type `string`
+   :                  ^^^^^|^^^^^|
+   :                       |     `-- Has type `string`
+   :                       `-- In call to this function
    `----

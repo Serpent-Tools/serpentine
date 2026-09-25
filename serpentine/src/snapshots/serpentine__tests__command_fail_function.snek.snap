@@ -16,4 +16,8 @@ node_error
    :                                                                                                                                         ^^^^^^|^^^^^^
    :                                                                                                                                               `-- Error occurred in this node
  3 | }
+ 4 | 
+ 5 | export DEFAULT = Foo();
+   :                  ^|^
+   :                   `-- In inlined call to
    `----
