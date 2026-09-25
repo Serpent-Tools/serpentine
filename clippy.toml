@@ -1,5 +1,6 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 disallowed-types = [
-    {path = "std::cell::RefCell", replacement = "tokio::sync::Mutex"}
+    {path = "std::cell::RefCell", replacement = "std::sync::Mutex"},
+    {path = "tokio::sync::Mutex", replacement = "std::sync::Mutex"}
 ]
