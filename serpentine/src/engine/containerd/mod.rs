@@ -5,14 +5,13 @@
 )]
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
 use miette::{Context, IntoDiagnostic};
 use serpentine_internal::network;
-use tokio::sync::Mutex;
 
 use crate::engine::cache::CacheBackend;
 use crate::engine::sidecar_client;
@@ -242,13 +241,19 @@ impl Client {
         })
     }
 
+    /// Push something into the dangling resources
+    fn register_dangling(&self, resource: DanglingResource) {
+        if let Ok(mut dangling) = self.dangling.lock() {
+            dangling.push(resource);
+        } else {
+            log::warn!("Failed to get dangling resource lock");
+        }
+    }
+
     /// Create a new lease
     async fn new_lease(&self) -> miette::Result<String> {
         let lease = uuid::Uuid::new_v4().to_string();
-        self.dangling
-            .lock()
-            .await
-            .push(DanglingResource::Lease(lease.clone().into()));
+        self.register_dangling(DanglingResource::Lease(lease.clone().into()));
 
         self.containerd
             .leases()
@@ -286,47 +291,62 @@ impl Client {
     }
 
     /// Shutdown any dangling references
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "shutdown, only thing wanting it."
+    )]
     pub async fn shutdown(self) {
-        for dangling in self.dangling.lock().await.drain(..) {
-            match dangling {
-                DanglingResource::Lease(lease) => {
-                    log::debug!("Deleting dangling lease");
-                    let _ = self
-                        .containerd
-                        .leases()
-                        .delete(containerd_services::DeleteRequest {
-                            id: lease.to_string(),
-                            sync: false,
-                        })
-                        .await;
-                }
-                DanglingResource::Task(container) => {
-                    log::debug!("Stopping dangling task");
-                    let _ = self
-                        .containerd
-                        .tasks()
-                        .kill(containerd_services::KillRequest {
-                            container_id: container.to_string(),
-                            exec_id: String::new(),
-                            signal: 9, // kill
-                            all: true,
-                        })
-                        .await;
-                }
-                DanglingResource::Network(network) => {
-                    log::debug!("Stopping dangling network namespace");
-                    let _ = self.sidecar.delete_network(network).await;
+        if let Ok(mut dangling_resources) = self.dangling.lock() {
+            for dangling in dangling_resources.drain(..) {
+                match dangling {
+                    DanglingResource::Lease(lease) => {
+                        log::debug!("Deleting dangling lease");
+                        let _ = self
+                            .containerd
+                            .leases()
+                            .delete(containerd_services::DeleteRequest {
+                                id: lease.to_string(),
+                                sync: false,
+                            })
+                            .await;
+                    }
+                    DanglingResource::Task(container) => {
+                        log::debug!("Stopping dangling task");
+                        let _ = self
+                            .containerd
+                            .tasks()
+                            .kill(containerd_services::KillRequest {
+                                container_id: container.to_string(),
+                                exec_id: String::new(),
+                                signal: 9, // kill
+                                all: true,
+                            })
+                            .await;
+                    }
+                    DanglingResource::Network(network) => {
+                        log::debug!("Stopping dangling network namespace");
+                        let _ = self.sidecar.delete_network(network).await;
+                    }
                 }
             }
+        } else {
+            log::warn!("Failed to get dangling resources in shutdown");
         }
     }
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let dangling_count = self.dangling.get_mut().len();
-        if dangling_count != 0 {
-            log::warn!("Leaving {dangling_count} dangling resources running in containerd.");
+        let Ok(dangling) = self.dangling.get_mut() else {
+            log::warn!("Failed to get dangling resources in drop");
+            return;
+        };
+
+        if !dangling.is_empty() {
+            log::warn!(
+                "Leaving {} dangling resources running in containerd.",
+                dangling.len()
+            );
         }
     }
 }

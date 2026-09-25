@@ -103,7 +103,7 @@ impl super::Client {
         if let Some(concrete_topology) = self
             .free_networks
             .lock()
-            .await
+            .map_err(|err| miette::MietteDiagnostic::new(err.to_string()))?
             .get_mut(&topology)
             .and_then(Vec::pop)
         {
@@ -112,10 +112,7 @@ impl super::Client {
         } else {
             log::debug!("Creating new network for topology {topology:?}");
             let concrete_topology = self.sidecar.create_network(topology.clone()).await?;
-            self.dangling
-                .lock()
-                .await
-                .push(super::DanglingResource::Network(concrete_topology.clone()));
+            self.register_dangling(super::DanglingResource::Network(concrete_topology.clone()));
             Ok(concrete_topology)
         }
     }
@@ -147,12 +144,14 @@ impl super::Client {
             .spindown_topology(running_topology, snapshot_name)
             .await?;
 
-        self.free_networks
-            .lock()
-            .await
-            .entry(abstract_topology)
-            .or_default()
-            .push(network_topology);
+        if let Ok(mut free_networks) = self.free_networks.lock() {
+            free_networks
+                .entry(abstract_topology)
+                .or_default()
+                .push(network_topology);
+        } else {
+            log::warn!("Failed to get lock on free_networks");
+        }
 
         let container = match container {
             container_config::ContainerLike::Container(container) => container,
@@ -402,10 +401,7 @@ impl super::Client {
         lease: &str,
     ) -> miette::Result<(String, oci_spec::runtime::Process)> {
         let container = uuid::Uuid::new_v4().to_string();
-        self.dangling
-            .lock()
-            .await
-            .push(super::DanglingResource::Task(container.clone().into()));
+        self.register_dangling(super::DanglingResource::Task(container.clone().into()));
 
         let mut root = oci_spec::runtime::Root::default();
         root.set_path("rootfs".into());
