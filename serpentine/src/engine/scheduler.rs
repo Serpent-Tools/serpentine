@@ -12,7 +12,6 @@ use tokio_util::task::AbortOnDropHandle;
 
 use super::RuntimeContext;
 use crate::engine::data_model::{Data, Graph, NodeInstanceId, NodeStorage};
-use crate::snek::span::Span;
 
 /// A `Arc<miette::Report>` to allow cloning.
 ///
@@ -81,6 +80,9 @@ pub struct NodeError {
     /// The location of the node
     #[label("Error occurred in this node")]
     span: crate::snek::span::Span,
+    /// The callstack of the node
+    #[label(collection, "In inlined call to")]
+    stack_trace: Box<[crate::snek::span::Span]>,
     /// The inner error
     #[diagnostic_source]
     inner: Box<dyn Diagnostic + Send + Sync>,
@@ -130,15 +132,12 @@ impl Scheduler {
         futures_util::future::try_join_all(handles).await
     }
 
-    /// Return the span for the given node
-    pub fn span_for(&self, node_id: NodeInstanceId) -> Span {
-        self.graph.get(node_id).span()
-    }
-
     /// Attach `node_id`'s span to an error from the work that node did itself.
     pub fn node_error(&self, node_id: NodeInstanceId, error: Report) -> Report {
+        let node_metadata = &self.graph.get(node_id).1;
         NodeError {
-            span: self.span_for(node_id),
+            span: node_metadata.location,
+            stack_trace: node_metadata.stack_trace.clone(),
             inner: error.into(),
         }
         .into()
@@ -177,7 +176,7 @@ impl Scheduler {
 
     /// Run a single node: resolve its phantom inputs, then execute it.
     async fn execute_node(self: Arc<Self>, node_id: NodeInstanceId) -> miette::Result<Data> {
-        let node = self.graph.get(node_id);
+        let node = &self.graph.get(node_id).0;
         self.context
             .reporter
             .node(crate::events::NodeTransition::Queued);

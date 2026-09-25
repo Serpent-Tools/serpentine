@@ -14,8 +14,28 @@ use crate::engine::data_model::{CacheableData, Data, DataType, NodeInstanceId, N
 use crate::engine::filesystem::{self, FileSystem};
 use crate::engine::scheduler::Scheduler;
 use crate::engine::{RuntimeContext, containerd, internal};
-use crate::snek::CompileError;
-use crate::snek::span::{Span, Spanned};
+
+/// A error from `return_type`, a sub-set of specific errors in `CompilerError` without span
+/// information.
+pub enum ReturnTypeError {
+    /// Mismatched type Error
+    TypeMismatch {
+        /// The expected type
+        expected: &'static str,
+        /// The type we got
+        got: &'static str,
+        /// The index of the argument that was wrong
+        argument_index: usize,
+    },
+
+    /// Argument mismatch
+    ArgumentCountMismatch {
+        /// The expected number of arguments
+        expected: String,
+        /// The number of arguments we got
+        got: usize,
+    },
+}
 
 /// A node implementation
 ///
@@ -38,11 +58,7 @@ pub trait NodeImpl: Send + Sync {
 
     /// Given the input types return the return type of the node.
     /// Error on invalid types
-    fn return_type(
-        &self,
-        arguments: &[Spanned<DataType>],
-        node_span: Span,
-    ) -> Result<DataType, CompileError>;
+    fn return_type(&self, arguments: &[DataType]) -> Result<DataType, ReturnTypeError>;
 
     /// Execute this node
     ///
@@ -63,7 +79,7 @@ pub trait NodeImpl: Send + Sync {
         inputs: &'scheduler [NodeInstanceId],
     ) -> BoxFuture<'scheduler, miette::Result<Data>> {
         Box::pin(async move {
-            let inputs = self.resolve_inputs(node_id, &scheduler, inputs).await?;
+            let inputs = self.resolve_inputs(&scheduler, inputs).await?;
 
             let context = scheduler.context();
             context
@@ -145,7 +161,6 @@ pub trait NodeImpl: Send + Sync {
     /// does to gather every error in one run.
     fn resolve_inputs<'scheduler>(
         &'scheduler self,
-        _node_id: NodeInstanceId,
         scheduler: &'scheduler Arc<Scheduler>,
         inputs: &'scheduler [NodeInstanceId],
     ) -> BoxFuture<'scheduler, miette::Result<Vec<Data>>> {
@@ -348,45 +363,44 @@ macro_rules! impl_node_impl {
                 std::any::type_name::<F>().into()
             }
 
-            fn return_type(&self, arguments: &[Spanned<DataType>], node_span: Span) -> Result<DataType, CompileError> {
+            fn return_type(&self, arguments: &[DataType]) -> Result<DataType, ReturnTypeError> {
                 let count = $({
                     #[cfg(false)]
                     {$arg;}
                     1
                 }+)* 0;
                 if arguments.len() != count {
-                    return Err(CompileError::ArgumentCountMismatch {
+                    return Err(ReturnTypeError::ArgumentCountMismatch {
                         expected: count.to_string(),
                         got: arguments.len(),
-                        location: node_span
                     })
                 }
 
                 let mut first_type = None;
                 let mut arguments = arguments.iter();
+                let mut argument_index: usize = 0;
                 $(
                     if let Some(argument) = arguments.next() {
-                        if !$arg::accepts(**argument) {
-                            return Err(CompileError::TypeMismatch {
+                        if !$arg::accepts(*argument) {
+                            return Err(ReturnTypeError::TypeMismatch {
                                 expected: $arg::KIND.describe(),
                                 got: argument.describe(),
-                                location: argument.span(),
-                                node: node_span,
+                                argument_index,
                             })
                         }
                         if first_type.is_none() {
-                            first_type = Some(**argument);
+                            first_type = Some(*argument);
                         }
+                        argument_index = argument_index.saturating_add(1);
                     }
                 )*
 
                 if self.passthrough_return {
                     // The return type is the same as the first argument's type.
                     // This is used for nodes that operate on a ContainerLike and return the same variant.
-                    first_type.ok_or_else(|| CompileError::ArgumentCountMismatch {
-                        expected: "1".into(),
+                    first_type.ok_or_else(|| ReturnTypeError::ArgumentCountMismatch {
+                        expected: "1+".into(),
                         got: 0,
-                        location: node_span,
                     })
                 } else {
                     Ok(R::KIND)
@@ -441,20 +455,15 @@ impl NodeImpl for Noop {
         "Noop".into()
     }
 
-    fn return_type(
-        &self,
-        arguments: &[Spanned<DataType>],
-        node_span: Span,
-    ) -> Result<DataType, CompileError> {
+    fn return_type(&self, arguments: &[DataType]) -> Result<DataType, ReturnTypeError> {
         if let Some(arg) = arguments.first()
             && arguments.len() == 1
         {
-            Ok(**arg)
+            Ok(*arg)
         } else {
-            Err(CompileError::ArgumentCountMismatch {
+            Err(ReturnTypeError::ArgumentCountMismatch {
                 expected: "1".into(),
                 got: arguments.len(),
-                location: node_span,
             })
         }
     }
@@ -485,20 +494,17 @@ impl NodeImpl for LiteralNode {
         format!("{:?}", self.0).into()
     }
 
-    fn return_type(
-        &self,
-        // Should only be constructed by `Compiler`, hence we don't check this.
-        _arguments: &[Spanned<DataType>],
-        _node_span: Span,
-    ) -> Result<DataType, CompileError> {
+    fn return_type(&self, arguments: &[DataType]) -> Result<DataType, ReturnTypeError> {
+        debug_assert!(arguments.is_empty(), "Literal shouldnt be taking arguments");
         Ok(self.0.type_())
     }
 
     fn execute<'scheduler>(
         &'scheduler self,
         _context: &'scheduler Arc<RuntimeContext>,
-        _inputs: Vec<Data>,
+        inputs: Vec<Data>,
     ) -> BoxFuture<'scheduler, miette::Result<Data>> {
+        debug_assert!(inputs.is_empty(), "Literal shouldnt be taking inputs");
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -511,9 +517,6 @@ struct All;
 #[diagnostic(code(all))]
 #[error("1+ errors occurred")]
 struct AllErrors {
-    /// The `All` node the errors were collected at
-    #[label("At this All node")]
-    all_node: Span,
     /// The errors
     #[related]
     errors: Vec<miette::Report>,
@@ -528,25 +531,19 @@ impl NodeImpl for All {
         "All".into()
     }
 
-    fn return_type(
-        &self,
-        arguments: &[Spanned<DataType>],
-        node_span: Span,
-    ) -> Result<DataType, CompileError> {
+    fn return_type(&self, arguments: &[DataType]) -> Result<DataType, ReturnTypeError> {
         if let Some(first_arg) = arguments.first() {
-            Ok(first_arg.take())
+            Ok(*first_arg)
         } else {
-            Err(CompileError::ArgumentCountMismatch {
+            Err(ReturnTypeError::ArgumentCountMismatch {
                 expected: "1+".into(),
                 got: 0,
-                location: node_span,
             })
         }
     }
 
     fn resolve_inputs<'scheduler>(
         &'scheduler self,
-        node_id: NodeInstanceId,
         scheduler: &'scheduler Arc<Scheduler>,
         inputs: &'scheduler [NodeInstanceId],
     ) -> BoxFuture<'scheduler, miette::Result<Vec<Data>>> {
@@ -578,13 +575,7 @@ impl NodeImpl for All {
                 },
             );
 
-            result.map_err(|errors| {
-                AllErrors {
-                    all_node: scheduler.span_for(node_id),
-                    errors,
-                }
-                .into()
-            })
+            result.map_err(|errors| AllErrors { errors }.into())
         })
     }
 
@@ -654,7 +645,6 @@ async fn from_host(_context: Arc<RuntimeContext>, src: Arc<str>) -> miette::Resu
 /// Extract a `FileSystem` from a container at the given path
 async fn export(
     context: Arc<RuntimeContext>,
-
     container: containerd::ContainerLike,
     path: Arc<str>,
 ) -> miette::Result<FileSystem> {
@@ -749,18 +739,13 @@ impl NodeImpl for Join {
         "Join".into()
     }
 
-    fn return_type(
-        &self,
-        arguments: &[Spanned<DataType>],
-        node_span: Span,
-    ) -> Result<DataType, CompileError> {
-        for argument in arguments {
-            if argument.0 != DataType::String {
-                return Err(CompileError::TypeMismatch {
+    fn return_type(&self, arguments: &[DataType]) -> Result<DataType, ReturnTypeError> {
+        for (index, argument) in arguments.iter().enumerate() {
+            if *argument != DataType::String {
+                return Err(ReturnTypeError::TypeMismatch {
                     expected: DataType::String.describe(),
-                    got: argument.0.describe(),
-                    location: argument.span(),
-                    node: node_span,
+                    got: argument.describe(),
+                    argument_index: index,
                 });
             }
         }

@@ -106,6 +106,9 @@ pub enum CompileError {
         /// The node it was arguments for
         #[label("In call to this node")]
         node: Span,
+        /// The custom functions this happened in
+        #[label(collection, "In call to this function")]
+        stack_trace: Box<[Span]>,
     },
 
     /// Argument mismatch
@@ -255,9 +258,7 @@ pub fn debug_pipeline(pipeline: &Path) -> miette::Result<()> {
 
     println!("================== GRAPH");
     let compiled = compiler::compile(resolved)?;
-    for (id, node) in compiled.graph.into_iter().enumerate() {
-        let node = node.take();
-
+    for (id, (node, _metadata)) in compiled.graph.into_iter().enumerate() {
         let phantom = node
             .phantom_inputs
             .into_iter()
