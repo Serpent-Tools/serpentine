@@ -5,14 +5,6 @@ expression: "$crate :: test_support :: render_error(& err)"
 all
 
   x 1+ errors occurred
-   ,-[<redacted-path>:3:18]
- 2 |     
- 3 | ,-> export DEFAULT = All(
- 4 | |       base > Exec("exit 1"),
- 5 | |->     base > Exec("exit 2")
-   : `---- At this All node
- 6 |     );
-   `----
 
 Error: node_error
 

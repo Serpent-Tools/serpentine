@@ -4,8 +4,17 @@ use std::collections::HashMap;
 
 use super::resolver::ResolveResult;
 use super::{CompileError, ir};
-use crate::engine::data_model::{DataType, Graph, Node, NodeInstanceId, NodeKindId, NodeStorage};
-use crate::snek::span::{Span, Spanned};
+use crate::engine::data_model::{
+    DataType,
+    Graph,
+    Node,
+    NodeInstanceId,
+    NodeKindId,
+    NodeMetadata,
+    NodeStorage,
+};
+use crate::engine::nodes::ReturnTypeError;
+use crate::snek::span::Span;
 
 /// The result of compiling
 pub struct CompileResult {
@@ -47,6 +56,8 @@ struct Compiler {
     /// Cache of nodes to their instance ids,
     /// This lets us detect functionally identical nodes and deduplicate them.
     node_cache: HashMap<Node, NodeInstanceId>,
+    /// The current stack of function call spans
+    stack_trace: Vec<Span>,
 }
 
 /// Compile the given resolved ir to a graph
@@ -73,6 +84,7 @@ pub fn compile(resolve_result: ResolveResult) -> Result<CompileResult, CompileEr
         graph: Graph::new(),
         symbol_mapping: HashMap::new(),
         node_cache: HashMap::new(),
+        stack_trace: Vec::new(),
     };
 
     for node in top_level.0 {
@@ -125,6 +137,7 @@ impl Compiler {
                 body,
                 return_value,
             } => {
+                self.stack_trace.push(*span);
                 self.handle_custom_arguments(
                     context,
                     required_parameters,
@@ -142,6 +155,13 @@ impl Compiler {
                 } else {
                     self.create_phantom_noop(context, return_value.node, phantom_inputs)
                 };
+
+                let pop_result = self.stack_trace.pop();
+                debug_assert_eq!(
+                    pop_result,
+                    Some(*span),
+                    "span poppped from function stack didnt match the one pushed for this function."
+                );
 
                 (node_id, return_value.type_)
             }
@@ -170,11 +190,36 @@ impl Compiler {
     ) -> Result<(NodeInstanceId, DataType), CompileError> {
         let node_impl = context.nodes.get(node_impl_id);
 
-        let argument_types = arguments
-            .iter()
-            .map(|arg| arg.span.with(arg.type_))
-            .collect::<Box<_>>();
-        let return_type = node_impl.return_type(&argument_types, span)?;
+        let argument_types = arguments.iter().map(|arg| arg.type_).collect::<Box<_>>();
+        let return_type = match node_impl.return_type(&argument_types) {
+            Ok(return_type) => return_type,
+            Err(ReturnTypeError::TypeMismatch {
+                expected,
+                got,
+                argument_index,
+            }) => {
+                return Err(CompileError::TypeMismatch {
+                    expected,
+                    got,
+                    location: arguments.get(argument_index).map_or_else(
+                        || {
+                            debug_assert!(false, "return_type error contained invalid index");
+                            Span::dummy()
+                        },
+                        |argument| argument.span,
+                    ),
+                    node: span,
+                    stack_trace: self.stack_trace.clone().into_boxed_slice(),
+                });
+            }
+            Err(ReturnTypeError::ArgumentCountMismatch { expected, got }) => {
+                return Err(CompileError::ArgumentCountMismatch {
+                    expected,
+                    got,
+                    location: span,
+                });
+            }
+        };
 
         let argument_ids = arguments.into_iter().map(|arg| arg.node).collect();
         let node = Node {
@@ -183,7 +228,13 @@ impl Compiler {
             phantom_inputs: phantom_inputs.into_vec().into(),
         };
 
-        let instance_id = self.push_node_with_cache(span.with(node));
+        let instance_id = self.push_node_with_cache(
+            node,
+            NodeMetadata {
+                location: span,
+                stack_trace: self.stack_trace.clone().into_boxed_slice(),
+            },
+        );
 
         Ok((instance_id, return_type))
     }
@@ -254,21 +305,27 @@ impl Compiler {
         function_output: NodeInstanceId,
         phantom_inputs: Box<[NodeInstanceId]>,
     ) -> NodeInstanceId {
-        self.push_node_with_cache(Span::dummy().with(Node {
-            kind: context.noop,
-            inputs: Box::new([function_output]),
-            phantom_inputs: phantom_inputs.into_vec().into(),
-        }))
+        self.push_node_with_cache(
+            Node {
+                kind: context.noop,
+                inputs: Box::new([function_output]),
+                phantom_inputs: phantom_inputs.into_vec().into(),
+            },
+            NodeMetadata {
+                location: Span::dummy(),
+                stack_trace: Box::default(),
+            },
+        )
     }
 
     /// Push a node onto the graph or return a cached value.
     /// Returns the node id of the result.
-    fn push_node_with_cache(&mut self, node: Spanned<Node>) -> NodeInstanceId {
+    fn push_node_with_cache(&mut self, node: Node, metadata: NodeMetadata) -> NodeInstanceId {
         if let Some(cached_value) = self.node_cache.get(&node) {
             *cached_value
         } else {
-            let instance_id = self.graph.push(node.clone());
-            self.node_cache.insert(node.take(), instance_id);
+            let instance_id = self.graph.push((node.clone(), metadata));
+            self.node_cache.insert(node, instance_id);
             instance_id
         }
     }
