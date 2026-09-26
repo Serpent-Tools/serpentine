@@ -165,6 +165,10 @@ impl Scheduler {
                     AbortOnDropHandle::new(tokio::spawn(scheduler.execute_node(node_id)))
                         .map(|result| result.into_diagnostic().flatten())
                         .map_err(Into::into)
+                        .map_ok(|mut data| {
+                            data.set_producer(self.graph.get(node_id).1.location);
+                            data
+                        })
                 })
                 .await
                 .clone();
