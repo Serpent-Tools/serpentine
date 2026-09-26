@@ -5,9 +5,15 @@ expression: "$crate :: test_support :: render_error(& err)"
 node_error
 
   x Error in node
-  |->   x hashing file contents
-  |   
-  `-> OS error <redacted>
+  `->   x hashing file contents
+         ,-[<redacted-path>:3:16]
+       2 |
+       3 | missing_file = FromHost("./missing.txt");
+         :                ^^^^^^^^^^^^|^^^^^^^^^^^
+         :                            `-- In reader produced from this node.
+       4 | export DEFAULT = image > With(missing_file, "foo.txt");
+         `----
+      
    ,-[<redacted-path>:4:26]
  3 | missing_file = FromHost("./missing.txt");
  4 | export DEFAULT = image > With(missing_file, "foo.txt");

@@ -6,6 +6,13 @@ node_error
 
   x Error in node
   `-> OS error <redacted>
+         ,-[<redacted-path>:3:24]
+       2 |
+       3 | missing_file = image > Export("/missing.txt");
+         :                        ^^^^^^^^^^|^^^^^^^^^^
+         :                                  `-- In reader produced from this node.
+       4 | export DEFAULT = image > With(missing_file, "foo.txt");
+         `----
       
    ,-[<redacted-path>:4:26]
  3 | missing_file = image > Export("/missing.txt");

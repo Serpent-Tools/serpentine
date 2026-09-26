@@ -87,6 +87,14 @@ impl Data {
             CacheableData::Service(service) => Data::Service(service),
         }
     }
+
+    /// Set the `Data`s producer if it stores one, if already set does nothing.
+    pub fn set_producer(&mut self, producer: Span) {
+        match self {
+            Self::Service(_) | Self::Container(_) | Self::String(_) | Self::Int(_) => {}
+            Self::FileSystem(filesystem) => filesystem.set_producer(producer),
+        }
+    }
 }
 
 impl CacheableData {

@@ -2,7 +2,6 @@
 //! ensuring they can be cached if needed.
 
 use std::io;
-use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -10,13 +9,15 @@ use std::task::{Context, Poll};
 
 use futures_util::future::BoxFuture;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use miette::{IntoDiagnostic, WrapErr};
+use miette::{Diagnostic, IntoDiagnostic, WrapErr};
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, DuplexStream, ReadBuf};
 use tokio::sync::OnceCell;
 use typed_path::{PlatformPath, PlatformPathBuf};
 
 use crate::engine::BoxedReader;
 use crate::engine::cache::ContentHash;
+use crate::snek::span::Span;
 
 /// Trait for a object that can provide file system data.
 ///
@@ -69,13 +70,48 @@ pub struct FileSystem {
     provider: Box<dyn FileSystemProvider>,
     /// The cached hash of the data.
     hash: Arc<OnceCell<blake3::Hash>>,
+    /// The span of the producer of this `FileSystem` for producing better error messages.
+    producer: Option<Span>,
 }
 
-impl Deref for FileSystem {
-    type Target = dyn FileSystemProvider;
+/// Blame a error on the given span
+#[derive(Debug, Error, Diagnostic)]
+#[error("{inner}")]
+struct BlameError {
+    /// The error
+    inner: miette::Report,
+    /// The location to blame it at
+    #[label("In reader produced from this node.")]
+    location: Span,
+}
 
-    fn deref(&self) -> &Self::Target {
-        &*self.provider
+impl FileSystem {
+    /// Sets the producer of this value to the given value if it wasnt already set.
+    pub fn set_producer(&mut self, producer: Span) {
+        if self.producer.is_none() {
+            self.producer = Some(producer);
+        }
+    }
+
+    /// Wrap the given error in a miette diagnostic pointing at `self.producer`
+    fn blame(&self, error: miette::Report) -> miette::Report {
+        if let Some(producer) = self.producer {
+            miette::Report::new(BlameError {
+                inner: error,
+                location: producer,
+            })
+        } else {
+            error
+        }
+    }
+
+    /// Get a reader matching the format specified in `serpentine_internal` from this file system
+    /// source.
+    pub async fn get_reader(&self) -> miette::Result<impl AsyncRead + Unpin> {
+        self.provider
+            .get_reader()
+            .await
+            .map_err(|err| self.blame(err))
     }
 }
 
@@ -84,6 +120,7 @@ impl<T: FileSystemProvider + 'static> From<T> for FileSystem {
         Self {
             provider: Box::new(value),
             hash: Arc::new(OnceCell::new()),
+            producer: None,
         }
     }
 }
@@ -93,6 +130,7 @@ impl Clone for FileSystem {
         Self {
             provider: self.provider.dyn_clone(),
             hash: Arc::clone(&self.hash),
+            producer: self.producer,
         }
     }
 }
@@ -112,7 +150,8 @@ impl ContentHash for FileSystem {
                 self.provider.hash_data(&mut inner_hasher).await?;
                 Ok::<_, miette::Report>(inner_hasher.finalize())
             })
-            .await?;
+            .await
+            .map_err(|err| self.blame(err))?;
 
         hasher.update(hash.as_bytes());
         Ok(())
