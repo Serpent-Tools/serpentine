@@ -7,7 +7,7 @@ use crate::engine::cache::ContentHash;
 use crate::engine::filesystem::FileSystem;
 use crate::engine::nodes::NodeImpl;
 use crate::engine::{RuntimeContext, containerd};
-use crate::snek::span::Spanned;
+use crate::snek::span::Span;
 
 /// Shared field generators for fuzzing.
 #[cfg(test)]
@@ -85,6 +85,14 @@ impl Data {
             CacheableData::String(string) => Data::String(string),
             CacheableData::Container(container) => Data::Container(container),
             CacheableData::Service(service) => Data::Service(service),
+        }
+    }
+
+    /// Set the `Data`s producer if it stores one, if already set does nothing.
+    pub fn set_producer(&mut self, producer: Span) {
+        match self {
+            Self::Service(_) | Self::Container(_) | Self::String(_) | Self::Int(_) => {}
+            Self::FileSystem(filesystem) => filesystem.set_producer(producer),
         }
     }
 }
@@ -313,11 +321,22 @@ pub struct Node {
     pub phantom_inputs: Box<[NodeInstanceId]>,
 }
 
+/// Extra metadata about a node that doesnt go into its sesmantic equality.
+///
+/// This should be used for anything that shouldnt be taken into consideration by the optimizer.
+#[derive(Clone, Debug)]
+pub struct NodeMetadata {
+    /// (one of) the locations of this node in the source code, used for error reporting.
+    pub location: Span,
+    /// Spans of the calls to this node for generating function stack traces.
+    pub stack_trace: Box<[Span]>,
+}
+
 /// Id for referencing a node in the graph
-pub type NodeInstanceId = StoreId<Spanned<Node>>;
+pub type NodeInstanceId = StoreId<(Node, NodeMetadata)>;
 
 /// Contains the graph
-pub type Graph = Store<Spanned<Node>>;
+pub type Graph = Store<(Node, NodeMetadata)>;
 
 #[cfg(test)]
 mod tests {

@@ -1,17 +1,76 @@
 //! Handles the execution of a graph
 
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures_util::FutureExt;
-use miette::{Diagnostic, IntoDiagnostic, Report};
+use futures_util::{FutureExt, TryFutureExt};
+use miette::{Diagnostic, IntoDiagnostic, LabeledSpan, Report, Severity, SourceCode};
 use thiserror::Error;
 use tokio::sync::OnceCell;
 use tokio_util::task::AbortOnDropHandle;
 
 use super::RuntimeContext;
 use crate::engine::data_model::{Data, Graph, NodeInstanceId, NodeStorage};
-use crate::snek::span::Span;
+
+/// A `Arc<miette::Report>` to allow cloning.
+///
+/// Requires implementing a bunch of stuff to allow converting transparently into a `miette::Report`
+#[derive(Clone)]
+pub struct SharedReport(Arc<Report>);
+
+impl From<Report> for SharedReport {
+    fn from(report: Report) -> Self {
+        Self(Arc::new(report))
+    }
+}
+
+impl fmt::Debug for SharedReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.0, f)
+    }
+}
+
+impl fmt::Display for SharedReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&*self.0, f)
+    }
+}
+
+impl std::error::Error for SharedReport {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        (**self.0).source()
+    }
+}
+
+impl Diagnostic for SharedReport {
+    fn code<'this>(&'this self) -> Option<Box<dyn fmt::Display + 'this>> {
+        (**self.0).code()
+    }
+    fn severity(&self) -> Option<Severity> {
+        (**self.0).severity()
+    }
+    fn help<'this>(&'this self) -> Option<Box<dyn fmt::Display + 'this>> {
+        (**self.0).help()
+    }
+    fn url<'this>(&'this self) -> Option<Box<dyn fmt::Display + 'this>> {
+        (**self.0).url()
+    }
+    fn source_code(&self) -> Option<&dyn SourceCode> {
+        (**self.0).source_code()
+    }
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        (**self.0).labels()
+    }
+    fn related<'this>(
+        &'this self,
+    ) -> Option<Box<dyn Iterator<Item = &'this dyn Diagnostic> + 'this>> {
+        (**self.0).related()
+    }
+    fn diagnostic_source(&self) -> Option<&dyn Diagnostic> {
+        (**self.0).diagnostic_source()
+    }
+}
 
 /// An error from a node, i.e. a runtime error with an associated span.
 #[derive(Debug, Error, Diagnostic)]
@@ -21,6 +80,9 @@ pub struct NodeError {
     /// The location of the node
     #[label("Error occurred in this node")]
     span: crate::snek::span::Span,
+    /// The callstack of the node
+    #[label(collection, "In inlined call to")]
+    stack_trace: Box<[crate::snek::span::Span]>,
     /// The inner error
     #[diagnostic_source]
     inner: Box<dyn Diagnostic + Send + Sync>,
@@ -33,7 +95,7 @@ pub struct Scheduler {
     /// Node implementations
     nodes: NodeStorage,
     /// The list of outputs of nodes, indexes by node instance ids
-    data: Box<[OnceCell<Data>]>,
+    data: Box<[OnceCell<Result<Data, SharedReport>>]>,
     /// The runtime context
     context: Arc<RuntimeContext>,
 }
@@ -70,15 +132,12 @@ impl Scheduler {
         futures_util::future::try_join_all(handles).await
     }
 
-    /// Return the span for the given node
-    pub fn span_for(&self, node_id: NodeInstanceId) -> Span {
-        self.graph.get(node_id).span()
-    }
-
     /// Attach `node_id`'s span to an error from the work that node did itself.
     pub fn node_error(&self, node_id: NodeInstanceId, error: Report) -> Report {
+        let node_metadata = &self.graph.get(node_id).1;
         NodeError {
-            span: self.span_for(node_id),
+            span: node_metadata.location,
+            stack_trace: node_metadata.stack_trace.clone(),
             inner: error.into(),
         }
         .into()
@@ -101,21 +160,27 @@ impl Scheduler {
             };
 
             let data = cell
-                .get_or_try_init(|| {
+                .get_or_init(|| {
                     let scheduler = Arc::clone(&self);
                     AbortOnDropHandle::new(tokio::spawn(scheduler.execute_node(node_id)))
                         .map(|result| result.into_diagnostic().flatten())
+                        .map_err(Into::into)
+                        .map_ok(|mut data| {
+                            data.set_producer(self.graph.get(node_id).1.location);
+                            data
+                        })
                 })
-                .await?;
+                .await
+                .clone();
 
             log::debug!("Got output of node {node_id:?}: {data:?}");
-            Ok(data.clone())
+            data.map_err(miette::Report::new)
         })
     }
 
     /// Run a single node: resolve its phantom inputs, then execute it.
     async fn execute_node(self: Arc<Self>, node_id: NodeInstanceId) -> miette::Result<Data> {
-        let node = self.graph.get(node_id);
+        let node = &self.graph.get(node_id).0;
         self.context
             .reporter
             .node(crate::events::NodeTransition::Queued);
