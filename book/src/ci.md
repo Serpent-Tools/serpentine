@@ -20,3 +20,5 @@ You must restore `/tmp/serpentine_cache` before running it, and save it afterwar
 
 Serpentine also has a dedicated github action: <https://github.com/marketplace/actions/run-serpentine>
 
+> [!TIP]
+> Serpentines github actions cache backend is tested in CI to support both native github actions, as well as [blacksmith](https://blacksmith.sh/) runners.
