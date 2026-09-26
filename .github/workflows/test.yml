@@ -8,23 +8,34 @@ on:
   pull_request:
 permissions:
   contents: read
+env:
+  CONTAINERD_IMAGE: ghcr.io/serpent-tools/containerd
+  BUILD_CACHE: ghcr.io/serpent-tools/containerd-buildcache:main
 jobs:
   build-docker:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@e4c1c000c95f9cc255f72940e9c56bcbd1239436 # v1
+      # The default `docker` driver cannot export a registry cache.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          max-cache-size-mb: 6144
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build container
-        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           load: true
-          tags: ghcr.io/serpent-tools/containerd:dev
+          tags: ${{ env.CONTAINERD_IMAGE }}:dev
+          cache-from: type=registry,ref=${{ env.BUILD_CACHE }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=registry,ref={0},mode=max', env.BUILD_CACHE) || '' }}
       - name: Export Docker image
-        run: docker save ghcr.io/serpent-tools/containerd:dev | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
+        run: docker save "$CONTAINERD_IMAGE:dev" | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: containerd-image
@@ -37,13 +48,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: blacksmith-2vcpu-ubuntu-2404
+          - os: ubuntu-latest
             platform: linux
             runtime: docker
-          - os: blacksmith-2vcpu-ubuntu-2404
+          - os: ubuntu-latest
             platform: linux
             runtime: podman
-          # WSL2-backed Linux containers require nested virtualization unavailable on Blacksmith Windows runners.
           - os: windows-latest
             platform: windows
             runtime: docker
@@ -55,6 +65,7 @@ jobs:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          shared-key: tests-${{ matrix.platform }}
           cache-on-failure: true
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
@@ -220,6 +231,7 @@ jobs:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          shared-key: gha-cache-tests
           cache-on-failure: true
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
@@ -242,7 +254,7 @@ jobs:
 
   pr-blockers:
     needs: [build-docker]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
@@ -250,6 +262,7 @@ jobs:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          shared-key: pipeline
           cache-on-failure: true
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
@@ -287,7 +300,7 @@ jobs:
 
   pr-hints:
     needs: [build-docker]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -296,6 +309,7 @@ jobs:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          shared-key: pipeline
           cache-on-failure: true
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
