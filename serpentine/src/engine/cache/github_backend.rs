@@ -258,6 +258,14 @@ impl GithubActionsBackend {
     /// Create the cache entry for the given key and return a writer for it.
     async fn create_writer_for_github_key(&self, key: String) -> miette::Result<BoxedWriter> {
         log::debug!("Attempting to create cache entry for {key}.");
+        if let Some(_reader) = self
+            .get_reader_for_github_key(key.clone().into_boxed_str(), vec![])
+            .await
+        {
+            log::debug!("Key already exsists");
+            return Err(miette::miette!("Key already exsists"));
+        }
+
         let create_request = CreateCacheEntry {
             key: key.clone(),
             version: &self.version,
