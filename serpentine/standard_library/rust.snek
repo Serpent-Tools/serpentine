@@ -25,6 +25,7 @@ export def Chef(container, source_code, command) {
         > WithBinstall("cargo-chef@=0.1.78", "cargo-chef")
         > With(recipe, "recipe.json")
         > Exec("cargo chef cook --no-build --recipe-path recipe.json")
+        > Exec("cargo fetch") // Ensure dependency downloading is shared!
         > Exec(command)
         > With(source_code, ".");
 }
