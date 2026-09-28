@@ -169,19 +169,15 @@ jobs:
           }
           throw "WSL Docker daemon unreachable from Windows"
 
-      # --- Run tests ---
-      # `--test-threads=1`: CI runners can't sustain several pipelines driving the shared
-      # containerd at once (fifo copy deadlines), so run them serially here. Local runs stay
-      # parallel to keep surfacing cross-process races.
       - name: Run tests (Linux)
         if: matrix.platform == 'linux'
-        run: cargo nextest run --features _test_docker --fail-fast --test-threads=1
+        run: cargo nextest run --features _test_docker --fail-fast
         env:
           RUST_LOG: serpentine=trace
 
       - name: Run host side tests (Windows)
         if: matrix.platform != 'linux'
-        run: cargo nextest run -p serpentine --features _test_docker --fail-fast --test-threads=1
+        run: cargo nextest run -p serpentine --features _test_docker --fail-fast
         env:
           RUST_LOG: serpentine=trace
 
@@ -196,8 +192,6 @@ jobs:
             || echo "no sidecar container to dump logs from"
           echo "::endgroup::"
 
-      # The daemon holding the sidecar lives inside WSL, so ask it there rather than over the
-      # TCP listener, which is itself a suspect whenever the tests fail on Windows.
       - name: Dump sidecar container logs (Windows)
         if: failure() && matrix.platform == 'windows'
         shell: wsl-bash {0}
