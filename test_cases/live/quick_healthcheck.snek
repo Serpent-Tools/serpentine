@@ -1,0 +1,8 @@
+base = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0") > Exec("apk add curl");
+
+server = base
+    > Exec("apk add python3")
+    > ToService("sleep 60 && python3 -m http.server 8000")
+    > HealthCheck("curl -f http://localhost:8000", 70);
+
+export DEFAULT = base > WithService(server, "server") > Exec("curl -f http://server:8000");
