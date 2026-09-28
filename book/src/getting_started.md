@@ -18,12 +18,12 @@ You can also download the release binaries yourself from github: <https://github
 ### Nix flake
 Serpentine also comes as a nix flake, which you can install as follows:
 ```bash
-nix profile add github:Serpent-Tools/serpentine/v1.0.1
+nix profile add github:Serpent-Tools/serpentine/v1.0.2
 ```
 
 Or run a pipeline without installing anything:
 ```bash
-nix run github:Serpent-Tools/serpentine/v1.0.1 -- run
+nix run github:Serpent-Tools/serpentine/v1.0.2 -- run
 ```
 
 > [!WARNING]
@@ -36,7 +36,7 @@ Or use in your own dev shells like:
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    serpentine.url = "github:Serpent-Tools/serpentine/v1.0.1";
+    serpentine.url = "github:Serpent-Tools/serpentine/v1.0.2";
   };
 
   outputs =
