@@ -10,6 +10,8 @@ use miette::{Context, Diagnostic, IntoDiagnostic};
 use serpentine_internal::network;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::LinesStream;
 use typed_path::UnixPathBuf;
 
 use super::{CONTAINERD_GC_ROOT_LABEL, SNAPSHOTTER, WithLease, container_config};
@@ -227,6 +229,7 @@ impl super::Client {
             .await?;
 
         let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
+        let (stderr_path, stderr) = self.sidecar.fifo_pipe().await?;
 
         let log_id = node.get_cmd().to_owned();
         let exec_task = self.reporter.start_task(TaskKind::Exec, log_id.clone());
@@ -234,6 +237,7 @@ impl super::Client {
 
         let stdout = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(Self::read_stdout(
             stdout,
+            stderr,
             log_id,
             task_id,
             self.reporter.clone(),
@@ -249,7 +253,7 @@ impl super::Client {
                     terminal: false,
                     stdin: String::new(),
                     stdout: stdout_path.display().to_string(),
-                    stderr: stdout_path.display().to_string(),
+                    stderr: stderr_path.display().to_string(),
                     checkpoint: None,
                     options: None,
                     runtime_path: String::new(),
@@ -330,8 +334,10 @@ impl super::Client {
             let exec_id = uuid::Uuid::new_v4().to_string();
 
             let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
+            let (stderr_path, stderr) = self.sidecar.fifo_pipe().await?;
             tokio::spawn(Self::read_stdout(
                 stdout,
+                stderr,
                 format!("[healthcheck] {command}"),
                 task.id(),
                 self.reporter.clone(),
@@ -347,7 +353,7 @@ impl super::Client {
                         terminal: false,
                         stdin: String::new(),
                         stdout: stdout_path.display().to_string(),
-                        stderr: stdout_path.display().to_string(),
+                        stderr: stderr_path.display().to_string(),
                         spec: Some(prost_types::Any {
                             type_url: "types.containerd.io/opencontainers/runtime-spec/1/Process"
                                 .to_owned(),
@@ -529,22 +535,26 @@ impl super::Client {
         Ok((container, process))
     }
 
-    /// Read the stdout to a String, returns `Err` if encountered non-utf (containing the output
+    /// Read the stdout (and stderr) to a String, returns `Err` if encountered non-utf (containing the output
     /// without those lines), and `Ok` if all data was utf-8
     async fn read_stdout(
         stdout: impl AsyncRead + Unpin + Send + 'static,
+        stderr: impl AsyncRead + Unpin + Send + 'static,
         log_id: String,
         task_id: TaskId,
         reporter: Reporter,
     ) -> Result<String, String> {
-        let mut stdout = tokio::io::BufReader::new(stdout).lines();
+        let stdout = tokio::io::BufReader::new(stdout).lines();
+        let stderr = tokio::io::BufReader::new(stderr).lines();
+
+        let mut stream = LinesStream::new(stdout).merge(LinesStream::new(stderr));
+
         let mut result = String::new();
         let mut success = true;
 
-        loop {
-            match stdout.next_line().await {
-                Ok(None) => break,
-                Ok(Some(line)) => {
+        while let Some(line) = stream.next().await {
+            match line {
+                Ok(line) => {
                     let line = strip_ansi_escapes::strip_str(line);
 
                     log::trace!("{log_id}: {line}");

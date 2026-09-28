@@ -3460,6 +3460,7 @@ dependencies = [
  "test-log",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tower",
  "typed-arena",
