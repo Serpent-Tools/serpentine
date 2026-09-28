@@ -1,4 +1,4 @@
-FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b as download
+FROM docker.io/library/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 as download
 RUN apk add tar curl
 
 ARG TINI_VERSION=v0.19.0
@@ -7,7 +7,7 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION
     chmod +x /tini
 RUN curl -fsSL "https://raw.githubusercontent.com/krallin/tini/${TINI_VERSION}/LICENSE" -o /tini.LICENSE
 
-FROM docker.io/library/golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go_base
+FROM docker.io/library/golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS go_base
 
 FROM go_base AS cni
 
@@ -53,8 +53,8 @@ RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # renovate: datasource=github-tags depName=containerd/containerd
-ARG CONTAINERD_VERSION=v2.3.5
-ARG CONTAINERD_COMMIT=1294c24a7da8e5a793ed378161673abe94118892
+ARG CONTAINERD_VERSION=v2.4.0
+ARG CONTAINERD_COMMIT=a7fe631d96c08fb14cf8eff0afdc280e99c30a94
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
@@ -91,7 +91,7 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM docker.io/library/rust:1.98.1-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa as rust_base
+FROM docker.io/library/rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e as rust_base
 RUN cargo install cargo-chef@=0.1.78 --locked
 # cargo-about puts its binary behind `cli`; without it the install is a no-op that still exits 0.
 RUN cargo install cargo-about@=0.9.2 --locked --features cli
@@ -114,7 +114,7 @@ RUN cargo about generate -c about.toml -m sidecar/Cargo.toml \
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
-FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+FROM docker.io/library/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 RUN apk add --no-cache iptables
 # Alpine ships no license files of its own, so record what is installed and where its source is.
 RUN mkdir -p  /usr/share/licenses/ && \
