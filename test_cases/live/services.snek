@@ -1,8 +1,8 @@
-valkey = ImageService("docker.io/valkey/valkey:9-alpine@sha256:ee91f7a174ac4d6a6b0685b3a60e321f0a9dbbb691f9b0e285be2ba1d1be8328")
+valkey = ImageService("docker.io/valkey/valkey:9-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11")
     > Env("READY_MARKER", "yes")
     > HealthCheck("test $READY_MARKER = yes && valkey-cli ping", 30);
 
-app = Image("docker.io/valkey/valkey:9-alpine@sha256:ee91f7a174ac4d6a6b0685b3a60e321f0a9dbbb691f9b0e285be2ba1d1be8328");
+app = Image("docker.io/valkey/valkey:9-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11");
 
 with_users = app
     > WithService(valkey, "db")
