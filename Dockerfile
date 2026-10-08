@@ -37,8 +37,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # renovate: datasource=github-tags depName=opencontainers/runc
-ARG RUNC_VERSION=v1.5.1
-ARG RUNC_COMMIT=8f2685a471d3347a686ad3909783d8aafc6bb208
+ARG RUNC_VERSION=v1.5.2
+ARG RUNC_COMMIT=29dd3dc2b13b4123162e5fe132504bb4b15569f1
 
 RUN git clone https://github.com/opencontainers/runc.git /src/runc && \
     git -C /src/runc checkout ${RUNC_COMMIT}
@@ -53,8 +53,8 @@ RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # renovate: datasource=github-tags depName=containerd/containerd
-ARG CONTAINERD_VERSION=v2.4.0
-ARG CONTAINERD_COMMIT=a7fe631d96c08fb14cf8eff0afdc280e99c30a94
+ARG CONTAINERD_VERSION=v2.4.1
+ARG CONTAINERD_COMMIT=f2551031d7276a770f65f98c9b52e57e7dad07e8
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
