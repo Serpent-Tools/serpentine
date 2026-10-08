@@ -26,7 +26,7 @@ fmt = rust::FmtCheck(lib::source_code, rust::nightly);
 
 export spelling = lib::debian 
     > WorkingDir("/app")
-    > rust::WithBinstall("typos-cli@=1.50.2", "typos")
+    > rust::WithBinstall("typos-cli@=1.50.3", "typos")
     > With(lib::source_code, ".")
     > Exec("typos");
 
