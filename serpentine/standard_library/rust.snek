@@ -4,8 +4,8 @@ export nightly = Image("rustlang/rust:nightly") > WorkingDir("/app");
 // Core helper functions.
 export def Binstall(crate, bin_name = crate, build_container = stable) { 
     return build_container
-        // cargo-binstall v1.25.1
-        > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/7bebc2e59eb8820162b7ac8f62a92bfdb2732447/install-from-binstall-release.sh | bash")
+        // cargo-binstall v1.25.3
+        > Exec("curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/3be4ad2b146f3302f92e5956c54fedbb6ae8cccc/install-from-binstall-release.sh | bash")
         > Exec(Join("cargo binstall -y --no-track --disable-telemetry --root /out ", ShellEscape(crate)))
         > Export(Join("/out/bin/", bin_name));
 }
