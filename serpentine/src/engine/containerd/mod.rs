@@ -364,7 +364,7 @@ mod test_support {
     use crate::events::Reporter;
 
     /// The image the integration tests run against.
-    pub(super) const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0";
+    pub(super) const TEST_IMAGE: &str = "quay.io/toolbx-images/alpine-toolbox:3.22@sha256:1d988eea4370a4fc1a4f21b6aa4db02bff2c0b589fe6d52fc11162549b28288c";
 
     /// A client talking to the live containerd, with caching disabled.
     #[fixture]
