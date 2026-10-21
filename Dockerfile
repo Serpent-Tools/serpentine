@@ -53,8 +53,8 @@ RUN apt-get update && apt-get install -y gcc libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # renovate: datasource=github-tags depName=containerd/containerd
-ARG CONTAINERD_VERSION=v2.4.1
-ARG CONTAINERD_COMMIT=f2551031d7276a770f65f98c9b52e57e7dad07e8
+ARG CONTAINERD_VERSION=v2.4.2
+ARG CONTAINERD_COMMIT=b7a25261e029d68978bbf290df0a62fc819b3c51
 
 RUN git clone https://github.com/containerd/containerd.git /src/containerd && \
     git -C /src/containerd checkout ${CONTAINERD_COMMIT}
