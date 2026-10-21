@@ -43,7 +43,7 @@ trivy = Image("aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52
 
 // --no-global is load bearing: without it the file is read as self hosted
 // config, where packageRules go unchecked and an invalid rule validates clean.
-renovate_config = Image("ghcr.io/renovatebot/renovate:43.214.1@sha256:55af44f12d1d81aa6155e466ef898b63061f51a0c1e726b7f0df90f13baae8fc")
+renovate_config = Image("ghcr.io/renovatebot/renovate:44.175.2@sha256:00eaca87a98032a352556dfc466389c191546b47b57ea056bd4ab276965eb2a3")
     > WorkingDir("/app")
     > With(FromHost("renovate.json"), "renovate.json")
     > Exec("renovate-config-validator --strict --no-global renovate.json");
