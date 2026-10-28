@@ -1,4 +1,4 @@
-FROM docker.io/library/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 as download
+FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a as download
 RUN apk add tar curl
 
 ARG TINI_VERSION=v0.19.0
@@ -7,7 +7,7 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION
     chmod +x /tini
 RUN curl -fsSL "https://raw.githubusercontent.com/krallin/tini/${TINI_VERSION}/LICENSE" -o /tini.LICENSE
 
-FROM docker.io/library/golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS go_base
+FROM docker.io/library/golang:1.27.3-bookworm@sha256:05237276236793ebedaf0b87dab86add9ec9adc66ebef2dbc3107c18254cde1c AS go_base
 
 FROM go_base AS cni
 
@@ -91,10 +91,10 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM docker.io/library/rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 as rust_base
+FROM docker.io/library/rust:1.99.1-bookworm@sha256:e9da6f6c3ed5095fd5d33bf7cdf309830a178a8147888f1b2f76d5769bd9306c as rust_base
 RUN cargo install cargo-chef@=0.1.78 --locked
 # cargo-about puts its binary behind `cli`; without it the install is a no-op that still exits 0.
-RUN cargo install cargo-about@=0.9.2 --locked --features cli
+RUN cargo install cargo-about@=0.9.3 --locked --features cli
 WORKDIR /app
 
 FROM rust_base as planner
@@ -114,7 +114,7 @@ RUN cargo about generate -c about.toml -m sidecar/Cargo.toml \
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
-FROM docker.io/library/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 RUN apk add --no-cache iptables
 # Alpine ships no license files of its own, so record what is installed and where its source is.
 RUN mkdir -p  /usr/share/licenses/ && \

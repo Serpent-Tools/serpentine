@@ -1,4 +1,4 @@
-base = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0")
+base = Image("quay.io/toolbx-images/alpine-toolbox:3.22@sha256:deff987a572bcbbe3059a644d60d6dd1cfbda9b99f9e5a948ee4e5f0d0206cbe")
     > WorkingDir("/app")
     > Exec("touch hello.txt")
     > Exec("mkdir foo")
@@ -7,11 +7,11 @@ base = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be
 hello = base > Export("hello.txt");
 foo = base > Export("foo");
 
-check_hello = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0")
+check_hello = Image("quay.io/toolbx-images/alpine-toolbox:3.22@sha256:deff987a572bcbbe3059a644d60d6dd1cfbda9b99f9e5a948ee4e5f0d0206cbe")
     > With(hello, "nice.txt")
     > Exec("cat nice.txt");
 
-check_foo = Image("quay.io/toolbx-images/alpine-toolbox:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0")
+check_foo = Image("quay.io/toolbx-images/alpine-toolbox:3.22@sha256:deff987a572bcbbe3059a644d60d6dd1cfbda9b99f9e5a948ee4e5f0d0206cbe")
     > With(foo, "bar")
     > Exec("cat bar/hello.txt");
 

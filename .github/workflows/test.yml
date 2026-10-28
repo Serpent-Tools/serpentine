@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The default `docker` driver cannot export a registry cache.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -67,9 +67,9 @@ jobs:
         with:
           shared-key: tests-${{ matrix.platform }}
           cache-on-failure: true
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
-          tool: cargo-nextest@0.9.149
+          tool: cargo-nextest@0.9.150
 
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
@@ -231,9 +231,9 @@ jobs:
         with:
           version: '34.1'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
-          tool: cargo-nextest@0.9.149
+          tool: cargo-nextest@0.9.150
       - name: Expose actions cache credentials
         # The runner injects these into JS actions only, so `run:` steps need them re-exported.
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

@@ -21,7 +21,7 @@ async-tar = { version = "0.6.1", default-features = false, features = ["tokio", 
 async-walkdir = "2.1.0"
 tokio-stream.workspace = true
 async-fs = "2.2.0"
-xattr = { version = "1.6.1", default-features = false }
+xattr = { version = "1.7.0", default-features = false }
 async-compression = { version = "0.4.46", default-features = false, features = ["tokio", "zstd"] }
 [lints]
 workspace = true
