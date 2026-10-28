@@ -11,7 +11,7 @@ node_error
         |
       
    ,-[<redacted-path>:1:143]
- 1 | export DEFAULT = Image("quay.io<redacted-path>:3.21@sha256:ff9f4d34ce354d6be4c8fc551ebb1bb57c5941df4b42c970b9852f3744fb6bf0") > Exec("exit 1");
+ 1 | export DEFAULT = Image("quay.io<redacted-path>:3.22@sha256:deff987a572bcbbe3059a644d60d6dd1cfbda9b99f9e5a948ee4e5f0d0206cbe") > Exec("exit 1");
    :                                                                                                                                               ^^^^^^|^^^^^^
    :                                                                                                                                                     `-- Error occurred in this node
    `----
