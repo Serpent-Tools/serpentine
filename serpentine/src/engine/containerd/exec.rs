@@ -793,6 +793,9 @@ impl super::Client {
 #[cfg(test)]
 #[cfg(feature = "_test_docker")]
 mod integration_tests {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    use miette::IntoDiagnostic;
     use rstest::rstest;
     use typed_path::UnixPath;
 
@@ -1052,6 +1055,47 @@ mod integration_tests {
         let image = containerd_client.pull_image(TEST_IMAGE).await?;
         containerd_client
             .exec(&image, "curl https://google.com".to_owned())
+            .await?;
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[test_log::test]
+    async fn dont_cache_failed_execs(
+        #[future] containerd_client: miette::Result<Client>,
+    ) -> miette::Result<()> {
+        // This test ensures that a failing command is properly re-run.
+        const MARGIN: Duration = Duration::from_secs(5);
+
+        let containerd_client = containerd_client.await?;
+        let image = containerd_client.pull_image(TEST_IMAGE).await?;
+
+        let start = Instant::now();
+        let deadline = SystemTime::now()
+            .checked_add(MARGIN)
+            .ok_or_else(|| miette::miette!("deadline overflowed SystemTime"))?
+            .duration_since(UNIX_EPOCH)
+            .into_diagnostic()?
+            .as_secs();
+        let command_string = format!(r#"[ "$(date +%s)" -ge {deadline} ] && touch foo.txt"#);
+
+        containerd_client
+            .exec(&image, command_string.clone())
+            .await
+            .expect_err("Should fail before the deadline");
+
+        // `date +%s` has second granularity, hence the extra second.
+        let wake = start
+            .checked_add(MARGIN)
+            .and_then(|time| time.checked_add(Duration::from_secs(1)))
+            .ok_or_else(|| miette::miette!("wake time overflowed Instant"))?;
+        tokio::time::sleep_until(wake.into()).await;
+
+        let second_run = containerd_client.exec(&image, command_string).await?;
+        containerd_client
+            .exec(&second_run, "cat foo.txt".to_owned())
             .await?;
 
         Ok(())
