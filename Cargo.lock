@@ -3497,7 +3497,7 @@ dependencies = [
 
 [[package]]
 name = "serpentine"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "backon",
  "backon-macros",
@@ -3548,7 +3548,7 @@ dependencies = [
 
 [[package]]
 name = "serpentine_internal"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "bolero",
  "log",
@@ -3592,7 +3592,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidecar"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "async-compression",
  "async-fs",

@@ -34,5 +34,12 @@ sidecar_logs:
 run_sidecar: build_container
     docker run --rm -it ghcr.io/serpent-tools/containerd:dev
 
+bump version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    old=$(sed -n 's/^version = "\(.*\)"$/\1/p' serpentine/Cargo.toml)
+    cargo set-version --workspace {{version}}
+    grep -rlF "v$old" book/src | xargs -r sed -i "s/v${old//./\\.}/v{{version}}/g"
+
 pull_images:
     grep -iE '^FROM\s+' Dockerfile | awk '{print $2}' | grep / | sort -u | xargs -n1 docker pull || exit 0

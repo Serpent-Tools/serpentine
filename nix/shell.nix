@@ -2,6 +2,7 @@
   mkShell,
   rustPlatform,
   cargo,
+  cargo-edit,
   cargo-insta,
   cargo-nextest,
   clippy,
@@ -23,6 +24,7 @@ mkShell {
     protobuf
     cargo-nextest
     cargo-insta
+    cargo-edit
 
     mdbook
     mdbook-mermaid
