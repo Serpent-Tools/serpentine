@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 
+use backon_macros::backon;
 use miette::{Context, IntoDiagnostic};
 use serpentine_internal::network::{AbstractTopology, ConcreteTopology};
 use serpentine_internal::sidecar::{MAGIC_NUMBER, Mount, Request};
@@ -40,12 +41,21 @@ impl Client {
     }
 
     /// Connect to the sidecar and setup a containerd proxy.
+    #[backon(
+        backoff = backon::ExponentialBuilder::default,
+        sleep = tokio::time::sleep,
+    )]
     pub async fn containerd(&self) -> miette::Result<net::TcpStream> {
+        log::trace!("Connecting to containerd");
         let socket = self.connect(Request::Proxy).await?;
         Ok(socket)
     }
 
     /// Connected to the sidecar and request it create a fifo pipe, returns its (in container) path and a reader of the contents.
+    #[backon(
+        backoff = backon::ExponentialBuilder::default,
+        sleep = tokio::time::sleep,
+    )]
     pub async fn fifo_pipe(
         &self,
     ) -> miette::Result<(UnixPathBuf, impl AsyncRead + Unpin + Send + 'static)> {
@@ -62,12 +72,18 @@ impl Client {
     }
 
     /// Create a network namespace and return its (container) path
+    #[backon(
+        backoff = backon::ExponentialBuilder::default,
+        sleep = tokio::time::sleep,
+    )]
     pub async fn create_network(
         &self,
-        topology: AbstractTopology,
+        topology: &AbstractTopology,
     ) -> miette::Result<ConcreteTopology> {
         log::debug!("Creating network topology");
-        let mut socket = self.connect(Request::CreateNetwork(topology)).await?;
+        let mut socket = self
+            .connect(Request::CreateNetwork(topology.clone()))
+            .await?;
 
         let network = read_postcard_frame(&mut socket)
             .await

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use backon::Retryable;
 use containerd_client::services::v1 as containerd_services;
 use containerd_client::tonic::{IntoRequest, Request};
 use miette::{Context, IntoDiagnostic};
@@ -140,46 +141,6 @@ pub struct Client {
 }
 
 impl Client {
-    /// Retry the initial connection and version probe under one startup deadline.
-    ///
-    /// Docker can publish the port before the sidecar listens, and the sidecar can accept
-    /// connections before containerd is ready. Both stages must be inside the retry loop.
-    async fn wait_for_containerd_ready<T, F>(mut connect: impl FnMut() -> F) -> miette::Result<T>
-    where
-        F: Future<Output = miette::Result<T>>,
-    {
-        let start = tokio::time::Instant::now();
-        let timeout = Duration::from_secs(30);
-        let mut last_error = None;
-        let result = tokio::time::timeout(timeout, async {
-            loop {
-                match connect().await {
-                    Ok(client) => return client,
-                    Err(err) => {
-                        log::debug!("containerd not ready after {:?}: {err:#}", start.elapsed());
-                        last_error = Some(err);
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-        .await;
-
-        match result {
-            Ok(client) => {
-                log::info!(
-                    "containerd ready through the sidecar after {:?}",
-                    start.elapsed()
-                );
-                Ok(client)
-            }
-            Err(_) => Err(last_error.unwrap_or_else(|| {
-                miette::miette!("sidecar connection or containerd version probe did not complete")
-            }))
-            .with_context(|| format!("containerd did not become ready within {timeout:?}")),
-        }
-    }
-
     /// Create a new containerd client
     ///
     /// `namespace` scopes every containerd request this client makes (snapshots, content,
@@ -198,7 +159,8 @@ impl Client {
         });
 
         let (runtime, sidecar) = crate::engine::docker::connect(&reporter).await?;
-        let containerd = Self::wait_for_containerd_ready(|| async {
+
+        let containerd = (async || -> miette::Result<containerd_client::Client> {
             let channel =
                 containerd_client::tonic::transport::Endpoint::from_static("http://[::]:0")
                     .connect_with_connector(tower::service_fn(move |_| async move {
@@ -218,9 +180,17 @@ impl Client {
                 .await
                 .into_diagnostic()
                 .context("probing containerd version through the sidecar")?;
+
             Ok(client)
         })
+        .retry(
+            backon::ExponentialBuilder::default()
+                .without_max_delay()
+                .with_total_delay(Some(Duration::from_secs(30))),
+        )
+        .sleep(tokio::time::sleep)
         .await?;
+
         reporter.lifecycle(Lifecycle::EngineReady {
             runtime: runtime.into(),
             image_tag: crate::engine::docker::CONTAINERD_IMAGE_TAG.into(),
@@ -376,108 +346,5 @@ mod test_support {
             "serpentine-test",
         )
         .await
-    }
-}
-
-#[cfg(test)]
-mod startup_tests {
-    use super::*;
-
-    #[tokio::test(start_paused = true)]
-    async fn ready_sidecar_does_not_wait() -> miette::Result<()> {
-        let start = tokio::time::Instant::now();
-        let client = Client::wait_for_containerd_ready(|| std::future::ready(Ok(42))).await?;
-
-        assert_eq!(client, 42, "Should return the ready client");
-        assert_eq!(
-            start.elapsed(),
-            Duration::ZERO,
-            "Should not delay a ready sidecar"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn retries_connection_and_version_probe_failures() -> miette::Result<()> {
-        let mut attempts = [
-            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-                .into_diagnostic()
-                .context("connecting to containerd through the sidecar"),
-            Err(miette::miette!(
-                "probing containerd version through the sidecar"
-            )),
-            Ok(42),
-        ]
-        .into_iter();
-        let start = tokio::time::Instant::now();
-        let client = Client::wait_for_containerd_ready(|| {
-            std::future::ready(
-                attempts
-                    .next()
-                    .unwrap_or_else(|| Err(miette::miette!("Unexpected extra startup attempt"))),
-            )
-        })
-        .await?;
-
-        assert_eq!(client, 42, "Should return only after a successful probe");
-        assert_eq!(
-            start.elapsed(),
-            Duration::from_millis(200),
-            "Should retry both stages"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn persistent_failure_preserves_last_error() -> miette::Result<()> {
-        let start = tokio::time::Instant::now();
-        let result = Client::wait_for_containerd_ready(|| {
-            std::future::ready(Err::<(), _>(miette::miette!("sidecar unavailable")))
-        })
-        .await;
-        let Err(error) = result else {
-            miette::bail!("An unavailable sidecar must time out");
-        };
-        let diagnostic = format!("{error:?}");
-
-        assert_eq!(
-            start.elapsed(),
-            Duration::from_secs(30),
-            "Should honor the startup deadline"
-        );
-        assert!(
-            diagnostic.contains("within 30s"),
-            "Should report the deadline"
-        );
-        assert!(
-            diagnostic.contains("sidecar unavailable"),
-            "Should preserve the cause"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn stalled_attempt_respects_startup_deadline() -> miette::Result<()> {
-        let start = tokio::time::Instant::now();
-        let result =
-            Client::wait_for_containerd_ready(std::future::pending::<miette::Result<()>>).await;
-        let Err(error) = result else {
-            miette::bail!("A stalled handshake or probe must time out");
-        };
-
-        assert_eq!(
-            start.elapsed(),
-            Duration::from_secs(30),
-            "Should bound in-flight attempts too"
-        );
-        assert!(
-            format!("{error:?}").contains("did not complete"),
-            "Should report the stalled attempt"
-        );
-
-        Ok(())
     }
 }

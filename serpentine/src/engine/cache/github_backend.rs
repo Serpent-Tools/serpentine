@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Poll, ready};
 use std::time::Duration;
 
+use backon::Retryable;
 use base64::Engine;
 use futures_util::future::BoxFuture;
 use futures_util::{FutureExt, TryFutureExt, TryStreamExt};
@@ -18,6 +19,7 @@ use miette::{Context, IntoDiagnostic};
 use nohash::IntSet;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWrite;
+use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
 
 use crate::engine::cache::{CacheBackend, CacheHash};
@@ -220,14 +222,6 @@ impl GithubActionsBackend {
             .await
             .ok()?;
 
-        if !response.status().is_success() {
-            log::error!("Got status: {}", response.status());
-            if let Ok(body) = response.text().await {
-                log::error!("{body}");
-            }
-            return None;
-        }
-
         let response: GetCacheEntryDownloadURLResponse = response
             .json()
             .await
@@ -281,15 +275,6 @@ impl GithubActionsBackend {
             .handle_error()
             .await
             .into_diagnostic()?;
-
-        if !response.status().is_success() {
-            log::error!("Got status: {}", response.status());
-            if let Ok(body) = response.text().await {
-                log::error!("{body}");
-                return Err(miette::miette!("{body}"));
-            }
-            return Err(miette::miette!("Unknown error"));
-        }
 
         let response: CreateCacheEntryResponse = response
             .json()
@@ -511,20 +496,28 @@ impl AzureBlobWriter {
             return;
         }
 
-        let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(BLOCK_SIZE));
+        let buffer: Bytes =
+            std::mem::replace(&mut self.buffer, Vec::with_capacity(BLOCK_SIZE)).into();
         self.bytes_written = self.bytes_written.saturating_add(buffer.len() as u64);
 
         let block_id = self.get_next_block_id();
-        let upload_future = self
-            .github_client
-            .azure_client
-            .put(&*self.url)
-            .query(&[("comp", "block")])
-            .query(&[("blockid", block_id)])
-            .body(buffer)
-            .send()
-            .handle_error()
-            .map_ok(|_response| ());
+        let url = self.url.clone();
+        let github_client = self.github_client.clone();
+        let upload_future = (move || {
+            github_client
+                .azure_client
+                .put(&*url)
+                .query(&[("comp", "block")])
+                .query(&[("blockid", block_id.clone())])
+                .body(buffer.clone())
+                .send()
+                .handle_error()
+                .map_ok(|_response| ())
+        })
+        .retry(backon::ExponentialBuilder::default())
+        .sleep(tokio::time::sleep)
+        .notify(|err, delay| log::error!("Upload failed ({err}), retrying in {delay:?}"));
+
         self.upload_futures.spawn(upload_future);
     }
 }
