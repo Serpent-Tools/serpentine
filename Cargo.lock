@@ -243,6 +243,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+ "tokio",
+]
+
+[[package]]
+name = "backon-macros"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "994198d9b6e7ba9a369fad5b4023a837e5c80d5e73b0326bd3c11d8ba2564c98"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3478,6 +3499,8 @@ dependencies = [
 name = "serpentine"
 version = "1.0.3"
 dependencies = [
+ "backon",
+ "backon-macros",
  "base64 0.23.1",
  "blake3",
  "bolero",

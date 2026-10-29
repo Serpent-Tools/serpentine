@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::process::Command;
 
+use backon::Retryable;
+use backon_macros::backon;
 use bollard::API_DEFAULT_VERSION;
 use bollard::query_parameters::{RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder};
 use futures_util::StreamExt;
@@ -319,10 +321,9 @@ async fn spin_up_containerd(
 /// Immediately after `start_container` returns, the port binding may still be empty for a brief
 /// window before docker reconciles it. Retrying avoids racing on that gap.
 async fn wait_for_host_port(docker: &bollard::Docker) -> miette::Result<u16> {
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(30);
     let port_key = format!("{}/tcp", serpentine_internal::sidecar::PORT);
-    loop {
+
+    (async || -> miette::Result<u16> {
         let container_details = docker
             .inspect_container(
                 CONTAINER_NAME,
@@ -342,22 +343,26 @@ async fn wait_for_host_port(docker: &bollard::Docker) -> miette::Result<u16> {
             .and_then(|binding| binding.host_port.as_ref());
 
         if let Some(host_port) = host_port {
-            return host_port
+            host_port
                 .parse()
                 .into_diagnostic()
-                .with_context(|| format!("docker reported host port {host_port:?}"));
+                .with_context(|| format!("docker reported host port {host_port:?}"))
+        } else {
+            Err(miette::diagnostic!("Docker didnt publish port within timeout").into())
         }
-
-        if start.elapsed() >= timeout {
-            return Err(miette::miette!(
-                "timed out after {timeout:?} waiting for docker to bind a host port for {CONTAINER_NAME}"
-            ));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    })
+    .retry(
+        backon::ConstantBuilder::default().with_max_times(30), // with default delay of 1s = 30s
+    )
+    .sleep(tokio::time::sleep)
+    .await
 }
 
 /// Ensure the containerd data volume exists
+#[backon(
+        backoff = backon::ExponentialBuilder::default,
+        sleep = tokio::time::sleep,
+    )]
 async fn create_containerd_volume(docker: &bollard::Docker) -> miette::Result<&'static str> {
     if docker.inspect_volume(CONTAINER_VOLUME).await.is_err() {
         log::info!("Creating volume {CONTAINER_VOLUME}");
@@ -381,6 +386,10 @@ async fn create_containerd_volume(docker: &bollard::Docker) -> miette::Result<&'
 }
 
 /// Ensure the `containerd` image is downloaded
+#[backon(
+        backoff = backon::ExponentialBuilder::default,
+        sleep = tokio::time::sleep,
+    )]
 async fn ensure_containerd_image(
     docker: &bollard::Docker,
     reporter: &Reporter,

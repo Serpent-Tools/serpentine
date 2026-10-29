@@ -4,9 +4,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use backon::Retryable;
+use backon_macros::backon;
 use containerd_client::services::v1 as containerd_services;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use miette::{Context, IntoDiagnostic};
+use oci_client::errors::OciDistributionError;
 use tokio::io::AsyncWriteExt;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::ReaderStream;
@@ -249,12 +252,21 @@ impl super::Client {
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
 
         log::debug!("Pulling image {image} manifest");
-        let (manifest, manifest_digest, config) = self
-            .oci
-            .pull_manifest_and_config(&image, &auth)
-            .await
-            .into_diagnostic()
-            .with_context(|| format!("pulling the manifest of {image}"))?;
+        let (manifest, manifest_digest, config) =
+            (|| self.oci.pull_manifest_and_config(&image, &auth))
+                .retry(backon::ExponentialBuilder::default())
+                .sleep(tokio::time::sleep)
+                .when(|err| {
+                    !matches!(
+                        err,
+                        OciDistributionError::ImageManifestNotFoundError(..)
+                            | OciDistributionError::AuthenticationFailure(..)
+                            | OciDistributionError::UnauthorizedError { .. }
+                    )
+                })
+                .await
+                .into_diagnostic()
+                .with_context(|| format!("pulling the manifest of {image}"))?;
         let pull_guard = acquire_file_lock(&manifest_digest).await?;
         let lease = self.new_lease().await?;
 
@@ -311,14 +323,14 @@ impl super::Client {
                 log::debug!("Snapshot {snapshot_name} already exists.");
             } else {
                 self.pull_layer(
-                    FullLayerManifest {
+                    &FullLayerManifest {
                         image: image.clone(),
                         layer,
                     },
                     lease,
-                    parent,
+                    &parent,
                     &task,
-                    snapshot_name.clone(),
+                    &snapshot_name,
                 )
                 .await?;
             }
@@ -498,11 +510,11 @@ impl super::Client {
                 }
 
                 self.pull_layer(
-                    manifest,
+                    &manifest,
                     &lease,
-                    header.parent.unwrap_or_default(),
+                    &header.parent.unwrap_or_default(),
                     &task,
-                    snapshot.to_owned(),
+                    snapshot,
                 )
                 .await?;
             }
@@ -587,15 +599,19 @@ impl super::Client {
     }
 
     /// Pull the given layer and convert into a snapshot under the given name
+    #[backon(
+        backoff = backon::ExponentialBuilder::default,
+        sleep = tokio::time::sleep
+    )]
     async fn pull_layer(
         &self,
-        manifest: FullLayerManifest,
+        manifest: &FullLayerManifest,
         lease: &str,
-        parent: String,
+        parent: &str,
         task: &TaskHandle,
-        snapshot_name: String,
+        snapshot_name: &str,
     ) -> Result<(), miette::Error> {
-        self.fetch_layer(&manifest, lease, task.id()).await?;
+        self.fetch_layer(manifest, lease, task.id()).await?;
         let key = uuid::Uuid::new_v4().to_string();
         log::debug!("Applying layer {} to {key}", manifest.layer.digest);
         let mounts = self
@@ -606,7 +622,7 @@ impl super::Client {
                     key: key.clone(),
                     snapshotter: SNAPSHOTTER.to_owned(),
                     labels: HashMap::new(),
-                    parent,
+                    parent: parent.to_owned(),
                 }
                 .with_lease(lease),
             )
@@ -645,7 +661,7 @@ impl super::Client {
             .commit(
                 containerd_services::snapshots::CommitSnapshotRequest {
                     snapshotter: SNAPSHOTTER.to_owned(),
-                    name: snapshot_name,
+                    name: snapshot_name.to_owned(),
                     key,
                     labels,
                 }

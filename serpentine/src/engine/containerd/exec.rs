@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
 
+use backon::Retryable;
 use base64::Engine;
 use containerd_client::services::v1 as containerd_services;
 use miette::{Context, Diagnostic, IntoDiagnostic};
@@ -30,17 +30,6 @@ struct CommandFailed {
     command: String,
     /// The stdout/stderr of the command
     output: String,
-}
-
-/// A healthcheck didnt pass in time
-#[derive(Debug, Error, Diagnostic)]
-#[error("Healthcheck {check:?} did not pass in {timeout:?}")]
-#[diagnostic(code(healthcheck_timeout))]
-struct HealthcheckTimeout {
-    /// Which healthcheck didnt pass
-    check: String,
-    /// How long we waited for it to pass
-    timeout: Duration,
 }
 
 /// Attempted to capture non-utf8 output
@@ -113,7 +102,7 @@ impl super::Client {
             Ok(concrete_topology)
         } else {
             log::debug!("Creating new network for topology {topology:?}");
-            let concrete_topology = self.sidecar.create_network(topology.clone()).await?;
+            let concrete_topology = self.sidecar.create_network(&topology).await?;
             self.register_dangling(super::DanglingResource::Network(concrete_topology.clone()));
             Ok(concrete_topology)
         }
@@ -321,16 +310,7 @@ impl super::Client {
             .reporter
             .start_task(TaskKind::Status, format!("[healthcheck] {command}"));
 
-        let start_time = std::time::Instant::now();
-        loop {
-            if start_time.elapsed() > timeout {
-                return Err(HealthcheckTimeout {
-                    check: command.to_string(),
-                    timeout,
-                }
-                .into());
-            }
-
+        (async || {
             let exec_id = uuid::Uuid::new_v4().to_string();
 
             let (stdout_path, stdout) = self.sidecar.fifo_pipe().await?;
@@ -388,10 +368,22 @@ impl super::Client {
 
             log::debug!("Healthcheck command exited with code {exit_code}");
             if exit_code == 0 {
-                return Ok(());
+                Ok(())
+            } else {
+                Err(miette::diagnostic!(
+                    "Healthceck {command:?} did not return exit code 0 within timeout ({timeout:?})"
+                )
+                .into())
             }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
+        })
+        .retry(
+            backon::ExponentialBuilder::default()
+                .without_max_times()
+                .with_total_delay(Some(timeout))
+                .with_factor(1.0),
+        )
+        .sleep(tokio::time::sleep)
+        .await
     }
 
     /// Create a container according to the given container state and the given command and returns
