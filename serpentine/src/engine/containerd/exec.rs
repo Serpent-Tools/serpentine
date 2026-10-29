@@ -696,24 +696,6 @@ impl super::Client {
 
         drop(handle.exec_task);
 
-        let commit = self
-            .containerd
-            .snapshot()
-            .commit(containerd_services::snapshots::CommitSnapshotRequest {
-                snapshotter: SNAPSHOTTER.to_owned(),
-                name: snapshot_name.clone(),
-                key: handle.snapshot.clone(),
-                labels: HashMap::from([(CONTAINERD_GC_ROOT_LABEL.to_owned(), "1".to_owned())]),
-            })
-            .await;
-        if let Err(status) = commit
-            && !Self::is_already_exists(&status)
-        {
-            return Err(status)
-                .into_diagnostic()
-                .with_context(|| format!("committing snapshot {snapshot_name}"));
-        }
-
         let stdout = handle
             .stdout
             .await
@@ -756,6 +738,24 @@ impl super::Client {
             } else {
                 return Err(internal("Expected a service".to_owned()));
             }
+        }
+
+        let commit = self
+            .containerd
+            .snapshot()
+            .commit(containerd_services::snapshots::CommitSnapshotRequest {
+                snapshotter: SNAPSHOTTER.to_owned(),
+                name: snapshot_name.clone(),
+                key: handle.snapshot.clone(),
+                labels: HashMap::from([(CONTAINERD_GC_ROOT_LABEL.to_owned(), "1".to_owned())]),
+            })
+            .await;
+        if let Err(status) = commit
+            && !Self::is_already_exists(&status)
+        {
+            return Err(status)
+                .into_diagnostic()
+                .with_context(|| format!("committing snapshot {snapshot_name}"));
         }
 
         let mut container = handle.node.state;
