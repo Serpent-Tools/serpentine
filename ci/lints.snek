@@ -4,7 +4,7 @@ import "./lib.snek" as lib;
 // cargo-hack resolves features per package, so warm with hack itself instead of a unified cook.
 clippy_hack = lib::rust
     > Exec("rustup component add clippy")
-    > rust::WithBinstall("cargo-hack@=0.6.45", "cargo-hack")
+    > rust::WithBinstall("cargo-hack@=0.6.46", "cargo-hack")
     > rust::WithChef(lib::source_code, "cargo hack --locked --all clippy --all-targets -- -Dwarnings");
 
 serpentine_hack = lib::rust
@@ -12,7 +12,7 @@ serpentine_hack = lib::rust
     > Env("CC_x86_64_pc_windows_gnu", "x86_64-w64-mingw32-gcc-posix")
     > Exec("rustup target add x86_64-pc-windows-gnu")
     > Exec("rustup component add clippy")
-    > rust::WithBinstall("cargo-hack@=0.6.45", "cargo-hack")
+    > rust::WithBinstall("cargo-hack@=0.6.46", "cargo-hack")
     > rust::WithChef(lib::source_code, Join("cargo hack",
         " --locked -p serpentine clippy --all-targets",
         " --feature-powerset --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu",
@@ -26,7 +26,7 @@ fmt = rust::FmtCheck(lib::source_code, rust::nightly);
 
 export spelling = lib::debian 
     > WorkingDir("/app")
-    > rust::WithBinstall("typos-cli@=1.51.1", "typos")
+    > rust::WithBinstall("typos-cli@=1.52.0", "typos")
     > With(lib::source_code, ".")
     > Exec("typos");
 
@@ -35,7 +35,7 @@ deny = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
-trivy = Image("aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c") 
+trivy = Image("aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb") 
     > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
     > With(lib::container_image, "containerd.tar")
     > Exec("trivy image --input containerd.tar --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml");
