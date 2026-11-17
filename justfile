@@ -27,6 +27,7 @@ build_container:
 
 clean:
     cargo run -p serpentine -- clean || exit 0
+    cargo clean
 
 sidecar_logs:
     docker logs serpent-tools.containerd
