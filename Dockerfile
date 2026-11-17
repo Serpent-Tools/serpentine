@@ -1,4 +1,4 @@
-FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a as download
+FROM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf as download
 RUN apk add tar curl
 
 ARG TINI_VERSION=v0.19.0
@@ -12,8 +12,8 @@ FROM docker.io/library/golang:1.27.3-bookworm@sha256:05237276236793ebedaf0b87dab
 FROM go_base AS cni
 
 # renovate: datasource=github-tags depName=containernetworking/plugins
-ARG CNI_VERSION=v1.9.1
-ARG CNI_COMMIT=adc3e6b5b581638afbd194cf2e9319ecbb0151a1
+ARG CNI_VERSION=v1.10.0
+ARG CNI_COMMIT=4c10b2c33ccb476edab5dcc4bf58c090177d6ca3
 
 RUN git clone https://github.com/containernetworking/plugins.git /src/cni-plugins && \
     git -C /src/cni-plugins checkout ${CNI_COMMIT}
@@ -114,7 +114,7 @@ RUN cargo about generate -c about.toml -m sidecar/Cargo.toml \
 COPY . .
 RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
 
-FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 RUN apk add --no-cache iptables
 # Alpine ships no license files of its own, so record what is installed and where its source is.
 RUN mkdir -p  /usr/share/licenses/ && \
