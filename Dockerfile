@@ -20,7 +20,6 @@ RUN git clone https://github.com/containernetworking/plugins.git /src/cni-plugin
 WORKDIR /src/cni-plugins
 
 ENV CGO_ENABLED=0
-ENV GOFLAGS="-mod=vendor"
 ENV LDFLAGS="-w -s -extldflags -static -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=${CNI_VERSION}"
 
 RUN go build -o /cni/loopback -ldflags "$LDFLAGS" ./plugins/main/loopback && \
