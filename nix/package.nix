@@ -2,6 +2,9 @@
   lib,
   rustPlatform,
   protobuf,
+  zstd,
+  aws-lc,
+  pkg-config,
 }:
 let
   cargoToml = lib.importTOML ../serpentine/Cargo.toml;
@@ -13,16 +16,21 @@ rustPlatform.buildRustPackage {
   src = ../.;
   cargoLock.lockFile = ../Cargo.lock;
 
-  # The flake packages serpentine, not the workspace's other binaries.
   cargoBuildFlags = [
     "--package"
     "serpentine"
   ];
 
-  # The test suite drives a docker daemon.
   doCheck = false;
 
-  nativeBuildInputs = [ protobuf ];
+  nativeBuildInputs = [
+    protobuf
+    pkg-config
+  ];
+  buildInputs = [
+    zstd
+    aws-lc
+  ];
 
   meta = {
     inherit (cargoToml.package) description homepage;
