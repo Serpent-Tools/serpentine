@@ -12,6 +12,16 @@ Thanks for showing interest in contributing to serpentine!
 * Run linting and tests locally, this is strictly optional as they can be a bit slow, but running a subset of them is recommended.
 * Make a pull request and await review / CI.
 
+### Labels
+* Do not claim issues marked with `maintainer-only`
+* If an issue is marked `Status-Needs Discussion`, it (as the name suggests) needs design or implementation discussion, and any proposed implementation should be run by maintainers before being implemented.
+
+### AI-Code
+Natrix is not against AI-code, but there are rules you must follow:
+* We are not interested in llm "drive-by" prs, there are better things to throw your tokens at than github stats. 
+* We expect you to take full responsibility for any code you submit.
+* Any commit containing AI code must be marked as such using an appropriate `Co-authored-by`/`Assisted-by` trailer in the commit message.
+
 ## Project Structure
 
 Serpentine largely consists of 3 crates, the `sidecar` is meant to be run in a Linux Docker container, `serpentine` is the main binary and contains most of the logic, `serpentine_internal` contains shared code, mostly related to the sidecar and hosts communication.
