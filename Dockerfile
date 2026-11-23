@@ -7,7 +7,7 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION
     chmod +x /tini
 RUN curl -fsSL "https://raw.githubusercontent.com/krallin/tini/${TINI_VERSION}/LICENSE" -o /tini.LICENSE
 
-FROM docker.io/library/golang:1.27.3-bookworm@sha256:05237276236793ebedaf0b87dab86add9ec9adc66ebef2dbc3107c18254cde1c AS go_base
+FROM docker.io/library/golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS go_base
 
 FROM go_base AS cni
 
@@ -36,8 +36,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # renovate: datasource=github-tags depName=opencontainers/runc
-ARG RUNC_VERSION=v1.5.2
-ARG RUNC_COMMIT=29dd3dc2b13b4123162e5fe132504bb4b15569f1
+ARG RUNC_VERSION=v1.5.3
+ARG RUNC_COMMIT=46365c62967c76a765a5e347f48f0c7b3b571fe9
 
 RUN git clone https://github.com/opencontainers/runc.git /src/runc && \
     git -C /src/runc checkout ${RUNC_COMMIT}
@@ -90,7 +90,7 @@ RUN make BUILDTAGS="$BUILDTAGS" STATIC=1 bin/containerd-shim-runc-v2
 RUN strip --strip-all bin/containerd
 RUN strip --strip-all bin/containerd-shim-runc-v2
 
-FROM docker.io/library/rust:1.99.1-bookworm@sha256:e9da6f6c3ed5095fd5d33bf7cdf309830a178a8147888f1b2f76d5769bd9306c as rust_base
+FROM docker.io/library/rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea as rust_base
 RUN cargo install cargo-chef@=0.1.78 --locked
 # cargo-about puts its binary behind `cli`; without it the install is a no-op that still exits 0.
 RUN cargo install cargo-about@=0.9.3 --locked --features cli
