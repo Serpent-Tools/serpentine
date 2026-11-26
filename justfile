@@ -1,4 +1,4 @@
-check: test (run "PR_BLOCKERS")
+check: test (run "FULL")
 
 run entry_point="DEFAULT": build_container
     cargo run -p serpentine -- run --entry-point {{entry_point}}
@@ -20,10 +20,7 @@ bench_compare name filter="": build_container
 
 build_container:
     docker container rm -f serpent-tools.containerd
-    rm -f ./target/containerd.tar
-    mkdir -p ./target
     docker build -t ghcr.io/serpent-tools/containerd:dev . --pull=false
-    docker image save ghcr.io/serpent-tools/containerd:dev -o ./target/containerd.tar
 
 clean:
     cargo run -p serpentine -- clean || exit 0

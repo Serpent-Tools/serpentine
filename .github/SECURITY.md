@@ -31,4 +31,4 @@ This is a small project, so expect a reply in days rather than hours. You will g
 
 ## Dependencies
 
-Dependency advisories are tracked with `cargo-deny` and `trivy`, and updated via renovate. If you have found a known-vulnerable dependency rather than a flaw in serpentine itself, a normal public issue is fine, no need for the private channel.
+Dependency advisories are tracked with `cargo-deny`, and dependencies are updated via renovate. If you have found a known-vulnerable dependency rather than a flaw in serpentine itself, a normal public issue is fine, no need for the private channel.

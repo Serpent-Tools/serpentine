@@ -5,9 +5,6 @@ import "./ci/tests.snek" as tests;
 export DEFAULT = All(tests::simple, lints::light_lints);
 export FULL = All(lints::full_lints, tests::fuzz, lints::security);
 
-export PR_BLOCKERS = lints::full_lints;
-export PR_HINTS = All(lints::security, tests::fuzz);
-
 export LINTS = lints::full_lints;
 export SECURITY = lints::security;
 export FUZZ = tests::fuzz;

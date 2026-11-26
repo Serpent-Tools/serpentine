@@ -8,5 +8,3 @@ export rust = rust::nightly
 
 export source_code = FromHost(".");
 
-export container_image = FromHost("./target/containerd.tar");
-
