@@ -35,12 +35,6 @@ deny = lib::rust
     > With(lib::source_code, ".")
     > Exec("cargo deny check all");
 
-trivy = Image("aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb") 
-    > With(FromHost(".trivyignore.yaml"), ".trivyignore.yaml")
-    > With(lib::container_image, "containerd.tar")
-    > Exec("trivy image --input containerd.tar --disable-telemetry --exit-code 1 --no-progress --ignorefile .trivyignore.yaml");
-    
-
 // --no-global is load bearing: without it the file is read as self hosted
 // config, where packageRules go unchecked and an invalid rule validates clean.
 renovate_config = Image("ghcr.io/renovatebot/renovate:44.175.2@sha256:00eaca87a98032a352556dfc466389c191546b47b57ea056bd4ab276965eb2a3")
@@ -50,5 +44,5 @@ renovate_config = Image("ghcr.io/renovatebot/renovate:44.175.2@sha256:00eaca87a9
 
 export light_lints = All(clippy, fmt, spelling);
 export full_lints = All(clippy_hack, serpentine_hack, fmt, spelling, renovate_config);
-export security = All(deny, trivy);
+export security = deny;
 

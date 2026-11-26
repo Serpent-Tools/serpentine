@@ -51,7 +51,7 @@ Serpentine's integration tests and linting can be run locally:
 * `just run` — the quick tests plus the light lint set.
 * `just run FULL` — the full lint set, the fuzzers and the security checks.
 * `just run LINTS` — the full lint set on its own.
-* `just run SECURITY` — `cargo-deny` plus a `trivy` scan of the sidecar image.
+* `just run SECURITY` — `cargo-deny`.
 * `just run FUZZ` — smoke-fuzz every [`bolero`](https://github.com/camshaft/bolero) property test under libfuzzer for a bounded time.
 * `just check` — `just test` followed by `just run FULL`, the closest local equivalent to CI.
 * `just sidecar_logs` — dump the containerd sidecar's logs, useful when an integration test fails.

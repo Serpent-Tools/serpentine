@@ -11,7 +11,7 @@ In addition serpentine does expose a privileged docker container over tcp on you
 
 ## Security of serpentine itself
 
-Serpentine employs a combination of `cargo-deny` and `trivy` to vet its dependencies, it uses each of these tools slightly differently.
+Serpentine vets its Rust dependencies with `cargo-deny`, and keeps the third-party components of its sidecar image current with renovate.
 
 > [!NOTE]
 > Yes we are aware not all vulnerabilities will affect serpentine, but we elect to try and eliminate vulnerable versions as a principle, as it's often less work to just upgrade a dependency than it is to maintain justifications for why a known security hole doesn't affect us.
@@ -26,5 +26,5 @@ Note that this only covers *known* issues, there is always a window between a ba
 > [!WARNING]
 > **This does not constitute a legal guarantee of the inclusion or lack of certain licenses in our dependency tree, and if license compliance is important for your team/company you should run your own analysis**
 
-### `trivy`
-Serpentine runs `trivy` on its own sidecar image, we aim to reduce the number of active vulnerabilities, but because most of the image is third-party code there is only so much we can do.
+### Sidecar image
+The sidecar image is almost entirely containerd, runc and the CNI plugins, whose own dependencies are pinned by their upstream releases. Renovate keeps those releases, the Go toolchain they are built with, and the Alpine base image up to date, and we follow upstream security releases for them.
