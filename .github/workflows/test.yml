@@ -14,7 +14,15 @@ env:
   BUILD_CACHE: ghcr.io/serpent-tools/containerd-buildcache:main
 jobs:
   build-docker:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-latest
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: write
@@ -33,13 +41,13 @@ jobs:
           context: .
           load: true
           tags: ${{ env.CONTAINERD_IMAGE }}:dev
-          cache-from: type=registry,ref=${{ env.BUILD_CACHE }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=registry,ref={0},mode=max', env.BUILD_CACHE) || '' }}
+          cache-from: type=registry,ref=${{ env.BUILD_CACHE }}-${{ matrix.arch }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=registry,ref={0}-{1},mode=max', env.BUILD_CACHE, matrix.arch) || '' }}
       - name: Export Docker image
         run: docker save "$CONTAINERD_IMAGE:dev" | zstd -T0 -3 -o /tmp/containerd-dev.tar.zst
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: containerd-image
+          name: containerd-image-${{ matrix.arch }}
           path: /tmp/containerd-dev.tar.zst
           retention-days: 1
 
@@ -51,12 +59,19 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
+            arch: amd64
+            runtime: docker
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
             runtime: docker
           - os: ubuntu-latest
             platform: linux
+            arch: amd64
             runtime: podman
           - os: windows-latest
             platform: windows
+            arch: amd64
             runtime: docker
     runs-on: ${{ matrix.os }}
     steps:
@@ -66,7 +81,7 @@ jobs:
           toolchain: 1.100.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: tests-${{ matrix.platform }}
+          shared-key: tests-${{ matrix.platform }}-${{ matrix.arch }}
           cache-on-failure: true
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
@@ -135,7 +150,7 @@ jobs:
       - name: Download Docker image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: containerd-image
+          name: containerd-image-${{ matrix.arch }}
           path: ${{ runner.temp }}
 
       - name: Load Docker image (Linux)
@@ -265,7 +280,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: containerd-image
+          name: containerd-image-amd64
           path: /tmp
       - name: Load Docker image
         run: |
@@ -312,7 +327,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: containerd-image
+          name: containerd-image-amd64
           path: /tmp
       # trivy scans the image tarball, so it has to land on disk as well as be loaded.
       - name: Load Docker image

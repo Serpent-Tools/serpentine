@@ -2,8 +2,14 @@ FROM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e08478660
 RUN apk add tar curl
 
 ARG TINI_VERSION=v0.19.0
-RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static" -o /tini && \
-    echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum -c - && \
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+        amd64) sha=c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee ;; \
+        arm64) sha=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9 ;; \
+        *) echo "no tini checksum for '$TARGETARCH'" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static-${TARGETARCH}" -o /tini && \
+    echo "$sha  /tini" | sha256sum -c - && \
     chmod +x /tini
 RUN curl -fsSL "https://raw.githubusercontent.com/krallin/tini/${TINI_VERSION}/LICENSE" -o /tini.LICENSE
 
@@ -104,14 +110,15 @@ FROM rust_base as builder
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release -p sidecar --target x86_64-unknown-linux-gnu --recipe-path recipe.json
+RUN cargo chef cook --release -p sidecar --target "$(rustc --print host-tuple)" --recipe-path recipe.json
 
 COPY about.toml about.hbs .
 RUN cargo about generate -c about.toml -m sidecar/Cargo.toml \
-    --target x86_64-unknown-linux-gnu about.hbs -o /THIRD-PARTY.md
+    --target "$(rustc --print host-tuple)" about.hbs -o /THIRD-PARTY.md
 
 COPY . .
-RUN cargo build --release -p sidecar --target x86_64-unknown-linux-gnu
+RUN cargo build --release -p sidecar --target "$(rustc --print host-tuple)" && \
+    cp "target/$(rustc --print host-tuple)/release/sidecar" /sidecar
 
 FROM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 RUN apk add --no-cache iptables
@@ -131,7 +138,7 @@ COPY --from=cni /src/cni-plugins/LICENSE /usr/share/licenses/cni-plugins/
 COPY --from=download /tini.LICENSE /usr/share/licenses/tini/LICENSE
 
 COPY --from=builder /THIRD-PARTY.md /usr/share/licenses/rust-crates/
-COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/sidecar /bin
+COPY --from=builder /sidecar /bin
 
 EXPOSE 8000
 ENTRYPOINT ["/bin/tini", "--", "/bin/sidecar"]
