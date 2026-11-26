@@ -125,16 +125,14 @@ struct Run {
 /// How serpentine renders a run's progress.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum OutputKind {
-    /// Pick from the environment: `github` under GitHub Actions at `--jobs 1`, `plain` under any
-    /// other CI or when stdout is not a terminal, and `tui` otherwise.
+    /// Pick from the environment: `github` under GitHub Actions, `plain` under any other CI or
+    /// when stdout is not a terminal, and `tui` otherwise.
     Auto,
     /// The live progress view.
     Tui,
     /// Log lines and captured command output on stdout.
     Plain,
-    /// Stdout, with each command folded into a GitHub Actions log group.
-    ///
-    /// Requires `--jobs 1`.
+    /// Command output and warnings on stdout, plus a GitHub Actions step summary.
     Github,
     /// Render nothing; the run still writes its log file.
     None,
@@ -211,13 +209,6 @@ impl OutputMode {
 impl Run {
     /// Reject the flag combinations clap cannot express on its own.
     fn validate(&self) -> Result<(), clap::Error> {
-        if self.output == OutputKind::Github && self.jobs != 1 {
-            return Err(Cli::command().error(
-                clap::error::ErrorKind::ArgumentConflict,
-                "--output github renders one command at a time, so it requires --jobs 1",
-            ));
-        }
-
         if self.cache_folder.is_some()
             && !matches!(
                 self.cache_backend,
@@ -234,9 +225,9 @@ impl Run {
     }
 
     /// The consumer suggested by the environment serpentine is running under.
-    fn detect_output(&self) -> fn(Receiver<events::SerpentineEvent>) {
+    fn detect_output() -> fn(Receiver<events::SerpentineEvent>) {
         let ci = ci_info::get();
-        if ci.vendor == Some(ci_info::types::Vendor::GitHubActions) && self.jobs == 1 {
+        if ci.vendor == Some(ci_info::types::Vendor::GitHubActions) {
             github_reporter::start
         } else if ci.ci || !std::io::stdout().is_terminal() {
             plain::start
@@ -248,7 +239,7 @@ impl Run {
     /// Get the output mode to use
     fn get_output_mode(&self) -> OutputMode {
         match self.output {
-            OutputKind::Auto => OutputMode::spawn(self.detect_output()),
+            OutputKind::Auto => OutputMode::spawn(Self::detect_output()),
             OutputKind::Tui => OutputMode::spawn(tui::start_tui),
             OutputKind::Plain => OutputMode::spawn(plain::start),
             OutputKind::Github => OutputMode::spawn(github_reporter::start),

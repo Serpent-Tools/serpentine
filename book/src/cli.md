@@ -38,10 +38,10 @@ Selects how serpentine renders a run:
 | `auto` | Picks from the environment, as described below. |
 | `tui` | The fancy live progress view. |
 | `plain` | Log lines and captured command output straight to stdout. |
-| `github` | Stdout, with each command folded into a collapsible [github actions log group](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands). Requires `--jobs 1`, serpentine errors out otherwise. |
+| `github` | Command output and warnings straight to stdout, plus a [job summary](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#adding-a-job-summary) of the run. |
 | `none` | Renders nothing, the run still writes its log file. |
 
-Under `auto` serpentine uses `github` when it detects github actions with `--jobs 1`, `plain` under any other CI runner or when stdout is not an interactive terminal, and `tui` otherwise. This means CI runners generally need no flag at all, though setting it explicitly is harmless.
+Under `auto` serpentine uses `github` when it detects github actions, `plain` under any other CI runner or when stdout is not an interactive terminal, and `tui` otherwise. This means CI runners generally need no flag at all, though setting it explicitly is harmless.
 
 ### `--cache-folder`
 * default: platform specific, printed to stdout at the start of a run.
