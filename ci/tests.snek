@@ -7,10 +7,14 @@ export simple = lib::rust
     > rust::WithChef(lib::source_code, "cargo nextest run");
 
 // `cargo bolero list` and `test` use separate build trees, so the warmup builds both.
+// cargo-bolero defaults `--target` to the triple it was itself built for, and the binstalled
+// binary is a musl build, so every invocation pins the toolchain's host triple.
 export fuzz = lib::rust
     > Exec("apt-get update && apt-get install -y jq parallel")
     > rust::WithBinstall("cargo-bolero@=0.13.5", "cargo-bolero")
-    > rust::Chef(lib::source_code, "cargo bolero list || true; cargo bolero test --workspace -s NONE -r 1 cache_warmup || true")
+    > rust::Chef(lib::source_code, "cargo bolero list --target $(rustc --print host-tuple) || true; cargo bolero test --workspace --target $(rustc --print host-tuple) -s NONE -r 1 cache_warmup || true")
+    // `sh` has no pipefail, so the target list goes through a file to make a failed or empty
+    // listing fail the step.
     // Each job's output is held back until it fails, and the first failure kills the rest, so the
     // failing input is the only thing on stderr rather than being buried under sibling progress.
-    > Exec("cargo bolero list | jq -r '[.package, .test] | @tsv' | parallel --will-cite --halt now,fail=1 --colsep '\t' 'cargo bolero test -p {1} -s NONE -T 30s {2} >/tmp/fuzz.{#} 2>&1 || (cat /tmp/fuzz.{#} >&2; exit 1)'");
+    > Exec("cargo bolero list --target $(rustc --print host-tuple) >/tmp/fuzz_targets && test -s /tmp/fuzz_targets && jq -r '[.package, .test] | @tsv' /tmp/fuzz_targets | parallel --will-cite --halt now,fail=1 --colsep '\t' 'cargo bolero test -p {1} --target $(rustc --print host-tuple) -s NONE -T 30s {2} >/tmp/fuzz.{#} 2>&1 || (cat /tmp/fuzz.{#} >&2; exit 1)'");
