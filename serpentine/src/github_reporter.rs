@@ -1,4 +1,4 @@
-//! A reporter backend for github that, assuming `jobs=1`, produces easier to follow logs.
+//! A reporter backend for GitHub Actions, printing command output and writing a step summary.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -9,16 +9,12 @@ use crate::events::{Lifecycle, NodeTransition, SerpentineEvent, TaskKind, TaskUp
 /// The environment variable holding the file a step's summary is appended to.
 const STEP_SUMMARY: &str = "GITHUB_STEP_SUMMARY";
 
-/// Drain events to stdout, folding each command into a collapsible log group.
-///
-/// Only [`TaskKind::Exec`] is grouped, since layer moves and pulls run alongside it however
-/// `--jobs` is set, and a group would swallow whatever they printed.
+/// Drain events to stdout, then write the run summary to the step summary file.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Receiver is deliberately owned by the consumer thread"
 )]
 pub fn start(events: Receiver<SerpentineEvent>) {
-    let mut open_group = None;
     let mut summary = Summary::default();
 
     while let Ok(event) = events.recv() {
@@ -27,27 +23,13 @@ pub fn start(events: Receiver<SerpentineEvent>) {
             SerpentineEvent::Lifecycle(lifecycle) => summary.apply_lifecycle(lifecycle),
             SerpentineEvent::Node(transition) => summary.apply_node(transition),
             SerpentineEvent::TaskStarted {
-                id,
-                kind: TaskKind::Exec,
-                label,
-            } => {
-                println!("::group::{}", escape(&label));
-                open_group = Some(id);
-            }
-            SerpentineEvent::TaskStarted {
                 kind: TaskKind::Pull,
                 ..
             } => summary.pulled = summary.pulled.saturating_add(1),
-            SerpentineEvent::TaskFinished { id } if open_group == Some(id) => {
-                println!("::endgroup::");
-                open_group = None;
-            }
             SerpentineEvent::Task {
                 update: TaskUpdate::Line(line),
                 ..
             } => println!("{line}"),
-            // Groups are meant to be the command and nothing else, but a run that goes wrong
-            // explains itself at warn or above, and that is worth more than a tidy log.
             SerpentineEvent::Log {
                 level,
                 target,
@@ -57,10 +39,6 @@ pub fn start(events: Receiver<SerpentineEvent>) {
             }
             _ => {}
         }
-    }
-
-    if open_group.is_some() {
-        println!("::endgroup::");
     }
 
     summary.write();
@@ -162,14 +140,4 @@ impl Summary {
             );
         }
     }
-}
-
-/// Escape the characters that would otherwise terminate a workflow command.
-///
-/// <https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands>
-fn escape(value: &str) -> String {
-    value
-        .replace('%', "%25")
-        .replace('\r', "%0D")
-        .replace('\n', "%0A")
 }
