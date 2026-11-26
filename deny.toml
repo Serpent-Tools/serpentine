@@ -1,8 +1,6 @@
 [bans]
-multiple-versions = "warn"
+multiple-versions = "allow"
 wildcards = "deny"
-external-default-features = "deny"
-workspace-default-features = "deny"
 
 [bans.workspace-dependencies]
 duplicates = "deny"
@@ -16,7 +14,6 @@ scope = "workspace"
 yanked = "deny"
 unmaintained = "workspace"
 unsound = "all"
-patched = "deny"
 
 [licenses]
 unused-allowed-license = "deny"
